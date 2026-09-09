@@ -1,238 +1,267 @@
 import json
-import os
-import re
-from typing import List
-from diff_match_patch import diff_match_patch
-from langchain_anthropic import ChatAnthropic
-from langchain_core.messages import AnyMessage, AIMessage, HumanMessage
-from langchain_core.output_parsers import StrOutputParser, JsonOutputParser
+from collections.abc import Sequence
+from typing import Any
+
+from langchain_core.messages import AIMessage, AnyMessage, HumanMessage
 from langgraph.constants import END, START
-from langgraph.graph import  StateGraph
-from helpers.prompts import markdown_to_prompt_template
-from agent.developer.state import SoftwareDeveloperState, Diffs
+from langgraph.graph import StateGraph
 from langgraph.prebuilt import ToolNode
-from agent.tools.search import search_tools
+
+from agent.developer.runtime import DeveloperRuntime, default_developer_runtime
+from agent.developer.state import SoftwareDeveloperState
+from agent.editing import EditErrorCode, EditResult, EditStatus
 from agent.tools.codemap import codemap_tools
-from agent.tools.write import get_files_structure
-# Load the extract diff prompt
-extract_diffs_tasks_prompt = markdown_to_prompt_template("agent/developer/prompts/create_diff_prompt.md")
-implement_diffs_prompt = markdown_to_prompt_template("agent/developer/prompts/implement_diff.md")
-implement_new_file_prompt = markdown_to_prompt_template("agent/developer/prompts/implement_new_file.md")
+from agent.tools.search import search_tools
 
-# Create the runnable with the prompt and model
-extract_diff_runnable = extract_diffs_tasks_prompt | ChatAnthropic(model="claude-sonnet-4-20250514") | StrOutputParser()
-edit_according_to_diff_runnable = implement_diffs_prompt | ChatAnthropic(model="claude-sonnet-4-20250514") | StrOutputParser()
-create_new_file_runnable = implement_new_file_prompt | ChatAnthropic(model="claude-sonnet-4-20250514") | StrOutputParser()
 
-# Load the get clear implementation plan prompt
-get_clear_implementation_plan_prompt = markdown_to_prompt_template("agent/developer/prompts/get_clear_implementation_plan.md")
+def start_implementing(state: SoftwareDeveloperState) -> dict[str, Any]:
+    plan = state.implementation_plan
+    error = None
+    if plan is None or not plan.tasks:
+        error = "The implementation plan contains no tasks."
+    elif any(not task.atomic_tasks for task in plan.tasks):
+        error = "Every implementation task must contain at least one atomic task."
 
-# Create the runnable with the prompt and model
-get_clear_implementation_plan_runnable = get_clear_implementation_plan_prompt | ChatAnthropic(model="claude-sonnet-4-20250514").bind_tools(search_tools+codemap_tools)
-dmp = diff_match_patch()
-def start_implementing(state: SoftwareDeveloperState):
+    result = None
+    if error is not None:
+        result = EditResult(
+            status=EditStatus.REJECTED,
+            path="",
+            error_code=EditErrorCode.INVALID_PLAN,
+            message=error,
+        )
     return {
         "current_task_idx": 0,
-        "current_atomic_task_idx": 0
+        "current_atomic_task_idx": 0,
+        "last_edit_result": result,
     }
 
 
-def proceed_to_next_atomic_task(state: SoftwareDeveloperState):
-    # Get current indices
-    current_task_idx = state.current_task_idx
-    current_atomic_task_idx = state.current_atomic_task_idx
-    
-    # Get the implementation plan
+def proceed_to_next_atomic_task(
+    state: SoftwareDeveloperState,
+) -> dict[str, int]:
     plan = state.implementation_plan
-    
-    # Get current task
-    current_task = plan.tasks[current_task_idx]
-    atomic_tasks = current_task.atomic_tasks
-    
-    # If we've completed all atomic tasks in current task
-    if current_atomic_task_idx >= len(atomic_tasks) - 1:
-        # Move to next main task and reset atomic task index
+    if plan is None:
+        return {"current_task_idx": 0, "current_atomic_task_idx": 0}
+
+    current_task = plan.tasks[state.current_task_idx]
+    if state.current_atomic_task_idx >= len(current_task.atomic_tasks) - 1:
         return {
-            "current_task_idx": current_task_idx + 1,
-            "current_atomic_task_idx": 0
+            "current_task_idx": state.current_task_idx + 1,
+            "current_atomic_task_idx": 0,
         }
-    # Otherwise, move to next atomic task
     return {
-        "current_task_idx": current_task_idx,
-        "current_atomic_task_idx": current_atomic_task_idx + 1
+        "current_task_idx": state.current_task_idx,
+        "current_atomic_task_idx": state.current_atomic_task_idx + 1,
     }
-
-
-def get_clear_implementation_plan_for_atomic_task(state: SoftwareDeveloperState):
-    current_task = state.implementation_plan.tasks[state.current_task_idx]
-    current_atomic_task = current_task.atomic_tasks[state.current_atomic_task_idx]
-    result = get_clear_implementation_plan_runnable.invoke({
-        "development_task": current_atomic_task.atomic_task,
-        "file_content": state.current_file_content,
-        "target_file": current_task.file_path,
-        "codebase_structure": state.codebase_structure,
-        "additional_context": current_atomic_task.additional_context,
-        "atomic_implementation_research": state.atomic_implementation_research
-    })
-    return {"atomic_implementation_research": [result]}
-
-def should_continue_implementation_research(state: SoftwareDeveloperState):
-    """Router function to determine if tools should be called"""
-    last_research_step = state.atomic_implementation_research[-1]
-
-    if last_research_step.tool_calls:
-        return "should_continue_research"
-
-    return "implement_plan"
-
-
-def prepare_for_implementation(state: SoftwareDeveloperState):
-    """Read the code file content (if not new) and reset the research"""
-    current_task = state.implementation_plan.tasks[state.current_task_idx]
-    try:
-        with open(current_task.file_path, "r") as file:
-            file_content = file.read()
-    except FileNotFoundError:
-        file_content = "This is a new file"
-
-    return {"current_file_content": file_content,
-            "codebase_structure": get_files_structure.invoke({"directory": "./workspace_repo"}),
-            "atomic_implementation_research": None}
 
 
 def is_implementation_complete(state: SoftwareDeveloperState):
-    """
-    Check if we've completed all implementation tasks.
-    """
-    current_task_idx = state.current_task_idx
+    if state.last_edit_result is not None and (
+        state.last_edit_result.error_code is EditErrorCode.INVALID_PLAN
+    ):
+        return END
     plan = state.implementation_plan
-    return END if current_task_idx >= len(plan.tasks) else "continue"
+    if plan is None or state.current_task_idx >= len(plan.tasks):
+        return END
+    return "continue"
 
-def convert_tools_messages_to_ai_and_human(implementation_research_scratchpad: List[AnyMessage]):
-    messages = []
+
+def should_continue_implementation_research(state: SoftwareDeveloperState) -> str:
+    last_research_step = state.atomic_implementation_research[-1]
+    if last_research_step.tool_calls:
+        return "should_continue_research"
+    return "implement_plan"
+
+
+def should_continue_after_preparation(state: SoftwareDeveloperState):
+    snapshot = state.current_file_snapshot
+    if snapshot is None or snapshot.error_code is not None:
+        return END
+    return "continue"
+
+
+def should_advance_after_edit(state: SoftwareDeveloperState):
+    result = state.last_edit_result
+    if result is not None and result.status is EditStatus.APPLIED:
+        return "advance"
+    return END
+
+
+def convert_tools_messages_to_ai_and_human(
+    implementation_research_scratchpad: list[AnyMessage],
+) -> list[AnyMessage]:
+    messages: list[AnyMessage] = []
     for message in implementation_research_scratchpad:
-        if message.type == "ai":
-            if message.tool_calls:
-                tool_name = message.tool_calls[0]["name"]
-                tool_args = json.dumps(message.tool_calls[0]["args"])
-                messages.append(AIMessage(content=f"I want to call the tool {tool_name} with the following arguments: {tool_args}"))
-            else:
-                messages.append(message)
+        if message.type == "ai" and message.tool_calls:
+            tool_name = message.tool_calls[0]["name"]
+            tool_args = json.dumps(message.tool_calls[0]["args"])
+            messages.append(
+                AIMessage(
+                    content=(
+                        f"I want to call the tool {tool_name} with the following "
+                        f"arguments: {tool_args}"
+                    )
+                )
+            )
         elif message.type == "tool":
-            messages.append(HumanMessage(content=f"When executing Tool {message.name} \n The result was {message.content} was called"))
+            messages.append(
+                HumanMessage(
+                    content=(
+                        f"When executing Tool {message.name}\n"
+                        f"The result was {message.content}"
+                    )
+                )
+            )
         else:
             messages.append(message)
     return messages
 
-def creating_diffs_for_task(state: SoftwareDeveloperState):
-    # Get current task information
-    current_task = state.implementation_plan.tasks[state.current_task_idx]
-    current_atomic_task = current_task.atomic_tasks[state.current_atomic_task_idx]
-    file_path = current_task.file_path
 
-    # check if file is new
-    if not os.path.exists(file_path):
-        new_file_content = create_new_file_runnable.invoke({
-            "task": current_atomic_task.atomic_task,
-            "additional_context": current_atomic_task.additional_context,
-            "research": convert_tools_messages_to_ai_and_human(state.atomic_implementation_research),
-            "file_path": file_path
-        })
-        with open(file_path, "w") as file:
-            file.write(new_file_content)
-            file.flush()
-    else:
-        # Get the diffs
-        with open(file_path, "r") as file:
-            file_content = file.read()
-        # add line numbers
-        lines = []
-        for i, line in enumerate(file_content.splitlines(), start=1):
-            lines.append(f"{i}| {line}")
-        file_content = "\n".join(lines)
+def create_developer_workflow(
+    runtime: DeveloperRuntime | None = None,
+    *,
+    research_tools: Sequence[Any] | None = None,
+):
+    runtime = runtime or default_developer_runtime()
+    tools = list(
+        search_tools + codemap_tools if research_tools is None else research_tools
+    )
 
-        diffs_tasks = extract_diff_runnable.invoke({
-            "task": current_atomic_task.atomic_task,
-            "additional_context": current_atomic_task.additional_context,
-            "research": convert_tools_messages_to_ai_and_human(state.atomic_implementation_research),
-            "file_path": file_path,
-            "file_content": file_content,
-            "output_format": JsonOutputParser(pydantic_object=Diffs).get_format_instructions()
-        })
-        # Find all content between <code_change_request> and </code_change_request>
-        blocks = re.findall(
-            r"<code_change_request>(.*?)</code_change_request>", diffs_tasks, re.DOTALL
+    def prepare_for_implementation(
+        state: SoftwareDeveloperState,
+    ) -> dict[str, Any]:
+        plan = state.implementation_plan
+        if plan is None:
+            return {}
+        current_task = plan.tasks[state.current_task_idx]
+        executor = runtime.edit_executor()
+        snapshot = executor.prepare(current_task.file_path)
+        result = executor.apply(snapshot, "") if snapshot.error_code else None
+        structure = (
+            state.codebase_structure
+            if snapshot.error_code
+            else runtime.load_codebase_structure()
         )
+        return {
+            "current_file_snapshot": snapshot,
+            "current_file_content": snapshot.content or "",
+            "codebase_structure": structure,
+            "atomic_implementation_research": [],
+            "last_edit_result": result,
+        }
 
-        for block in blocks:
-            # Use regex to extract the original code snippet and the task description.
-            # The re.DOTALL flag allows the dot (.) to match newline characters.
-            match = re.search(
-                r"original_code_snippet:\s*(.*?)\s*edit_code_snippet:\s*(.*)",
-                block,
-                re.DOTALL,
-            )
-            if match:
-                with open(file_path, "r") as f:
-                    file_content = f.read()
-                original_code = match.group(1).strip()
-                edited_code = match.group(2).strip()
-                orig_lines = original_code.splitlines()
-                first_line = int(orig_lines[0].split("|")[0].strip())
-                last_line = int(orig_lines[-1].split("|")[0].strip())
-                new_content = file_content.splitlines()
-                new_content = (
-                    new_content[: first_line - 1]
-                    + edited_code.splitlines()
-                    + new_content[last_line:]
+    def get_clear_implementation_plan_for_atomic_task(
+        state: SoftwareDeveloperState,
+    ) -> dict[str, list[AnyMessage]]:
+        plan = state.implementation_plan
+        if plan is None:
+            return {"atomic_implementation_research": []}
+        current_task = plan.tasks[state.current_task_idx]
+        current_atomic_task = current_task.atomic_tasks[
+            state.current_atomic_task_idx
+        ]
+        result = runtime.research_atomic_task(
+            {
+                "development_task": current_atomic_task.atomic_task,
+                "file_content": state.current_file_content,
+                "target_file": state.current_file_snapshot.path,
+                "codebase_structure": state.codebase_structure,
+                "additional_context": current_atomic_task.additional_context,
+                "atomic_implementation_research": (
+                    state.atomic_implementation_research
+                ),
+            }
+        )
+        return {"atomic_implementation_research": [result]}
+
+    def creating_diffs_for_task(
+        state: SoftwareDeveloperState,
+    ) -> dict[str, EditResult]:
+        plan = state.implementation_plan
+        snapshot = state.current_file_snapshot
+        if plan is None or snapshot is None:
+            return {
+                "last_edit_result": EditResult(
+                    status=EditStatus.REJECTED,
+                    path="",
+                    error_code=EditErrorCode.INVALID_STATE,
+                    message="The Developer has no prepared workspace snapshot.",
                 )
-                with open(file_path, "w") as f:
-                    f.write("\n".join(new_content))
-                    f.flush()
+            }
 
-# Create tool node
-research_tool_node = ToolNode(search_tools + codemap_tools, messages_key="atomic_implementation_research")
+        current_task = plan.tasks[state.current_task_idx]
+        current_atomic_task = current_task.atomic_tasks[
+            state.current_atomic_task_idx
+        ]
+        values = {
+            "task": current_atomic_task.atomic_task,
+            "additional_context": current_atomic_task.additional_context,
+            "research": convert_tools_messages_to_ai_and_human(
+                state.atomic_implementation_research
+            ),
+            "file_path": snapshot.path,
+        }
+        if snapshot.exists:
+            values["file_content"] = snapshot.content
+            model_output = runtime.propose_existing_file_edit(values)
+        else:
+            model_output = runtime.propose_new_file(values)
+        result = runtime.edit_executor().apply(snapshot, model_output)
+        return {"last_edit_result": result}
 
-# Create the workflow graph
-workflow = StateGraph(SoftwareDeveloperState)
+    research_tool_node = ToolNode(
+        tools, messages_key="atomic_implementation_research"
+    )
+    workflow = StateGraph(SoftwareDeveloperState)
+    workflow.add_node("start_implementing", start_implementing)
+    workflow.add_node("prepare_for_implementation", prepare_for_implementation)
+    workflow.add_node(
+        "get_clear_implementation_plan_for_atomic_task",
+        get_clear_implementation_plan_for_atomic_task,
+    )
+    workflow.add_node("research_tool_node", research_tool_node)
+    workflow.add_node("creating_diffs_for_task", creating_diffs_for_task)
+    workflow.add_node(
+        "proceed_to_next_atomic_task", proceed_to_next_atomic_task
+    )
 
-# Add nodes
-workflow.add_node("start_implementing", start_implementing)
-workflow.add_node("prepare_for_implementation", prepare_for_implementation)
-workflow.add_node("proceed_to_next_atomic_task", proceed_to_next_atomic_task)
-workflow.add_node("get_clear_implementation_plan_for_atomic_task", get_clear_implementation_plan_for_atomic_task)
-workflow.add_node("research_tool_node", research_tool_node )
-workflow.add_node("creating_diffs_for_task", creating_diffs_for_task)
+    workflow.add_edge(START, "start_implementing")
+    workflow.add_conditional_edges(
+        "start_implementing",
+        is_implementation_complete,
+        {"continue": "prepare_for_implementation", END: END},
+    )
+    workflow.add_conditional_edges(
+        "prepare_for_implementation",
+        should_continue_after_preparation,
+        {
+            "continue": "get_clear_implementation_plan_for_atomic_task",
+            END: END,
+        },
+    )
+    workflow.add_conditional_edges(
+        "get_clear_implementation_plan_for_atomic_task",
+        should_continue_implementation_research,
+        {
+            "should_continue_research": "research_tool_node",
+            "implement_plan": "creating_diffs_for_task",
+        },
+    )
+    workflow.add_edge(
+        "research_tool_node", "get_clear_implementation_plan_for_atomic_task"
+    )
+    workflow.add_conditional_edges(
+        "creating_diffs_for_task",
+        should_advance_after_edit,
+        {"advance": "proceed_to_next_atomic_task", END: END},
+    )
+    workflow.add_conditional_edges(
+        "proceed_to_next_atomic_task",
+        is_implementation_complete,
+        {"continue": "prepare_for_implementation", END: END},
+    )
+    return workflow.compile().with_config({"tags": ["developer-agent-v4"]})
 
-# Add edges
-# Reset the system and load the file from the context of atomic task (if not new file)
-workflow.add_edge(START, "start_implementing")
-# Read file content and reset previous implementation research
-workflow.add_edge("start_implementing", "prepare_for_implementation")
-# Go to research about how to implement the atomic task
-workflow.add_edge("prepare_for_implementation", "get_clear_implementation_plan_for_atomic_task")
-# Check if research is done or we should continue research
-workflow.add_conditional_edges(
-    "get_clear_implementation_plan_for_atomic_task",
-    should_continue_implementation_research,
-    {
-        "should_continue_research": "research_tool_node",
-        "implement_plan": "creating_diffs_for_task"
-    }
-)
-# Go back from executing a research tool to research about implementation
-workflow.add_edge("research_tool_node", "get_clear_implementation_plan_for_atomic_task")
-# After the research lets apply the diffs
-workflow.add_edge("creating_diffs_for_task", "proceed_to_next_atomic_task")
-# If next atomic task exists rest and go back to research if not end as everything was implemented
-workflow.add_conditional_edges(
-    "proceed_to_next_atomic_task",
-    is_implementation_complete,
-    {
-        "continue": "prepare_for_implementation",
-        END: END
-    }
-)
 
-# Compile the workflow
-swe_developer = workflow.compile().with_config({"tags": ["developer-agent-v3"]})
+swe_developer = create_developer_workflow()

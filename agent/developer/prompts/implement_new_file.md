@@ -28,6 +28,4 @@ First conduct the research
 
 # Human
 Your job is to create a new file {file_path} to implement the task {task} based on the research you conducted.
-Write the code now
-
-
+Output the complete file content only. Do not add a Markdown fence or explanation.

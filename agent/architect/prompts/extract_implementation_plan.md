@@ -34,5 +34,3 @@ don't add to the implementation anything related to update readme
 follow the rules in the rules section to create the plan now.
 You must output valid json with the following format:
 {output_format}
-
-

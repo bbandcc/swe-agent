@@ -38,7 +38,7 @@ def get_code_definitions(file_path: str) -> str:
     query_str = """
     (class_definition
         name: (identifier) @name.definition.class
-        body: (block 
+        body: (block
             (function_definition
                 name: (identifier) @name.definition.method
                 parameters: (parameters) @params.definition.method)?) @body.definition.class)
@@ -57,10 +57,10 @@ def get_code_definitions(file_path: str) -> str:
     current_def = {}
     in_class = False
     last_line_number = 0
-    
+
     for node, tag in captures:
         current_line = node.start_point[0] + 1
-        
+
         # Add ... between definitions if there's a gap
         if last_line_number > 0 and current_line > last_line_number + 1:
             output_lines.append("...")
@@ -138,7 +138,7 @@ def get_function_implementation(file_path: str, function_name: str) -> Optional[
         body: (block) @body.function)
 
     (class_definition
-        body: (block 
+        body: (block
             (function_definition
                 name: (identifier) @name.method
                 parameters: (parameters) @params.method
@@ -161,21 +161,21 @@ def get_function_implementation(file_path: str, function_name: str) -> Optional[
             # Extract the full implementation
             implementation = code[node.start_byte:node.end_byte].decode('utf-8')
             lines = implementation.split('\n')
-            
+
             # Format output
             output_lines = [f"\n{file_path}:\n"]
             start_line = current_def['line']
-            
+
             # Add function signature
             output_lines.append(f"{start_line}| def {current_def['name']}{current_def['params']}:")
-            
+
             # Add implementation lines with correct line numbers
             for i, line in enumerate(lines):
                 line_num = start_line + i + 1
                 # Handle indentation
                 indent = '    ' if not line.strip() else line[:len(line) - len(line.lstrip())]
                 output_lines.append(f"{line_num}|{indent}{line.lstrip()}")
-            
+
             return "\n".join(output_lines)
 
     return None
@@ -185,24 +185,24 @@ def get_code_definitions_multi(file_paths: list[str]) -> str:
     """
     Extract function and class definitions from multiple files.
     Shows signatures with their actual source file line numbers and ... between definitions.
-    
+
     Args:
         file_paths: List of file paths to analyze
      """
     all_definitions = []
-    
+
     for file_path in file_paths:
         definitions = get_code_definitions(file_path)
         if definitions and not definitions.startswith("Unsupported"):
             all_definitions.append(definitions)
-    
+
     return "\n".join(all_definitions)
 
 @tool(parse_docstring=True)
 def get_raw_file_content(file_path: str) -> str:
     """
     Get the raw content of the file. good for a non-code files
-    
+
     Args:
         file_path: file path to read
      """
@@ -222,7 +222,7 @@ def main():
     # Get specific function implementation
     implementation = get_function_implementation.invoke({"file_path":file_path, "function_name":"get_code_definitions"})
     print(implementation)
-    
+
     # Example of multi-file definitions
     files = ["../../agent/tools/codemap.py", "../../agent/tools/search.py"]
     multi_defs = get_code_definitions_multi.invoke({"file_paths":files})
@@ -230,6 +230,3 @@ def main():
 
 if __name__ == "__main__":
     main()
-
-
-

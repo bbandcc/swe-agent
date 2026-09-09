@@ -153,5 +153,3 @@ def markdown_to_prompt_template(relative_prompt_path: str) -> Union[PromptTempla
     else:
         print("No type found in the markdown content. Loading as a prompt template.")
         return load_markdown_as_prompt_template(absolute_prompt_path)
-
-

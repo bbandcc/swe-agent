@@ -34,20 +34,20 @@ def search_in_file(file_path, search_term, context=2):
             end = min(i + context + 1, len(lines))
             snippet = [(j+1, lines[j].rstrip('\n')) for j in range(start, end)]
             results.append((i+1, snippet, abs_path))  # i+1 for the matching line number
-    
+
     return results
 
 def search_directory(directory, search_term, extension=None, context=2):
     """
     Recursively search through files in a given directory for the search_term.
     Only searches files with the specified extension if provided.
-    
+
     Args:
         directory (str): Directory path to search
         search_term (str): Term to search for
         extension (str, optional): File extension to filter by (e.g., '.py', '.txt')
         context (int): Number of context lines to include before and after match
-        
+
     Returns:
         str: Formatted string containing all search results
     """
@@ -56,7 +56,7 @@ def search_directory(directory, search_term, extension=None, context=2):
         for file in files:
             if extension and not file.endswith(extension):
                 continue
-                
+
             file_path = os.path.join(root, file)
             matches = search_in_file(file_path, search_term, context)
             if matches:
@@ -66,7 +66,7 @@ def search_directory(directory, search_term, extension=None, context=2):
                     for line_number, code in snippet:
                         output.append(f"{line_number:4} | {code}")
                     output.append("-" * 50)
-    
+
     return "\n".join(output) if output else "No matches found."
 
 def get_full_path(partial_path: str) -> str:
@@ -76,20 +76,20 @@ def get_full_path(partial_path: str) -> str:
     """
     if os.path.isabs(partial_path):
         return partial_path
-        
+
     cwd = os.path.abspath(os.getcwd())
     if partial_path in cwd:
         # If the partial path is found within the current working directory path
         parts = cwd.split(partial_path)
         return parts[0] + partial_path
-    
+
     return partial_path
 
 @tool(parse_docstring=True)
 def search_keyword_in_directory(directory: str, search_term: str, context: int = 2):
     """
     A search tool that searchs for a keyword in all Python files contents in the specified directory. this tool is like cmd+f in your IDE. search_term MUST be at least 3 characters long.
-    
+
     Args:
         directory: Directory path to search (can be partial or full path)
         search_term: Term to search for in files contents (case-insensitive)
@@ -106,7 +106,7 @@ if __name__ == "__main__":
     # Example usage
     directory = "./workspace_repo"  # Current directory
     search_term = "screenshot"  # Search for function definitions
-    
+
     # Example 1: Search all Python files
     print("Searching for 'def' in Python files:")
     results = search_keyword_in_directory.invoke({"directory": directory, "search_term":search_term})
@@ -125,5 +125,3 @@ if __name__ == "__main__":
     #     print(f"\nMatch at line {line_num}:")
     #     for snip_num, line in snippet:
     #         print(f"{snip_num:4} | {line}")
-
-

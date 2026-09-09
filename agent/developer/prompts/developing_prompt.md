@@ -19,4 +19,4 @@ You are a Senior Software Developer responsible for implementing code changes ba
 {scratchpad}
 
 # Human
-Your job now is to copy snippet of codes that are involved in the implementation plan and put it in the original_code and understand how to edit it based on the plan put the full instruction in the 
+Your job now is to copy snippet of codes that are involved in the implementation plan and put it in the original_code and understand how to edit it based on the plan put the full instruction in the

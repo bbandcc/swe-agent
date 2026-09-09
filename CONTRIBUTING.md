@@ -279,4 +279,4 @@ Every contribution, no matter how small, helps build the future of AI-powered so
 
 **Questions?** Visit [www.langtalks.ai](https://www.langtalks.ai) or open a [discussion](https://github.com/langtalks/swe-agent-langgraph/discussions).
 
-**Ready to contribute?** Check out our [good first issues](https://github.com/langtalks/swe-agent-langgraph/issues?q=is%3Aissue+is%3Aopen+label%3A%22good+first+issue%22) and get started! 🚀 
+**Ready to contribute?** Check out our [good first issues](https://github.com/langtalks/swe-agent-langgraph/issues?q=is%3Aissue+is%3Aopen+label%3A%22good+first+issue%22) and get started! 🚀

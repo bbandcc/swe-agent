@@ -1,0 +1,27 @@
+{
+  "repository": "langtalks/swe-agent",
+  "commit": "5946af4f57cba03761015837ad5f87ef5c8d99e9",
+  "source_sha256": "3cf82ef1329e9b55817d2ef29f4d2ba40ca814b4968d54b9aa7a8d7fb15ec05a",
+  "method": "Original function AST, mocked model response, temporary files; no graph runtime",
+  "confirmed_cases": [
+    {
+      "case": "stale_line_numbers",
+      "node_return": null,
+      "actual_content": "A1\nA2\nB\nD_new\nD"
+    },
+    {
+      "case": "original_text_mismatch",
+      "node_return": null,
+      "actual_content": "A\nREPLACED\nC\nD"
+    },
+    {
+      "case": "no_parseable_edits",
+      "node_return": null,
+      "actual_content": "A\nB\nC\nD\n"
+    },
+    {
+      "case": "empty_plan",
+      "error": "IndexError"
+    }
+  ]
+}

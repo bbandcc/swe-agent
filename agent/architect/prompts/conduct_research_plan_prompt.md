@@ -39,4 +39,3 @@ Remember:
 
 # Placeholder
 {implementation_research_scratchpad}
-

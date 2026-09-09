@@ -6,6 +6,18 @@
 
 ![Alpha](https://img.shields.io/badge/status-alpha-orange) ![Python](https://img.shields.io/badge/python-3.12+-blue) ![License](https://img.shields.io/badge/license-MIT-green)
 
+## Evolution status
+
+This repository evolves the original LangTalks project through small, independently tested changes. The first two slices add a deterministic `WorkspaceEditor` and connect it to the LangGraph Developer workflow. Model output is now treated as a proposal: code validates the workspace path, source hash, unique SEARCH/REPLACE match, encoding, and write result. The graph advances only after an applied edit; rejected and no-op edits stop with a structured `EditResult`.
+
+Run the deterministic and fake-model integration tests with:
+
+```bash
+uv run python -m unittest discover -s tests -v
+```
+
+See [UPSTREAM.md](UPSTREAM.md) for the pinned source revision and [AGENTS.md](AGENTS.md) for the incremental engineering rules.
+
 A sophisticated AI-powered software engineering agent that automates code implementation through intelligent planning and execution. Built with LangGraph for reliable multi-agent workflows.
 
 > ⚠️ **Alpha Status**: This project is in active development. Features may change and some functionality is experimental. Perfect for early adopters and contributors who want to shape the future of AI-powered development.
@@ -40,9 +52,9 @@ The architect agent:
 
 The developer agent:
 - Executes implementation plans step by step
-- Performs atomic code modifications with precision
+- Applies hash-checked, unique SEARCH/REPLACE edits through a workspace boundary
 - Creates new files and modifies existing ones
-- Validates changes against the original requirements
+- Stops on rejected or no-op edits and exposes a structured result
 
 ### Workflow Overview
 ```
@@ -67,11 +79,13 @@ The top-level orchestrator state that manages the overall workflow:
 class AgentState(BaseModel):
     implementation_research_scratchpad: Annotated[list[AnyMessage], add_messages]
     implementation_plan: Optional[ImplementationPlan] = None
+    last_edit_result: Optional[EditResult] = None
 ```
 
 **Fields:**
 - `implementation_research_scratchpad`: Message history from research and planning phase
 - `implementation_plan`: Structured plan created by architect agent for developer execution
+- `last_edit_result`: Final applied, rejected, or no-op result returned by the Developer
 
 ### Architect Agent State (`SoftwareArchitectState`)
 
@@ -80,7 +94,7 @@ Manages the research and planning phase with hypothesis-driven exploration:
 ```python
 class SoftwareArchitectState(BaseModel):
     research_next_step: Optional[str] = None
-    implementation_plan: Optional[ImplementationPlan] = None  
+    implementation_plan: Optional[ImplementationPlan] = None
     implementation_research_scratchpad: Annotated[list[AnyMessage], add_messages] = []
     is_valid_research_step: Optional[bool] = None
 ```
@@ -101,25 +115,27 @@ Handles the step-by-step implementation of the architect's plan:
 ```python
 class SoftwareDeveloperState(BaseModel):
     implementation_plan: Optional[ImplementationPlan] = None
-    current_task_idx: Optional[int] = 0
-    current_atomic_task_idx: Optional[int] = 0
-    diffs: Optional[Diffs] = None
+    current_task_idx: int = 0
+    current_atomic_task_idx: int = 0
     atomic_implementation_research: Annotated[list[AnyMessage], add_messages_with_clear]
     codebase_structure: Optional[str] = None
+    current_file_snapshot: Optional[WorkspaceSnapshot] = None
     current_file_content: Optional[str] = None
+    last_edit_result: Optional[EditResult] = None
 ```
 
 **Fields:**
 - `implementation_plan`: Plan received from architect agent
 - `current_task_idx`: Index of current file-level task being implemented
 - `current_atomic_task_idx`: Index of current atomic change within the task
-- `diffs`: Generated code differences for precise file modifications
 - `atomic_implementation_research`: Research specific to current implementation step
 - `codebase_structure`: Current snapshot of target codebase structure
 - `current_file_content`: Contents of file being modified
+- `current_file_snapshot`: Validated path, content, and hash captured before model generation
+- `last_edit_result`: Structured result used to decide whether the graph may advance
 
 **Workflow:**
-1. Iterate through tasks → Research specific implementation → Generate diffs → Apply changes
+1. Validate plan and workspace snapshot → Research implementation → Generate one proposal → Validate and apply → Advance only on success
 
 ### Shared Entities
 
@@ -132,7 +148,7 @@ class ImplementationPlan(BaseModel):
 ```
 The top-level plan containing all file-level implementation tasks.
 
-#### `ImplementationTask`  
+#### `ImplementationTask`
 ```python
 class ImplementationTask(BaseModel):
     file_path: str                    # Target file for modifications
@@ -149,13 +165,11 @@ class AtomicTask(BaseModel):
 ```
 The smallest unit of implementation - a single code change.
 
-#### `DiffTask` (Developer-specific)
+#### `EditProposal` and `EditResult` (Developer-specific)
 ```python
-class DiffTask(BaseModel):
-    original_code_snippet: str    # Exact code being replaced
-    task_description: str         # Detailed change instructions
+WorkspaceEditor.apply(EditProposal) -> EditResult
 ```
-Precise diff instructions for code modifications.
+`EditProposal` carries the workspace-relative path, operation, baseline hash, old text, and new text. `EditResult` reports applied, rejected, or no-op with error codes, hashes, and the actual unified diff.
 
 ### State Flow Example
 
@@ -182,7 +196,8 @@ SoftwareDeveloperState {
     implementation_plan: <received_plan>,
     current_task_idx: 0,
     current_atomic_task_idx: 0,
-    current_file_content: "# auth.py content"
+    current_file_snapshot: <validated path/content/hash>,
+    last_edit_result: EditResult(status="applied")
 }
     ↓ (after implementation)
 Final Result: Modified codebase
@@ -192,9 +207,9 @@ Final Result: Modified codebase
 
 - **Type Safety**: Pydantic validation prevents state corruption
 - **Traceability**: Complete message history for debugging
-- **Resumability**: State can be persisted and resumed
+- **Explicit outcomes**: Rejected edits remain visible in graph state
 - **Modularity**: Each agent manages its own concerns
-- **Atomicity**: Granular task breakdown enables precise control
+- **Deterministic writes**: A single validated edit is committed atomically at the file level
 
 ## 📋 Prerequisites
 
@@ -253,10 +268,13 @@ agent/
 │   ├── graph.py       # Main architect workflow
 │   ├── state.py       # State definitions
 │   └── prompts/       # Prompt templates
-├── developer/          # Implementation agent  
+├── developer/          # Implementation agent
 │   ├── graph.py       # Main developer workflow
+│   ├── editing.py     # Model proposal adapter
+│   ├── runtime.py     # Injectable model/workspace dependencies
 │   ├── state.py       # State definitions
 │   └── prompts/       # Prompt templates
+├── editing/            # Deterministic workspace read/write boundary
 ├── common/            # Shared entities and state
 │   └── entities.py    # Pydantic models
 └── tools/             # File operations and search tools
@@ -285,13 +303,10 @@ static/               # Documentation images
 ### Running Tests
 ```bash
 # Run all tests
-uv run pytest
-
-# Run with coverage
-uv run pytest --cov=agent
+uv run python -m unittest discover -s tests -v
 
 # Run specific test modules
-uv run pytest tests/test_architect.py
+uv run python -m unittest tests.developer.test_workflow -v
 ```
 
 ## 📁 Main Directory Files
@@ -322,7 +337,7 @@ We're building the future of AI-powered software development together! These are
 
 ### 🔄 Core Agent Enhancements
 - [ ] **Multi-step Research & Development Loop**: Iterative refinement of implementation plans with feedback cycles
-- [ ] **Testing Agent**: Dedicated agent for unit testing, functional testing, and test case generation  
+- [ ] **Testing Agent**: Dedicated agent for unit testing, functional testing, and test case generation
 - [ ] **Error Fixer Agent**: Specialized agent for detecting, analyzing, and fixing code errors
 - [ ] **Product Manager Agent**: High-level planning and requirement analysis agent
 
@@ -331,7 +346,7 @@ We're building the future of AI-powered software development together! These are
 - [ ] **Components Evaluation Benchmarking**: Performance metrics and quality assessment frameworks
 - [ ] **Code Semantic Indexing**: Advanced code understanding and similarity detection
 
-### 🌐 Integrations & Connectivity  
+### 🌐 Integrations & Connectivity
 - [ ] **GitHub MCP Integration**: Direct integration with GitHub repositories and workflows
 - [ ] **Context7 MCP Integration**: Enhanced context management and code understanding
 - [ ] **Multi-Language Support**: Extend beyond Python to JavaScript, TypeScript, Java, Go, etc.

@@ -1,7 +1,7 @@
 [project]
 name = "swe-agent-langgraph"
 version = "0.1.0"
-description = "Add your description here"
+description = "LangGraph software engineering agent with validated workspace editing"
 readme = "README.md"
 requires-python = ">=3.12"
 dependencies = [
@@ -16,3 +16,13 @@ dependencies = [
     "thefuzz>=0.22.1",
     "fuzzysearch>=0.7.3",
 ]
+
+[build-system]
+requires = ["setuptools>=69"]
+build-backend = "setuptools.build_meta"
+
+[tool.setuptools.packages.find]
+include = ["agent*", "helpers*"]
+
+[tool.setuptools.package-data]
+"*" = ["prompts/*.md"]

@@ -73,7 +73,7 @@ def check_research_step(state: SoftwareArchitectState)-> CheckResearchStepOutput
         }
     else:
         return {
-            "is_valid_research_step": True, 
+            "is_valid_research_step": True,
             "implementation_research_scratchpad": [HumanMessage(content=f"The research path is valid, start conducting the research")]
         }
 
@@ -114,10 +114,10 @@ def extract_implementation_plan(state: SoftwareArchitectState):
 def should_call_tool(state: SoftwareArchitectState):
     """Router function to determine if tools should be called"""
     last_message = state.implementation_research_scratchpad[-1]
-    
+
     if last_message.tool_calls:
         return "should_call_tool"
-    
+
     return "implement_plan"
 
 def should_conduct_research(state: SoftwareArchitectState):
@@ -152,7 +152,7 @@ workflow.add_node("tools", tool_node)
 workflow.add_edge(START, "come_up_with_research_next_step")
 workflow.add_edge("come_up_with_research_next_step", "check_research_step")
 workflow.add_conditional_edges(
-    "check_research_step", 
+    "check_research_step",
     should_conduct_research,
     {
         "plan_is_valid": "conduct_research",
