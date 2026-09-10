@@ -4,8 +4,14 @@ from pathlib import Path
 
 from langchain_core.messages import AIMessage
 
-from agent.common.entities import AtomicTask, ImplementationPlan, ImplementationTask
+from agent.common.entities import (
+    AtomicTask,
+    ImplementationPlan,
+    ImplementationTask,
+    PlanStatus,
+)
 from agent.developer.graph import DeveloperRuntime, create_developer_workflow
+from agent.developer.state import DeveloperErrorCode, DeveloperStatus
 from agent.editing import EditErrorCode, EditStatus, WorkspaceEditor
 from agent.developer.editing import DeveloperEditExecutor
 
@@ -102,7 +108,7 @@ class DeveloperWorkflowTests(unittest.TestCase):
                     target.read_text(encoding="utf-8"), "value = 1\n"
                 )
 
-    def test_rejects_empty_plan_before_calling_dependencies(self) -> None:
+    def test_rejects_implicit_empty_plan_before_calling_dependencies(self) -> None:
         runtime = DeveloperRuntime(
             edit_executor=lambda: self.fail("workspace was accessed"),
             load_codebase_structure=lambda: self.fail("workspace was scanned"),
@@ -116,11 +122,35 @@ class DeveloperWorkflowTests(unittest.TestCase):
         )
 
         self.assertEqual(result["current_task_idx"], 0)
-        self.assertEqual(result["last_edit_result"].status, EditStatus.REJECTED)
         self.assertEqual(
-            result["last_edit_result"].error_code,
-            EditErrorCode.INVALID_PLAN,
+            result["developer_status"], DeveloperStatus.FAILED
         )
+        self.assertEqual(
+            result["developer_error_code"], DeveloperErrorCode.INVALID_PLAN
+        )
+
+    def test_accepts_explicit_no_change_plan_without_calling_dependencies(self) -> None:
+        runtime = DeveloperRuntime(
+            edit_executor=lambda: self.fail("workspace was accessed"),
+            load_codebase_structure=lambda: self.fail("workspace was scanned"),
+            research_atomic_task=lambda _: self.fail("research model was called"),
+            propose_existing_file_edit=lambda _: self.fail("edit model was called"),
+            propose_new_file=lambda _: self.fail("new-file model was called"),
+        )
+
+        result = create_developer_workflow(runtime, research_tools=[]).invoke(
+            {
+                "implementation_plan": ImplementationPlan(
+                    status=PlanStatus.NO_CHANGES,
+                    no_change_reason="Requested behavior is already present.",
+                    tasks=[],
+                )
+            }
+        )
+
+        self.assertEqual(result["developer_status"], DeveloperStatus.NO_CHANGES)
+        self.assertIsNone(result["developer_error_code"])
+        self.assertIsNone(result["last_edit_result"])
 
     def test_rejects_escaping_plan_path_before_model_call(self) -> None:
         with tempfile.TemporaryDirectory() as directory:
@@ -178,7 +208,7 @@ class DeveloperWorkflowTests(unittest.TestCase):
                 (root / "new.py").read_text(encoding="utf-8"), "value = 42\n"
             )
 
-    def test_refreshes_file_snapshot_between_atomic_edits(self) -> None:
+    def test_stages_same_file_edits_in_memory_and_commits_once(self) -> None:
         with tempfile.TemporaryDirectory() as directory:
             root = Path(directory)
             target = root / "app.py"
@@ -202,6 +232,7 @@ class DeveloperWorkflowTests(unittest.TestCase):
                     self.assertEqual(values["file_content"], "value = 1\n")
                     return search_replace_block("value = 1", "value = 2")
                 self.assertEqual(values["file_content"], "value = 2\n")
+                self.assertEqual(target.read_text(encoding="utf-8"), "value = 1\n")
                 return search_replace_block("value = 2", "value = 3")
 
             runtime = DeveloperRuntime(
@@ -218,6 +249,58 @@ class DeveloperWorkflowTests(unittest.TestCase):
 
             self.assertEqual(result["current_task_idx"], 1)
             self.assertEqual(target.read_text(encoding="utf-8"), "value = 3\n")
+            self.assertEqual(
+                result["last_edit_result"].task_ids,
+                ("task-1.step-1", "task-1.step-2"),
+            )
+
+    def test_rejects_entire_same_file_transaction_when_later_edit_fails(self) -> None:
+        with tempfile.TemporaryDirectory() as directory:
+            root = Path(directory)
+            target = root / "app.py"
+            target.write_text("value = 1\n", encoding="utf-8", newline="")
+            executor = DeveloperEditExecutor(WorkspaceEditor(root))
+            plan = ImplementationPlan(
+                tasks=[
+                    ImplementationTask(
+                        file_path="./workspace_repo/app.py",
+                        logical_task="连续更新",
+                        atomic_tasks=[
+                            AtomicTask(atomic_task="第一次更新"),
+                            AtomicTask(atomic_task="第二次失败"),
+                        ],
+                    )
+                ]
+            )
+
+            def propose(values):
+                if values["task"] == "第一次更新":
+                    return search_replace_block("value = 1", "value = 2")
+                self.assertEqual(values["file_content"], "value = 2\n")
+                return search_replace_block("missing", "value = 3")
+
+            runtime = DeveloperRuntime(
+                edit_executor=lambda: executor,
+                load_codebase_structure=lambda: "app.py",
+                research_atomic_task=lambda _: AIMessage(content="ready"),
+                propose_existing_file_edit=propose,
+                propose_new_file=lambda _: self.fail("new-file model was called"),
+            )
+
+            result = create_developer_workflow(runtime, research_tools=[]).invoke(
+                {"implementation_plan": plan}
+            )
+
+            self.assertEqual(result["developer_status"], DeveloperStatus.FAILED)
+            self.assertEqual(
+                result["last_edit_result"].error_code,
+                EditErrorCode.MATCH_NOT_FOUND,
+            )
+            self.assertEqual(
+                result["last_edit_result"].task_ids,
+                ("task-1.step-1", "task-1.step-2"),
+            )
+            self.assertEqual(target.read_text(encoding="utf-8"), "value = 1\n")
 
 
 if __name__ == "__main__":

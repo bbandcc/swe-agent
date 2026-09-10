@@ -89,3 +89,29 @@ AGENTS.md 已单独提交。上游源码和静态资源已导入并标记固定�
 - `uv sync --locked --offline` 因本机缓存缺少 `tree-sitter==0.21.3` 失败；随后按现有锁定版本联网同步依赖，没有升级业务依赖。
 - 当前 uv 版本要求将旧版 `uv.lock` 从 revision 1 更新到 revision 3；解析结果仍为 66 个锁定包，等待构建复核。
 - 当前开发依赖不含 ruff，`python -m ruff` 无法运行；本步只报告实际完成的测试、语法、构建和 diff 检查。
+
+## 新增任务：S1 完整性审计与修正
+
+- [x] 逐项复现并判定用户提出的 13 项问题，记录源码证据与范围判断。
+- [x] 核查成熟项目的路径限制、同文件事务和模型配置实现，固定参考版本。
+- [x] 通过公开 seam 写红测并完成 S1 内必要修正。
+- [x] 在本机存在密钥时执行最小真实 API smoke test；否则留下可复现命令和明确阻塞原因。
+- [x] 完成测试、语法、构建、静态检查、文档一致性和差异审计。
+- [x] 更新 S1 审计报告并使用中文 Conventional Commit 提交。
+
+### 已确认测试 seam
+
+- Architect 编译图：从 invalid research 状态观察后续节点，不断言私有调用次数。
+- 工作区文件接口：通过 `WorkspaceEditor`/同文件计划接口观察结构化结果与最终文件内容。
+- 检索工具公开调用接口：用越界路径调用并观察结构化拒绝。
+- Developer 编译图：观察 no-change、失败和同文件多 atomic task 的终态与文件内容。
+
+### 设计结论
+
+- 同文件事务由 editing 模块定义不可变 transaction，Developer 状态只保存并推进它；atomic proposal 顺序 stage，最后 commit 一次。
+- `ImplementationPlan.status=no_changes` 且有 reason 才是无需修改；默认 ready 的空计划仍为 invalid。
+- `EditProposal.task_id` 为必填，`EditResult.task_ids` 用于定位已 stage 与失败步骤，不引入完整 RunRecorder。
+
+### 当前状态
+
+13 项已完成源码审计，详细判断见 `research/s1-completeness-audit.md`。文件事务、统一路径 resolver、Architect 路由、no-change 语义、模型配置和错误分类已经落地。当前测试为 38 项：37 项通过，Windows junction 用例实际通过，1 项普通 symlink 用例因 WinError 1314 跳过。Python 语法、Prompt 渲染、图导入、diff whitespace 和离线 sdist/wheel 构建通过。真实 Anthropic smoke 脚本已添加，但本机未配置 `ANTHROPIC_API_KEY`，因此没有把模型更新声明为联网验证通过。

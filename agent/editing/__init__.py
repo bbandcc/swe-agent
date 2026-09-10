@@ -6,7 +6,9 @@ from agent.editing.models import (
     EditProposal,
     EditResult,
     EditStatus,
+    TransactionResult,
     WorkspaceSnapshot,
+    WorkspaceTransaction,
 )
 from agent.editing.workspace import WorkspaceEditor
 
@@ -16,6 +18,8 @@ __all__ = [
     "EditProposal",
     "EditResult",
     "EditStatus",
+    "TransactionResult",
     "WorkspaceSnapshot",
+    "WorkspaceTransaction",
     "WorkspaceEditor",
 ]

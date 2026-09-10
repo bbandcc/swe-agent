@@ -9,8 +9,10 @@ from agent.editing import (
     EditProposal,
     EditResult,
     EditStatus,
+    TransactionResult,
     WorkspaceEditor,
     WorkspaceSnapshot,
+    WorkspaceTransaction,
 )
 
 _SEARCH = "<<<<<<< SEARCH"
@@ -41,7 +43,68 @@ class DeveloperEditExecutor:
             )
         return self._editor.snapshot(relative_path)
 
-    def apply(self, snapshot: WorkspaceSnapshot, model_output: str) -> EditResult:
+    def begin(self, plan_path: str) -> TransactionResult:
+        relative_path = _workspace_relative_path(plan_path)
+        if relative_path is None:
+            return TransactionResult(
+                edit_result=EditResult(
+                    status=EditStatus.REJECTED,
+                    path=plan_path,
+                    error_code=EditErrorCode.PATH_INVALID,
+                    message=(
+                        "The implementation plan path must stay inside "
+                        "workspace_repo."
+                    ),
+                )
+            )
+        return self._editor.begin(relative_path)
+
+    def stage(
+        self,
+        transaction: WorkspaceTransaction,
+        model_output: str,
+        *,
+        task_id: str,
+    ) -> TransactionResult:
+        if not transaction.existed and not transaction.task_ids:
+            proposal = EditProposal(
+                task_id=task_id,
+                path=transaction.path,
+                operation=EditOperation.CREATE,
+                new_text=model_output,
+            )
+        else:
+            block = _parse_search_replace_block(model_output)
+            if block is None:
+                return TransactionResult(
+                    edit_result=EditResult(
+                        status=EditStatus.REJECTED,
+                        path=transaction.path,
+                        error_code=EditErrorCode.INVALID_MODEL_RESPONSE,
+                        message=(
+                            "Expected exactly one complete SEARCH/REPLACE block "
+                            "and no prose."
+                        ),
+                        before_hash=transaction.base_hash,
+                        task_ids=(*transaction.task_ids, task_id),
+                    )
+                )
+            proposal = EditProposal(
+                task_id=task_id,
+                path=transaction.path,
+                operation=EditOperation.EDIT,
+                base_hash=transaction.base_hash,
+                old_text=block.old_text,
+                new_text=block.new_text,
+            )
+        return self._editor.stage(transaction, proposal)
+
+    def commit(self, transaction: WorkspaceTransaction) -> EditResult:
+        return self._editor.commit(transaction)
+
+    def apply(
+        self, snapshot: WorkspaceSnapshot, model_output: str, *, task_id: str
+    ) -> EditResult:
         if snapshot.error_code is not None:
             return EditResult(
                 status=EditStatus.REJECTED,
@@ -49,10 +112,12 @@ class DeveloperEditExecutor:
                 error_code=snapshot.error_code,
                 message=snapshot.message,
                 before_hash=snapshot.content_hash,
+                task_ids=(task_id,),
             )
         if not snapshot.exists:
             return self._editor.apply(
                 EditProposal(
+                    task_id=task_id,
                     path=snapshot.path,
                     operation=EditOperation.CREATE,
                     new_text=model_output,
@@ -67,9 +132,11 @@ class DeveloperEditExecutor:
                 error_code=EditErrorCode.INVALID_MODEL_RESPONSE,
                 message="Expected exactly one complete SEARCH/REPLACE block and no prose.",
                 before_hash=snapshot.content_hash,
+                task_ids=(task_id,),
             )
         return self._editor.apply(
             EditProposal(
+                task_id=task_id,
                 path=snapshot.path,
                 operation=EditOperation.EDIT,
                 base_hash=snapshot.content_hash,

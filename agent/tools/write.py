@@ -1,70 +1,100 @@
-from langchain_core.tools import tool
+"""Workspace structure and compatibility write tools."""
+
 import os
-from gitingest import ingest
+from pathlib import Path
+
+from langchain_core.tools import tool
+
+from agent.editing import EditOperation, EditProposal, EditStatus, WorkspaceEditor
+from agent.tools.results import tool_error, tool_rejection, tool_success
+from agent.workspace import default_workspace_resolver
+
+
+def _is_link_or_junction(path: Path) -> bool:
+    return path.is_symlink() or (
+        hasattr(path, "is_junction") and path.is_junction()
+    )
+
+
+def _safe_tree(directory: Path, display_root: str) -> str:
+    lines = [display_root]
+    for root, directories, files in os.walk(directory, followlinks=False):
+        root_path = Path(root)
+        directories[:] = sorted(
+            name
+            for name in directories
+            if not _is_link_or_junction(root_path / name)
+        )
+        files = sorted(
+            name
+            for name in files
+            if not _is_link_or_junction(root_path / name)
+        )
+        relative = root_path.relative_to(directory)
+        depth = len(relative.parts)
+        if relative.parts:
+            lines.append(f"{'  ' * depth}{relative.name}/")
+        lines.extend(f"{'  ' * (depth + 1)}{name}" for name in files)
+    return "\n".join(lines)
 
 
 @tool(parse_docstring=True)
-def create_file(path: str, content: str) -> str:
-    """Create a new file at the specified path with the given content. If the file already exists,
-    returns an error message instead of overwriting.
+def create_file(path: str, content: str) -> dict[str, object]:
+    """Create a UTF-8 text file through the validated workspace editor.
 
     Args:
-        path: The path from the root of the folder to the file
-        content: The text content to write to the file
-
-    Returns:
-        str: A success message with the file path, or an error message if creation failed
+        path: Workspace-relative destination path.
+        content: Complete UTF-8 text content.
     """
-    try:
-        # Check if file already exists
-        # Ensure the directory exists
-        os.makedirs(os.path.dirname(path), exist_ok=True)
-
-        with open(path, "w", encoding="utf-8") as f:
-            f.write(content)
-        return f"Successfully created file at {path}"
-    except Exception as e:
-        return f"Error creating file: {str(e)}"
+    resolver = default_workspace_resolver()
+    root = resolver.resolve_directory(".")
+    if not root.ok or root.path is None:
+        return tool_rejection(root)
+    result = WorkspaceEditor(root.path).apply(
+        EditProposal(
+            task_id="tool.create_file",
+            path=path,
+            operation=EditOperation.CREATE,
+            new_text=content,
+        )
+    )
+    if result.status is not EditStatus.APPLIED:
+        return tool_error(
+            path,
+            result.error_code.value if result.error_code else result.status.value,
+            result.message,
+        )
+    return tool_success(path, result.diff)
 
 
 @tool(parse_docstring=True)
-def write_to_file(path: str, content: str) -> str:
-    """Override the content of an existing file at the specified path. If the file doesn't exist,
-    returns an error message instead of creating it.
+def write_to_file(path: str, content: str) -> dict[str, object]:
+    """Reject unsafe whole-file overwrite requests.
 
     Args:
-        path: The path to the file to override
-        content: The new text content that will completely replace the current content
-
-    Returns:
-        str: A success message with the file path, or an error message if writing failed
+        path: Workspace file that would be overwritten.
+        content: Proposed complete replacement content.
     """
-    try:
-        if not os.path.exists(path):
-            return f"Error: File {path} does not exist"
-
-        with open(path, "w", encoding="utf-8") as f:
-            f.write(content)
-        return f"Successfully overridden file at {path}"
-    except Exception as e:
-        return f"Error overriding file: {str(e)}"
+    return tool_error(
+        path,
+        "unsupported_operation",
+        "Whole-file overwrite is disabled; use a validated SEARCH/REPLACE proposal.",
+    )
 
 
 @tool(parse_docstring=True)
-def get_files_structure(directory: str = "./workspace_repo") -> str:
-    """Generate a JSON representation of the file and directory structure starting from the specified directory.
-    Uses gitingest to analyze the codebase structure.
+def get_files_structure(directory: str = ".") -> dict[str, object]:
+    """Return a workspace-bound file tree without following links.
 
     Args:
-        directory: The root directory to start scanning from (defaults to "./workspace_repo")
-
-    Returns:
-        str: A string representing the hierarchical directory structure and file listing
+        directory: Workspace directory, relative or absolute within the workspace.
     """
-    summary, tree, content = ingest(directory)
-    return tree
+    resolution = default_workspace_resolver().resolve_directory(directory)
+    if not resolution.ok or resolution.path is None:
+        return tool_rejection(resolution)
+    content = _safe_tree(resolution.path, resolution.relative_path or ".")
+    return tool_success(resolution.relative_path or ".", content)
 
 
-# List of available tools
 write_tools = [create_file, write_to_file, get_files_structure]
-write_tools_map = {tool.name: tool for tool in write_tools}
+write_tools_map = {workspace_tool.name: workspace_tool for workspace_tool in write_tools}

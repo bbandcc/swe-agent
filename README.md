@@ -8,7 +8,7 @@
 
 ## Evolution status
 
-This repository evolves the original LangTalks project through small, independently tested changes. The first two slices add a deterministic `WorkspaceEditor` and connect it to the LangGraph Developer workflow. Model output is now treated as a proposal: code validates the workspace path, source hash, unique SEARCH/REPLACE match, encoding, and write result. The graph advances only after an applied edit; rejected and no-op edits stop with a structured `EditResult`.
+This repository evolves the original LangTalks project through small, independently tested changes. S1 adds a shared workspace boundary and a deterministic file transaction to the Architect and Developer workflows. Model output is treated as a proposal: code validates the path, source hash, unique SEARCH/REPLACE match, encoding, and task identity. Atomic proposals for one file are staged on an in-memory working copy; the final version is committed once only when every proposal succeeds.
 
 Run the deterministic and fake-model integration tests with:
 
@@ -30,13 +30,13 @@ A sophisticated AI-powered software engineering agent that automates code implem
 
 - **Intelligent Code Planning**: AI architect analyzes requirements and creates detailed implementation plans
 - **Automated Code Generation**: Developer agent executes plans with precise file modifications
-- **Multi-Agent Workflow**: Separate planning and implementation phases for better reliability
-- **Codebase Understanding**: Advanced code analysis using tree-sitter and semantic search
-- **Incremental Development**: Atomic task breakdown for safer, more manageable changes
+- **Multi-Agent Workflow**: Separate planning and implementation roles for better reliability
+- **Codebase Understanding**: Workspace-bound literal search and tree-sitter code inspection
+- **Incremental Development**: Atomic task proposals grouped into file transactions
 
 ## 🏗️ Architecture
 
-The system uses a two-stage LangGraph workflow:
+The system uses a two-role LangGraph workflow:
 
 ### 1. Architect Agent - Research & Planning
 ![Architect Agent](./static/architect.png)
@@ -45,7 +45,7 @@ The architect agent:
 - Researches the codebase structure and patterns
 - Analyzes requirements and creates hypotheses
 - Generates detailed implementation plans with atomic tasks
-- Uses tools for code search and semantic understanding
+- Uses workspace-bound keyword search and tree-sitter structure tools
 
 ### 2. Developer Agent - Implementation
 ![Developer Agent](./static/developer.png)
@@ -65,7 +65,7 @@ User Request → Architect (Research & Plan) → Developer (Implement) → Resul
 - **State Management**: Structured data flow between agents using Pydantic models
 - **Tool Integration**: File system operations, code search, and structure analysis
 - **Research Pipeline**: Hypothesis-driven exploration of codebases
-- **Atomic Execution**: Granular tasks for reliable implementation
+- **File Transactions**: Sequential in-memory staging followed by one checked commit
 
 ## 🔄 Agent State Management
 
@@ -80,12 +80,16 @@ class AgentState(BaseModel):
     implementation_research_scratchpad: Annotated[list[AnyMessage], add_messages]
     implementation_plan: Optional[ImplementationPlan] = None
     last_edit_result: Optional[EditResult] = None
+    developer_status: DeveloperStatus = DeveloperStatus.PENDING
+    developer_error_code: Optional[DeveloperErrorCode] = None
 ```
 
 **Fields:**
 - `implementation_research_scratchpad`: Message history from research and planning phase
 - `implementation_plan`: Structured plan created by architect agent for developer execution
 - `last_edit_result`: Final applied, rejected, or no-op result returned by the Developer
+- `developer_status`: Running, completed, explicit no-change, or failed terminal state
+- `developer_error_code`: Developer-level plan/state error, separate from file-edit errors
 
 ### Architect Agent State (`SoftwareArchitectState`)
 
@@ -120,8 +124,10 @@ class SoftwareDeveloperState(BaseModel):
     atomic_implementation_research: Annotated[list[AnyMessage], add_messages_with_clear]
     codebase_structure: Optional[str] = None
     current_file_snapshot: Optional[WorkspaceSnapshot] = None
+    current_file_transaction: Optional[WorkspaceTransaction] = None
     current_file_content: Optional[str] = None
     last_edit_result: Optional[EditResult] = None
+    developer_status: DeveloperStatus = DeveloperStatus.PENDING
 ```
 
 **Fields:**
@@ -132,10 +138,11 @@ class SoftwareDeveloperState(BaseModel):
 - `codebase_structure`: Current snapshot of target codebase structure
 - `current_file_content`: Contents of file being modified
 - `current_file_snapshot`: Validated path, content, and hash captured before model generation
+- `current_file_transaction`: Original file plus the current in-memory working copy and staged task IDs
 - `last_edit_result`: Structured result used to decide whether the graph may advance
 
 **Workflow:**
-1. Validate plan and workspace snapshot → Research implementation → Generate one proposal → Validate and apply → Advance only on success
+1. Validate plan → Begin a file transaction → Research and stage each atomic proposal in memory → Commit once → Advance only on success
 
 ### Shared Entities
 
@@ -144,9 +151,11 @@ These Pydantic models provide the data contracts between agents:
 #### `ImplementationPlan`
 ```python
 class ImplementationPlan(BaseModel):
+    status: PlanStatus = PlanStatus.READY
+    no_change_reason: str = ""
     tasks: List[ImplementationTask]
 ```
-The top-level plan containing all file-level implementation tasks.
+The top-level plan containing all file-level implementation tasks. An empty list is valid only when `status="no_changes"` and `no_change_reason` explains why no edit is required.
 
 #### `ImplementationTask`
 ```python
@@ -169,7 +178,7 @@ The smallest unit of implementation - a single code change.
 ```python
 WorkspaceEditor.apply(EditProposal) -> EditResult
 ```
-`EditProposal` carries the workspace-relative path, operation, baseline hash, old text, and new text. `EditResult` reports applied, rejected, or no-op with error codes, hashes, and the actual unified diff.
+`EditProposal` carries a stable task ID, workspace-relative path, operation, baseline hash, old text, and new text. `EditResult` reports applied, rejected, or no-op with task IDs, error codes, hashes, and the actual unified diff.
 
 ### State Flow Example
 
@@ -209,44 +218,41 @@ Final Result: Modified codebase
 - **Traceability**: Complete message history for debugging
 - **Explicit outcomes**: Rejected edits remain visible in graph state
 - **Modularity**: Each agent manages its own concerns
-- **Deterministic writes**: A single validated edit is committed atomically at the file level
+- **Deterministic writes**: All proposals for one file are validated before one final replace or create
 
 ## 📋 Prerequisites
 
 - Python 3.12+
 - uv (Python package manager)
-- Anthropic API key (Claude Sonnet 4)
+- Anthropic API key (the default is Claude Sonnet 4.6 and can be changed with `ANTHROPIC_MODEL`)
 
 ## ⚡ Quick Start
 
 1. **Clone the repository**
-```bash
-git clone https://github.com/langtalks/swe-agent-langgraph.git
-cd swe-agent-langgraph
+```powershell
+git clone https://github.com/langtalks/swe-agent.git
+cd swe-agent
 ```
 
 2. **Set up environment**
-```bash
+```powershell
 # Install dependencies with uv
 uv sync
 
 # Create environment file
-cp .env.example .env.local
-# Add your Anthropic API key and langsmith to .env
+Copy-Item .env.example .env
+# Add your Anthropic API key and optional LangSmith settings to .env
 ```
 
 3. **Clone a repo to ./workspace_repo**
-```bash
+```powershell
 git clone https://github.com/browser-use/browser-use ./workspace_repo
 ```
 
 4. **Run the agent**
-```bash
-# Activate environment
-source .venv/bin/activate
-
+```powershell
 # Start LangGraph server
-langgraph dev
+uv run langgraph dev
 
 ```
 
@@ -307,6 +313,13 @@ uv run python -m unittest discover -s tests -v
 
 # Run specific test modules
 uv run python -m unittest tests.developer.test_workflow -v
+```
+
+Run one real request against the configured production model after setting
+`ANTHROPIC_API_KEY` in `.env`:
+
+```powershell
+uv run python scripts/smoke_anthropic.py
 ```
 
 ## 📁 Main Directory Files
@@ -376,7 +389,7 @@ We welcome contributions! This project aims to push the boundaries of AI-powered
 2. **Create a feature branch** (`git checkout -b feature/amazing-feature`)
 3. **Make your changes** following the existing code patterns
 4. **Add tests** for new functionality
-5. **Ensure tests pass** (`uv run pytest`)
+5. **Ensure tests pass** (`uv run python -m unittest discover -s tests -v`)
 6. **Update documentation** if needed
 7. **Commit your changes** (`git commit -m 'Add amazing feature'`)
 8. **Push to the branch** (`git push origin feature/amazing-feature`)
@@ -386,17 +399,14 @@ We welcome contributions! This project aims to push the boundaries of AI-powered
 
 ```bash
 # Clone your fork
-git clone https://github.com/langtalks/swe-agent-langgraph.git
-cd swe-agent-langgraph
+git clone https://github.com/langtalks/swe-agent.git
+cd swe-agent
 
 # Set up development environment
-uv sync --dev
-
-# Install pre-commit hooks (optional but recommended)
-pre-commit install
+uv sync
 
 # Run tests to ensure everything works
-uv run pytest
+uv run python -m unittest discover -s tests -v
 ```
 
 ## 📊 Technical Details
@@ -404,12 +414,12 @@ uv run pytest
 ### Dependencies
 - **LangGraph**: Multi-agent workflow orchestration
 - **LangChain**: AI integration and tool management
-- **Anthropic**: Claude Sonnet 4 for intelligent reasoning
+- **Anthropic**: Configurable Claude model integration; production default is Sonnet 4.6
 - **Tree-sitter**: Robust code parsing and analysis
 - **Pydantic**: Type-safe data validation and serialization
 
 ### Performance Considerations
-- Atomic task execution for reliability
+- File-level transactions for atomic-task reliability
 - Efficient code analysis with tree-sitter
 - Structured state management for scalability
 - Tool-based architecture for extensibility
@@ -435,8 +445,8 @@ This project is licensed under the MIT License - see the [LICENSE](LICENSE) file
 ## 📞 Support & Community
 
 - **LangTalks Homepage**: Visit [www.langtalks.ai](https://www.langtalks.ai) for community resources and support
-- **Issues**: Report bugs and request features via [GitHub Issues](https://github.com/langtalks/swe-agent-langgraph/issues)
-- **Discussions**: Join conversations in [GitHub Discussions](https://github.com/langtalks/swe-agent-langgraph/discussions)
+- **Issues**: Report bugs and request features via [GitHub Issues](https://github.com/langtalks/swe-agent/issues)
+- **Discussions**: Join conversations in [GitHub Discussions](https://github.com/langtalks/swe-agent/discussions)
 - **Documentation**: Complete documentation is available in this README
 
 ---

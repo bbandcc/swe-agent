@@ -45,6 +45,6 @@
 3. 每次提交必须功能完整、测试通过、业务可用；使用 Conventional Commits 格式和中文主题，不添加 `Co-Authored-By`。
 4. 每次完成后说明：改了什么、为什么、参考依据、验证结果、已知限制和下一步建议。
 
-## 当前第一个切片
+## 当前 S1 切片
 
-公开 seam 为 `WorkspaceEditor.apply(proposal) -> EditResult`。`EditProposal` 描述工作区相对路径、操作、基线哈希、旧文本和新文本；`EditResult` 明确 applied、rejected 或 noop，并带错误码与前后哈希。测试只通过此 interface 观察返回结果和文件内容。
+公开的单步 seam 保持为 `WorkspaceEditor.apply(proposal) -> EditResult`；同文件多步执行使用 `begin(path) → stage(transaction, proposal)... → commit(transaction)`。每个 proposal 必须带 task identity；stage 只更新内存 working copy，全部成功后才写盘一次。Architect/Developer 运行依赖和模型配置从外部注入，所有模型可调用的读取工具统一经过 workspace path resolver。测试只通过公开 interface、编译图事件、结构化结果和最终文件内容验收。

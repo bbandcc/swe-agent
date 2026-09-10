@@ -1,232 +1,276 @@
-from typing import Optional
+"""Workspace-bound tree-sitter code inspection tools."""
+
+from pathlib import Path
 
 from langchain_core.tools import tool
 from tree_sitter_languages import get_language, get_parser
 
-@tool(parse_docstring=True)
-def get_code_definitions(file_path: str) -> str:
-    """
-    Extract function and class definitions from a file.
-    Shows signatures with their actual source file line numbers and ... between definitions.
+from agent.tools.results import tool_error, tool_rejection, tool_success
+from agent.workspace import default_workspace_resolver
 
-    Args:
-        file_path: Path to the source file to analyze
-    """
-    # Determine language
-    suffix = file_path.split(".")[-1]
-    lang_map = {
-        "py": "python",
-        "js": "javascript",
-        "jsx": "javascript",
-        "ts": "typescript",
-        "tsx": "typescript"
-    }
-    lang = lang_map.get(suffix)
-    if not lang:
-        return f"Unsupported file type: {suffix}"
+_LANGUAGE_BY_SUFFIX = {
+    ".py": "python",
+    ".js": "javascript",
+    ".jsx": "javascript",
+    ".ts": "typescript",
+    ".tsx": "typescript",
+}
 
-    # Initialize parser
-    language = get_language(lang)
-    parser = get_parser(lang)
 
-    # Read file content
-    with open(file_path, "rb") as f:
-        code = f.read()
+def _read_code(file_path: Path) -> bytes:
+    return file_path.read_bytes()
+
+
+def _definitions(file_path: Path, display_path: str) -> str:
+    language_name = _LANGUAGE_BY_SUFFIX.get(file_path.suffix.lower())
+    if language_name is None:
+        raise ValueError(f"Unsupported file type: {file_path.suffix or '<none>'}")
+    language = get_language(language_name)
+    parser = get_parser(language_name)
+    code = _read_code(file_path)
     tree = parser.parse(code)
+    query = language.query(
+        """
+        (class_definition
+            name: (identifier) @name.definition.class
+            body: (block
+                (function_definition
+                    name: (identifier) @name.definition.method
+                    parameters: (parameters) @params.definition.method)?)
+            @body.definition.class)
 
-    # Define query for functions and classes
-    query_str = """
-    (class_definition
-        name: (identifier) @name.definition.class
-        body: (block
-            (function_definition
-                name: (identifier) @name.definition.method
-                parameters: (parameters) @params.definition.method)?) @body.definition.class)
-
-    (function_definition
-        name: (identifier) @name.definition.function
-        parameters: (parameters) @params.definition.function
-        body: (block) @body.definition.function)
-    """
-
-    query = language.query(query_str)
+        (function_definition
+            name: (identifier) @name.definition.function
+            parameters: (parameters) @params.definition.function
+            body: (block) @body.definition.function)
+        """
+    )
     captures = query.captures(tree.root_node)
-
-    # Process captures to extract definitions
-    output_lines = [f"\n{file_path}:\n"]
-    current_def = {}
+    output_lines = [f"\n{display_path}:\n"]
+    current_definition: dict[str, object] = {}
     in_class = False
     last_line_number = 0
-
     for node, tag in captures:
         current_line = node.start_point[0] + 1
-
-        # Add ... between definitions if there's a gap
         if last_line_number > 0 and current_line > last_line_number + 1:
             output_lines.append("...")
-
         if tag == "name.definition.class":
             in_class = True
-            output_lines.append(f"{current_line}| class {node.text.decode('utf-8')}:")
+            output_lines.append(
+                f"{current_line}| class {node.text.decode('utf-8')}:"
+            )
             last_line_number = current_line
         elif tag == "name.definition.method" and in_class:
-            method_name = node.text.decode('utf-8')
-            current_def['method_name'] = method_name
-            current_def['line'] = current_line
+            current_definition["method_name"] = node.text.decode("utf-8")
+            current_definition["line"] = current_line
         elif tag == "params.definition.method" and in_class:
-            params = node.text.decode('utf-8')
-            line_num = current_def['line']
-            output_lines.append(f"{line_num}|     def {current_def['method_name']}{params}:")
-            last_line_number = line_num
+            line_number = int(current_definition["line"])
+            output_lines.append(
+                f"{line_number}|     def "
+                f"{current_definition['method_name']}{node.text.decode('utf-8')}:"
+            )
+            last_line_number = line_number
         elif tag == "body.definition.method":
-            line_num = node.start_point[0] + 1
-            output_lines.append(f"{line_num}|         ...")
-            last_line_number = line_num
+            line_number = node.start_point[0] + 1
+            output_lines.append(f"{line_number}|         ...")
+            last_line_number = line_number
         elif tag == "body.definition.class":
             in_class = False
         elif tag == "name.definition.function":
-            current_def['name'] = node.text.decode('utf-8')
-            current_def['line'] = current_line
+            current_definition["name"] = node.text.decode("utf-8")
+            current_definition["line"] = current_line
         elif tag == "params.definition.function":
-            params = node.text.decode('utf-8')
-            line_num = current_def['line']
-            output_lines.append(f"{line_num}| def {current_def['name']}{params}:")
-            last_line_number = line_num
+            line_number = int(current_definition["line"])
+            output_lines.append(
+                f"{line_number}| def "
+                f"{current_definition['name']}{node.text.decode('utf-8')}:"
+            )
+            last_line_number = line_number
         elif tag == "body.definition.function":
-            line_num = node.start_point[0] + 1
-            output_lines.append(f"{line_num}|     ...")
-            last_line_number = line_num
-
+            line_number = node.start_point[0] + 1
+            output_lines.append(f"{line_number}|     ...")
+            last_line_number = line_number
     return "\n".join(output_lines)
 
-@tool(parse_docstring=True)
-def get_function_implementation(file_path: str, function_name: str) -> Optional[str]:
-    """
-    Extract the implementation of a specific function or method from a file.
 
-    Args:
-        file_path: Path to the source file
-        function_name: Name of the function to find
-    """
-    # Determine language
-    suffix = file_path.split(".")[-1]
-    lang_map = {
-        "py": "python",
-        "js": "javascript",
-        "jsx": "javascript",
-        "ts": "typescript",
-        "tsx": "typescript"
-    }
-    lang = lang_map.get(suffix)
-    if not lang:
-        return None
-
-    # Initialize parser
-    language = get_language(lang)
-    parser = get_parser(lang)
-
-    # Read file content
-    with open(file_path, "rb") as f:
-        code = f.read()
+def _function_implementation(
+    file_path: Path, display_path: str, function_name: str
+) -> str | None:
+    language_name = _LANGUAGE_BY_SUFFIX.get(file_path.suffix.lower())
+    if language_name is None:
+        raise ValueError(f"Unsupported file type: {file_path.suffix or '<none>'}")
+    language = get_language(language_name)
+    parser = get_parser(language_name)
+    code = _read_code(file_path)
     tree = parser.parse(code)
+    query = language.query(
+        """
+        (function_definition
+            name: (identifier) @name.function
+            parameters: (parameters) @params.function
+            body: (block) @body.function)
 
-    # Define query for functions and methods
-    query_str = """
-    (function_definition
-        name: (identifier) @name.function
-        parameters: (parameters) @params.function
-        body: (block) @body.function)
-
-    (class_definition
-        body: (block
-            (function_definition
-                name: (identifier) @name.method
-                parameters: (parameters) @params.method
-                body: (block) @body.method)))
-    """
-
-    query = language.query(query_str)
-    captures = query.captures(tree.root_node)
-
-    # Find the specific function
-    current_def = {}
-    for node, tag in captures:
-        if tag in ["name.function", "name.method"]:
-            if node.text.decode('utf-8') == function_name:
-                current_def['name'] = node.text.decode('utf-8')
-                current_def['line'] = node.start_point[0] + 1
-        elif tag in ["params.function", "params.method"] and current_def.get('name') == function_name:
-            current_def['params'] = node.text.decode('utf-8')
-        elif tag in ["body.function", "body.method"] and current_def.get('name') == function_name:
-            # Extract the full implementation
-            implementation = code[node.start_byte:node.end_byte].decode('utf-8')
-            lines = implementation.split('\n')
-
-            # Format output
-            output_lines = [f"\n{file_path}:\n"]
-            start_line = current_def['line']
-
-            # Add function signature
-            output_lines.append(f"{start_line}| def {current_def['name']}{current_def['params']}:")
-
-            # Add implementation lines with correct line numbers
-            for i, line in enumerate(lines):
-                line_num = start_line + i + 1
-                # Handle indentation
-                indent = '    ' if not line.strip() else line[:len(line) - len(line.lstrip())]
-                output_lines.append(f"{line_num}|{indent}{line.lstrip()}")
-
-            return "\n".join(output_lines)
-
+        (class_definition
+            body: (block
+                (function_definition
+                    name: (identifier) @name.method
+                    parameters: (parameters) @params.method
+                    body: (block) @body.method)))
+        """
+    )
+    current: dict[str, object] = {}
+    for node, tag in query.captures(tree.root_node):
+        if tag in {"name.function", "name.method"}:
+            if node.text.decode("utf-8") == function_name:
+                current = {
+                    "name": function_name,
+                    "line": node.start_point[0] + 1,
+                }
+        elif tag in {"params.function", "params.method"} and current:
+            current["params"] = node.text.decode("utf-8")
+        elif tag in {"body.function", "body.method"} and current:
+            body = code[node.start_byte : node.end_byte].decode("utf-8")
+            start_line = int(current["line"])
+            output = [
+                f"\n{display_path}:\n",
+                f"{start_line}| def {function_name}{current['params']}:",
+            ]
+            for index, line in enumerate(body.split("\n")):
+                line_number = start_line + index + 1
+                indent = (
+                    "    "
+                    if not line.strip()
+                    else line[: len(line) - len(line.lstrip())]
+                )
+                output.append(f"{line_number}|{indent}{line.lstrip()}")
+            return "\n".join(output)
     return None
 
-@tool(parse_docstring=True)
-def get_code_definitions_multi(file_paths: list[str]) -> str:
-    """
-    Extract function and class definitions from multiple files.
-    Shows signatures with their actual source file line numbers and ... between definitions.
 
-    Args:
-        file_paths: List of file paths to analyze
-     """
-    all_definitions = []
+def _resolve_file(file_path: str):
+    return default_workspace_resolver().resolve_file(file_path)
 
-    for file_path in file_paths:
-        definitions = get_code_definitions(file_path)
-        if definitions and not definitions.startswith("Unsupported"):
-            all_definitions.append(definitions)
-
-    return "\n".join(all_definitions)
 
 @tool(parse_docstring=True)
-def get_raw_file_content(file_path: str) -> str:
-    """
-    Get the raw content of the file. good for a non-code files
+def get_code_definitions(file_path: str) -> dict[str, object]:
+    """Extract function and class signatures from one source file.
 
     Args:
-        file_path: file path to read
-     """
-    with open(file_path, "rb") as f:
-        return f.read().decode('utf-8')
+        file_path: Workspace file, relative or absolute within the workspace.
+    """
+    resolution = _resolve_file(file_path)
+    if not resolution.ok or resolution.path is None:
+        return tool_rejection(resolution)
+    try:
+        content = _definitions(
+            resolution.path, resolution.relative_path or file_path
+        )
+    except ValueError as error:
+        return tool_error(file_path, "unsupported_file_type", str(error))
+    except UnicodeDecodeError:
+        return tool_error(file_path, "encoding_error", "The file is not valid UTF-8.")
+    except OSError as error:
+        return tool_error(file_path, "read_failed", f"Could not read file: {error}")
+    return tool_success(resolution.relative_path or file_path, content)
 
-# List of available tools
-codemap_tools = [get_code_definitions, get_function_implementation, get_code_definitions_multi, get_raw_file_content]
-codemap_tools_map = {tool.name: tool for tool in codemap_tools}
 
-def main():
-    # Example usage
-    file_path = "../../agent/tools/codemap.py"  # Using this file as an example
-    code_map = get_code_definitions.invoke({"file_path":file_path})
-    print(code_map)
+@tool(parse_docstring=True)
+def get_function_implementation(
+    file_path: str, function_name: str
+) -> dict[str, object]:
+    """Extract one function or method implementation from a source file.
 
-    # Get specific function implementation
-    implementation = get_function_implementation.invoke({"file_path":file_path, "function_name":"get_code_definitions"})
-    print(implementation)
+    Args:
+        file_path: Workspace file, relative or absolute within the workspace.
+        function_name: Function or method name to find.
+    """
+    resolution = _resolve_file(file_path)
+    if not resolution.ok or resolution.path is None:
+        return tool_rejection(resolution)
+    try:
+        content = _function_implementation(
+            resolution.path,
+            resolution.relative_path or file_path,
+            function_name,
+        )
+    except ValueError as error:
+        return tool_error(file_path, "unsupported_file_type", str(error))
+    except UnicodeDecodeError:
+        return tool_error(file_path, "encoding_error", "The file is not valid UTF-8.")
+    except OSError as error:
+        return tool_error(file_path, "read_failed", f"Could not read file: {error}")
+    if content is None:
+        return tool_error(
+            file_path,
+            "definition_not_found",
+            f"Function or method {function_name!r} was not found.",
+        )
+    return tool_success(resolution.relative_path or file_path, content)
 
-    # Example of multi-file definitions
-    files = ["../../agent/tools/codemap.py", "../../agent/tools/search.py"]
-    multi_defs = get_code_definitions_multi.invoke({"file_paths":files})
-    print(multi_defs)
 
-if __name__ == "__main__":
-    main()
+@tool(parse_docstring=True)
+def get_code_definitions_multi(file_paths: list[str]) -> dict[str, object]:
+    """Extract definitions from several workspace files.
+
+    Args:
+        file_paths: Workspace files to inspect.
+    """
+    resolutions = [_resolve_file(file_path) for file_path in file_paths]
+    for resolution in resolutions:
+        if not resolution.ok:
+            return tool_rejection(resolution)
+    contents: list[str] = []
+    for resolution in resolutions:
+        assert resolution.path is not None
+        try:
+            contents.append(
+                _definitions(
+                    resolution.path,
+                    resolution.relative_path or resolution.requested_path,
+                )
+            )
+        except ValueError as error:
+            return tool_error(
+                resolution.requested_path, "unsupported_file_type", str(error)
+            )
+        except UnicodeDecodeError:
+            return tool_error(
+                resolution.requested_path,
+                "encoding_error",
+                "The file is not valid UTF-8.",
+            )
+        except OSError as error:
+            return tool_error(
+                resolution.requested_path,
+                "read_failed",
+                f"Could not read file: {error}",
+            )
+    return tool_success("<multiple>", "\n".join(contents))
+
+
+@tool(parse_docstring=True)
+def get_raw_file_content(file_path: str) -> dict[str, object]:
+    """Read one UTF-8 text file from the workspace.
+
+    Args:
+        file_path: Workspace file, relative or absolute within the workspace.
+    """
+    resolution = _resolve_file(file_path)
+    if not resolution.ok or resolution.path is None:
+        return tool_rejection(resolution)
+    try:
+        content = resolution.path.read_text(encoding="utf-8")
+    except UnicodeDecodeError:
+        return tool_error(file_path, "encoding_error", "The file is not valid UTF-8.")
+    except OSError as error:
+        return tool_error(file_path, "read_failed", f"Could not read file: {error}")
+    return tool_success(resolution.relative_path or file_path, content)
+
+
+codemap_tools = [
+    get_code_definitions,
+    get_function_implementation,
+    get_code_definitions_multi,
+    get_raw_file_content,
+]
+codemap_tools_map = {workspace_tool.name: workspace_tool for workspace_tool in codemap_tools}

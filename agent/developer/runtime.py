@@ -8,6 +8,7 @@ from typing import Any
 from langchain_anthropic import ChatAnthropic
 from langchain_core.output_parsers import StrOutputParser
 
+from agent.config import anthropic_model_name
 from agent.developer.editing import DeveloperEditExecutor
 from agent.editing import WorkspaceEditor
 from agent.tools.codemap import codemap_tools
@@ -32,7 +33,7 @@ def _research_runnable():
     prompt = markdown_to_prompt_template(
         "agent/developer/prompts/get_clear_implementation_plan.md"
     )
-    return prompt | ChatAnthropic(model="claude-sonnet-4-20250514").bind_tools(
+    return prompt | ChatAnthropic(model=anthropic_model_name()).bind_tools(
         search_tools + codemap_tools
     )
 
@@ -44,7 +45,7 @@ def _edit_runnable():
     )
     return (
         prompt
-        | ChatAnthropic(model="claude-sonnet-4-20250514")
+        | ChatAnthropic(model=anthropic_model_name())
         | StrOutputParser()
     )
 
@@ -56,7 +57,7 @@ def _create_runnable():
     )
     return (
         prompt
-        | ChatAnthropic(model="claude-sonnet-4-20250514")
+        | ChatAnthropic(model=anthropic_model_name())
         | StrOutputParser()
     )
 
@@ -66,10 +67,13 @@ def default_developer_runtime() -> DeveloperRuntime:
         edit_executor=lambda: DeveloperEditExecutor(
             WorkspaceEditor("./workspace_repo")
         ),
-        load_codebase_structure=lambda: get_files_structure.invoke(
-            {"directory": "./workspace_repo"}
-        ),
+        load_codebase_structure=_load_codebase_structure,
         research_atomic_task=lambda values: _research_runnable().invoke(values),
         propose_existing_file_edit=lambda values: _edit_runnable().invoke(values),
         propose_new_file=lambda values: _create_runnable().invoke(values),
     )
+
+
+def _load_codebase_structure() -> str:
+    result = get_files_structure.invoke({"directory": "."})
+    return str(result.get("content", result))

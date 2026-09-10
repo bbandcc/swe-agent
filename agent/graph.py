@@ -1,6 +1,7 @@
 from agent.architect.graph import swe_architect
 from agent.common.entities import ImplementationPlan
 from agent.developer.graph import swe_developer
+from agent.developer.state import DeveloperErrorCode, DeveloperStatus
 from agent.editing import EditResult
 from pydantic import BaseModel, Field
 from langchain_core.messages import AnyMessage
@@ -11,6 +12,9 @@ class AgentState(BaseModel):
     implementation_research_scratchpad: Annotated[list[AnyMessage], add_messages] = Field(default_factory=list)
     implementation_plan: Optional[ImplementationPlan] = Field(None, description="The implementation plan to be executed")
     last_edit_result: Optional[EditResult] = Field(None, description="The final Developer edit outcome")
+    developer_status: DeveloperStatus = Field(DeveloperStatus.PENDING)
+    developer_error_code: Optional[DeveloperErrorCode] = Field(None)
+    developer_message: str = Field("")
 
 
 def create_workflow_graph():

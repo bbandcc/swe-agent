@@ -25,6 +25,7 @@ Your job now is to break the research finding to atomic step following this rule
 4. You must add any additional information from the research that can help the developer complete the task.
 5. Assume that after you hand to the developer the plan he cannot communicate back to you so be verbose as you can
 6. Try to minimize the number of file changes and the complexity of the changes but make sure you have a plan that finishes the task
+7. If the requested behavior is already fully present and no file needs to change, set status to `no_changes`, provide a concrete `no_change_reason`, and return an empty tasks list. Otherwise set status to `ready` and include at least one task.
 
 
 for any file path you MUST output the full path starting from the root of the project

@@ -27,6 +27,7 @@ class DeveloperEditExecutorTests(unittest.TestCase):
             result = executor.apply(
                 snapshot,
                 search_replace_block("    return 41", "    return 42"),
+                task_id="task-1.step-1",
             )
 
             self.assertEqual(result.status, EditStatus.APPLIED)
@@ -52,7 +53,11 @@ class DeveloperEditExecutorTests(unittest.TestCase):
                 target.write_text("old\n", encoding="utf-8", newline="")
                 executor = DeveloperEditExecutor(WorkspaceEditor(root))
 
-                result = executor.apply(executor.prepare("app.py"), model_output)
+                result = executor.apply(
+                    executor.prepare("app.py"),
+                    model_output,
+                    task_id="task-1.step-1",
+                )
 
                 self.assertEqual(result.status, EditStatus.REJECTED)
                 self.assertEqual(
@@ -70,6 +75,7 @@ class DeveloperEditExecutorTests(unittest.TestCase):
             result = executor.apply(
                 executor.prepare("items.txt"),
                 search_replace_block("item", "entry"),
+                task_id="task-1.step-1",
             )
 
             self.assertEqual(result.status, EditStatus.REJECTED)
@@ -90,6 +96,7 @@ class DeveloperEditExecutorTests(unittest.TestCase):
             result = executor.apply(
                 snapshot,
                 search_replace_block("value = 1", "value = 3"),
+                task_id="task-1.step-1",
             )
 
             self.assertEqual(result.status, EditStatus.REJECTED)
@@ -104,6 +111,7 @@ class DeveloperEditExecutorTests(unittest.TestCase):
             result = executor.apply(
                 executor.prepare("./workspace_repo/package/new.py"),
                 "value = 42\n",
+                task_id="task-1.step-1",
             )
 
             self.assertEqual(result.status, EditStatus.APPLIED)
@@ -118,7 +126,9 @@ class DeveloperEditExecutorTests(unittest.TestCase):
             executor = DeveloperEditExecutor(WorkspaceEditor(root))
 
             snapshot = executor.prepare("./workspace_repo/../secret.txt")
-            result = executor.apply(snapshot, "exposed")
+            result = executor.apply(
+                snapshot, "exposed", task_id="task-1.step-1"
+            )
 
             self.assertEqual(result.status, EditStatus.REJECTED)
             self.assertEqual(result.error_code, EditErrorCode.PATH_INVALID)

@@ -1,73 +1,56 @@
-import difflib
-import hashlib
-import os
+"""Deterministic, workspace-bound text editing with file transactions."""
+
 import stat
-import tempfile
+from dataclasses import replace
 from pathlib import Path
 
 from agent.editing.models import (
     EditErrorCode,
-    EditOperation,
     EditProposal,
     EditResult,
     EditStatus,
+    TransactionResult,
     WorkspaceSnapshot,
+    WorkspaceTransaction,
+)
+from agent.editing.files import create_new, replace_existing
+from agent.editing.staging import stage_transaction
+from agent.editing.text import make_diff, sha256
+from agent.workspace import (
+    PathResolution,
+    WorkspacePathErrorCode,
+    WorkspacePathResolver,
 )
 
 
-def _sha256(content: bytes) -> str:
-    return hashlib.sha256(content).hexdigest()
-
-
-def _line_ending(text: str) -> str | None:
-    without_crlf = text.replace("\r\n", "")
-    has_crlf = "\r\n" in text
-    has_lf = "\n" in without_crlf
-    has_cr = "\r" in without_crlf
-    if sum((has_crlf, has_lf, has_cr)) > 1:
-        return None
-    if has_crlf:
-        return "\r\n"
-    if has_cr:
-        return "\r"
-    return "\n"
-
-
-def _normalize_line_endings(text: str) -> str:
-    return text.replace("\r\n", "\n").replace("\r", "\n")
-
-
 class WorkspaceEditor:
-    """Validate and apply a single deterministic workspace edit."""
+    """Validate edits in memory and commit one final version of each file."""
 
     def __init__(self, root: str | Path) -> None:
-        self._root = Path(root).resolve(strict=True)
+        self._resolver = WorkspacePathResolver(root)
 
     def snapshot(self, path: str) -> WorkspaceSnapshot:
-        """Read one workspace file using the same path boundary as edits."""
-        target = self._resolve_target(path)
-        if target is None:
+        """Read one UTF-8 file through the same boundary used for writes."""
+        resolution = self._resolver.resolve_file(
+            path, must_exist=False, allow_absolute=False
+        )
+        if not resolution.ok:
             return WorkspaceSnapshot(
                 path=path,
                 exists=False,
-                error_code=EditErrorCode.PATH_INVALID,
-                message="The path must stay inside the configured workspace.",
+                error_code=_map_resolution_error(resolution),
+                message=resolution.message,
             )
+        target = resolution.path
+        assert target is not None
+        relative_path = resolution.relative_path or path
         if not target.exists():
-            return WorkspaceSnapshot(path=path, exists=False)
-        if not target.is_file():
-            return WorkspaceSnapshot(
-                path=path,
-                exists=False,
-                error_code=EditErrorCode.READ_FAILED,
-                message="The workspace path is not a regular file.",
-            )
-
+            return WorkspaceSnapshot(path=relative_path, exists=False)
         try:
             content_bytes = target.read_bytes()
         except OSError as error:
             return WorkspaceSnapshot(
-                path=path,
+                path=relative_path,
                 exists=True,
                 error_code=EditErrorCode.READ_FAILED,
                 message=f"Could not read the target file: {error}",
@@ -76,259 +59,216 @@ class WorkspaceEditor:
             content = content_bytes.decode("utf-8")
         except UnicodeDecodeError:
             return WorkspaceSnapshot(
-                path=path,
+                path=relative_path,
                 exists=True,
                 error_code=EditErrorCode.ENCODING_ERROR,
                 message="Only UTF-8 text files can be read.",
             )
         return WorkspaceSnapshot(
-            path=path,
+            path=relative_path,
             exists=True,
             content=content,
-            content_hash=_sha256(content_bytes),
+            content_hash=sha256(content_bytes),
         )
 
-    def apply(self, proposal: EditProposal) -> EditResult:
-        target = self._resolve_target(proposal.path)
-        if target is None:
-            return EditResult(
-                status=EditStatus.REJECTED,
-                path=proposal.path,
-                error_code=EditErrorCode.PATH_INVALID,
-                message="The path must stay inside the configured workspace.",
+    def begin(self, path: str) -> TransactionResult:
+        """Capture the original file once and create an in-memory working copy."""
+        resolution = self._resolver.resolve_file(
+            path, must_exist=False, allow_absolute=False
+        )
+        if not resolution.ok:
+            return TransactionResult(
+                edit_result=_rejected_from_resolution(path, resolution)
             )
-        if proposal.operation is EditOperation.CREATE:
-            return self._create(target, proposal)
-
-        if not target.is_file():
-            return EditResult(
-                status=EditStatus.REJECTED,
-                path=proposal.path,
-                error_code=EditErrorCode.FILE_NOT_FOUND,
-                message="The target file does not exist.",
+        target = resolution.path
+        assert target is not None
+        relative_path = resolution.relative_path or path
+        if not target.exists():
+            return TransactionResult(
+                transaction=WorkspaceTransaction(
+                    path=relative_path,
+                    existed=False,
+                    original_content="",
+                    working_content="",
+                    base_hash=None,
+                    original_mode=None,
+                )
             )
-
         try:
             original_bytes = target.read_bytes()
             original_mode = stat.S_IMODE(target.stat().st_mode)
         except OSError as error:
-            return EditResult(
-                status=EditStatus.REJECTED,
-                path=proposal.path,
-                error_code=EditErrorCode.WRITE_FAILED,
-                message=f"Could not read the target file: {error}",
+            return TransactionResult(
+                edit_result=EditResult(
+                    status=EditStatus.REJECTED,
+                    path=relative_path,
+                    error_code=EditErrorCode.READ_FAILED,
+                    message=f"Could not read the target file: {error}",
+                )
             )
-        before_hash = _sha256(original_bytes)
-        if before_hash != proposal.base_hash:
-            return EditResult(
-                status=EditStatus.REJECTED,
-                path=proposal.path,
-                error_code=EditErrorCode.HASH_MISMATCH,
-                message="The file changed after the edit proposal was created.",
-                before_hash=before_hash,
-            )
-
+        before_hash = sha256(original_bytes)
         try:
             original = original_bytes.decode("utf-8")
         except UnicodeDecodeError:
-            return EditResult(
-                status=EditStatus.REJECTED,
-                path=proposal.path,
-                error_code=EditErrorCode.ENCODING_ERROR,
-                message="Only UTF-8 text files can be edited.",
-                before_hash=before_hash,
-            )
-        if not proposal.old_text:
-            return EditResult(
-                status=EditStatus.REJECTED,
-                path=proposal.path,
-                error_code=EditErrorCode.EMPTY_OLD_TEXT,
-                message="old_text must not be empty.",
-                before_hash=before_hash,
-            )
-
-        line_ending = _line_ending(original)
-        if line_ending is None:
-            searchable = original
-            old_text = proposal.old_text
-            new_text = proposal.new_text
-        else:
-            searchable = _normalize_line_endings(original)
-            old_text = _normalize_line_endings(proposal.old_text)
-            new_text = _normalize_line_endings(proposal.new_text)
-
-        occurrences = searchable.count(old_text)
-        if occurrences == 0:
-            return EditResult(
-                status=EditStatus.REJECTED,
-                path=proposal.path,
-                error_code=EditErrorCode.MATCH_NOT_FOUND,
-                message="old_text was not found in the current file.",
-                before_hash=before_hash,
-            )
-        if occurrences > 1:
-            return EditResult(
-                status=EditStatus.REJECTED,
-                path=proposal.path,
-                error_code=EditErrorCode.MATCH_AMBIGUOUS,
-                message=f"old_text appears {occurrences} times; include more surrounding context.",
-                before_hash=before_hash,
-            )
-
-        updated = searchable.replace(old_text, new_text, 1)
-        if line_ending not in (None, "\n"):
-            updated = updated.replace("\n", line_ending)
-        updated_bytes = updated.encode("utf-8")
-        if updated_bytes == original_bytes:
-            return EditResult(
-                status=EditStatus.NOOP,
-                path=proposal.path,
-                message="The proposal does not change the file.",
-                before_hash=before_hash,
-                after_hash=before_hash,
-            )
-
-        diff = "".join(
-            difflib.unified_diff(
-                original.splitlines(keepends=True),
-                updated.splitlines(keepends=True),
-                fromfile=proposal.path,
-                tofile=proposal.path,
-            )
-        )
-
-        try:
-            descriptor, temporary_name = tempfile.mkstemp(
-                dir=target.parent, prefix=f".{target.name}."
-            )
-        except OSError as error:
-            return EditResult(
-                status=EditStatus.REJECTED,
-                path=proposal.path,
-                error_code=EditErrorCode.WRITE_FAILED,
-                message=f"Could not prepare the edited file: {error}",
-                before_hash=before_hash,
-            )
-
-        try:
-            try:
-                with os.fdopen(descriptor, "wb") as temporary:
-                    temporary.write(updated_bytes)
-                    temporary.flush()
-                    os.fsync(temporary.fileno())
-
-                current_hash = _sha256(target.read_bytes())
-                if current_hash != before_hash:
-                    return EditResult(
-                        status=EditStatus.REJECTED,
-                        path=proposal.path,
-                        error_code=EditErrorCode.HASH_MISMATCH,
-                        message="The file changed while the edit was being prepared.",
-                        before_hash=current_hash,
-                    )
-
-                os.chmod(temporary_name, original_mode)
-                os.replace(temporary_name, target)
-            except OSError as error:
-                return EditResult(
+            return TransactionResult(
+                edit_result=EditResult(
                     status=EditStatus.REJECTED,
-                    path=proposal.path,
-                    error_code=EditErrorCode.WRITE_FAILED,
-                    message=f"Could not replace the target file: {error}",
+                    path=relative_path,
+                    error_code=EditErrorCode.ENCODING_ERROR,
+                    message="Only UTF-8 text files can be edited.",
                     before_hash=before_hash,
                 )
-        finally:
-            if os.path.exists(temporary_name):
-                os.unlink(temporary_name)
-
-        return EditResult(
-            status=EditStatus.APPLIED,
-            path=proposal.path,
-            before_hash=before_hash,
-            after_hash=_sha256(updated_bytes),
-            diff=diff,
+            )
+        return TransactionResult(
+            transaction=WorkspaceTransaction(
+                path=relative_path,
+                existed=True,
+                original_content=original,
+                working_content=original,
+                base_hash=before_hash,
+                original_mode=original_mode,
+            )
         )
 
-    def _create(self, target: Path, proposal: EditProposal) -> EditResult:
-        try:
-            target.parent.mkdir(parents=True, exist_ok=True)
-            content = proposal.new_text.encode("utf-8")
-            descriptor, temporary_name = tempfile.mkstemp(
-                dir=target.parent, prefix=f".{target.name}."
-            )
-        except UnicodeEncodeError:
-            return EditResult(
-                status=EditStatus.REJECTED,
-                path=proposal.path,
-                error_code=EditErrorCode.ENCODING_ERROR,
-                message="New file content must be valid UTF-8 text.",
-            )
-        except OSError as error:
-            return EditResult(
-                status=EditStatus.REJECTED,
-                path=proposal.path,
-                error_code=EditErrorCode.WRITE_FAILED,
-                message=f"Could not prepare the new file: {error}",
-            )
+    def stage(
+        self, transaction: WorkspaceTransaction, proposal: EditProposal
+    ) -> TransactionResult:
+        """Apply one proposal to a working copy without touching the file."""
+        return stage_transaction(transaction, proposal)
 
-        try:
-            with os.fdopen(descriptor, "wb") as temporary:
-                temporary.write(content)
-                temporary.flush()
-                os.fsync(temporary.fileno())
+    def commit(self, transaction: WorkspaceTransaction) -> EditResult:
+        """Recheck the baseline and replace or create the target exactly once."""
+        if not transaction.task_ids:
+            return EditResult(
+                status=EditStatus.NOOP,
+                path=transaction.path,
+                message="The transaction contains no staged edits.",
+                before_hash=transaction.base_hash,
+                after_hash=transaction.base_hash,
+            )
+        resolution = self._resolver.resolve_file(
+            transaction.path, must_exist=False, allow_absolute=False
+        )
+        if not resolution.ok:
+            result = _rejected_from_resolution(transaction.path, resolution)
+            return replace(result, task_ids=transaction.task_ids)
+        target = resolution.path
+        assert target is not None
+
+        if transaction.existed:
+            if not target.is_file():
+                return _transaction_error(
+                    transaction,
+                    EditErrorCode.FILE_NOT_FOUND,
+                    "The target file no longer exists.",
+                )
             try:
-                os.link(temporary_name, target)
-            except FileExistsError:
-                return EditResult(
-                    status=EditStatus.REJECTED,
-                    path=proposal.path,
-                    error_code=EditErrorCode.FILE_EXISTS,
-                    message="The target file already exists.",
-                )
+                current_bytes = target.read_bytes()
             except OSError as error:
-                return EditResult(
-                    status=EditStatus.REJECTED,
-                    path=proposal.path,
-                    error_code=EditErrorCode.WRITE_FAILED,
-                    message=f"Could not create the new file: {error}",
+                return _transaction_error(
+                    transaction,
+                    EditErrorCode.READ_FAILED,
+                    f"Could not re-read the target file: {error}",
                 )
-        finally:
-            if os.path.exists(temporary_name):
-                os.unlink(temporary_name)
-
-        diff = "".join(
-            difflib.unified_diff(
-                [],
-                proposal.new_text.splitlines(keepends=True),
-                fromfile="/dev/null",
-                tofile=proposal.path,
+            current_hash = sha256(current_bytes)
+            if current_hash != transaction.base_hash:
+                return _transaction_error(
+                    transaction,
+                    EditErrorCode.HASH_MISMATCH,
+                    "The file changed while edits were staged.",
+                    before_hash=current_hash,
+                )
+        elif target.exists():
+            return _transaction_error(
+                transaction,
+                EditErrorCode.FILE_EXISTS,
+                "The target file was created while edits were staged.",
             )
+
+        try:
+            updated_bytes = transaction.working_content.encode("utf-8")
+        except UnicodeEncodeError:
+            return _transaction_error(
+                transaction,
+                EditErrorCode.ENCODING_ERROR,
+                "New file content must be valid UTF-8 text.",
+            )
+        write_failure = (
+            replace_existing(target, updated_bytes, transaction)
+            if transaction.existed
+            else create_new(target, updated_bytes)
         )
+        if write_failure is not None:
+            error_code, message = write_failure
+            return _transaction_error(
+                transaction,
+                error_code,
+                message,
+            )
         return EditResult(
             status=EditStatus.APPLIED,
-            path=proposal.path,
-            after_hash=_sha256(content),
-            diff=diff,
+            path=transaction.path,
+            before_hash=transaction.base_hash,
+            after_hash=sha256(updated_bytes),
+            diff=make_diff(
+                transaction.path,
+                transaction.original_content,
+                transaction.working_content,
+                existed=transaction.existed,
+            ),
+            task_ids=transaction.task_ids,
         )
 
-    def _resolve_target(self, relative_path: str) -> Path | None:
-        requested = Path(relative_path)
-        if not relative_path or requested.is_absolute() or ".." in requested.parts:
-            return None
+    def apply(self, proposal: EditProposal) -> EditResult:
+        """Convenience interface for a one-proposal file transaction."""
+        started = self.begin(proposal.path)
+        if not started.ok:
+            assert started.edit_result is not None
+            return replace(started.edit_result, task_ids=(proposal.task_id,))
+        assert started.transaction is not None
+        staged = self.stage(started.transaction, proposal)
+        if not staged.ok:
+            assert staged.edit_result is not None
+            return staged.edit_result
+        assert staged.transaction is not None
+        return self.commit(staged.transaction)
 
-        target = self._root.joinpath(requested)
-        try:
-            resolved = target.resolve(strict=False)
-        except (OSError, RuntimeError):
-            return None
-        if not resolved.is_relative_to(self._root):
-            return None
+def _map_resolution_error(resolution: PathResolution) -> EditErrorCode:
+    mapping = {
+        WorkspacePathErrorCode.WORKSPACE_NOT_FOUND: (
+            EditErrorCode.WORKSPACE_NOT_FOUND
+        ),
+        WorkspacePathErrorCode.WORKSPACE_INVALID: EditErrorCode.WORKSPACE_INVALID,
+        WorkspacePathErrorCode.EXPECTED_FILE: EditErrorCode.READ_FAILED,
+    }
+    return mapping.get(resolution.error_code, EditErrorCode.PATH_INVALID)
 
-        current = self._root
-        for part in requested.parts:
-            current = current / part
-            if current.is_symlink() or (
-                hasattr(current, "is_junction") and current.is_junction()
-            ):
-                return None
-        return resolved
+
+def _rejected_from_resolution(
+    path: str, resolution: PathResolution
+) -> EditResult:
+    return EditResult(
+        status=EditStatus.REJECTED,
+        path=path,
+        error_code=_map_resolution_error(resolution),
+        message=resolution.message,
+    )
+
+
+def _transaction_error(
+    transaction: WorkspaceTransaction,
+    error_code: EditErrorCode,
+    message: str,
+    *,
+    before_hash: str | None = None,
+) -> EditResult:
+    return EditResult(
+        status=EditStatus.REJECTED,
+        path=transaction.path,
+        error_code=error_code,
+        message=message,
+        before_hash=(
+            transaction.base_hash if before_hash is None else before_hash
+        ),
+        task_ids=transaction.task_ids,
+    )

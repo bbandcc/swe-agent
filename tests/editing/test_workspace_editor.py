@@ -1,7 +1,10 @@
 import hashlib
+import os
+import subprocess
 import tempfile
 import unittest
 from pathlib import Path
+from unittest.mock import patch
 
 from agent.editing import (
     EditErrorCode,
@@ -17,6 +20,28 @@ def sha256(content: str) -> str:
 
 
 class WorkspaceEditorTests(unittest.TestCase):
+    def test_missing_workspace_root_is_a_structured_failure(self) -> None:
+        with tempfile.TemporaryDirectory() as directory:
+            missing_root = Path(directory) / "missing"
+
+            snapshot = WorkspaceEditor(missing_root).snapshot("app.py")
+            result = WorkspaceEditor(missing_root).apply(
+                EditProposal(
+                    task_id="task-1.step-1",
+                    path="app.py",
+                    operation=EditOperation.CREATE,
+                    new_text="value = 1\n",
+                )
+            )
+
+            self.assertEqual(
+                snapshot.error_code, EditErrorCode.WORKSPACE_NOT_FOUND
+            )
+            self.assertEqual(result.status, EditStatus.REJECTED)
+            self.assertEqual(
+                result.error_code, EditErrorCode.WORKSPACE_NOT_FOUND
+            )
+
     def test_snapshots_existing_utf8_file_with_content_hash(self) -> None:
         with tempfile.TemporaryDirectory() as directory:
             root = Path(directory)
@@ -57,6 +82,7 @@ class WorkspaceEditorTests(unittest.TestCase):
 
             result = WorkspaceEditor(root).apply(
                 EditProposal(
+                    task_id="task-1.step-1",
                     path="app.py",
                     operation=EditOperation.EDIT,
                     base_hash=sha256(original),
@@ -83,6 +109,7 @@ class WorkspaceEditorTests(unittest.TestCase):
 
             result = WorkspaceEditor(root).apply(
                 EditProposal(
+                    task_id="task-1.step-1",
                     path="app.py",
                     operation=EditOperation.EDIT,
                     base_hash=sha256(original),
@@ -112,6 +139,7 @@ class WorkspaceEditorTests(unittest.TestCase):
 
                 result = WorkspaceEditor(root).apply(
                     EditProposal(
+                        task_id="task-1.step-1",
                         path="items.txt",
                         operation=EditOperation.EDIT,
                         base_hash=sha256(original),
@@ -137,6 +165,7 @@ class WorkspaceEditorTests(unittest.TestCase):
                 with self.subTest(path=unsafe_path):
                     result = WorkspaceEditor(root).apply(
                         EditProposal(
+                            task_id="task-1.step-1",
                             path=unsafe_path,
                             operation=EditOperation.EDIT,
                             base_hash=sha256(original),
@@ -163,6 +192,7 @@ class WorkspaceEditorTests(unittest.TestCase):
 
             result = WorkspaceEditor(root).apply(
                 EditProposal(
+                    task_id="task-1.step-1",
                     path="link.txt",
                     operation=EditOperation.EDIT,
                     base_hash=sha256(original),
@@ -179,6 +209,7 @@ class WorkspaceEditorTests(unittest.TestCase):
         with tempfile.TemporaryDirectory() as directory:
             result = WorkspaceEditor(directory).apply(
                 EditProposal(
+                    task_id="task-1.step-1",
                     path="missing.py",
                     operation=EditOperation.EDIT,
                     base_hash=sha256(""),
@@ -200,6 +231,7 @@ class WorkspaceEditorTests(unittest.TestCase):
 
             result = WorkspaceEditor(root).apply(
                 EditProposal(
+                    task_id="task-1.step-1",
                     path="app.py",
                     operation=EditOperation.EDIT,
                     base_hash=sha256(original),
@@ -221,6 +253,7 @@ class WorkspaceEditorTests(unittest.TestCase):
 
             result = WorkspaceEditor(root).apply(
                 EditProposal(
+                    task_id="task-1.step-1",
                     path="package/new_module.py",
                     operation=EditOperation.CREATE,
                     new_text=content,
@@ -245,6 +278,7 @@ class WorkspaceEditorTests(unittest.TestCase):
 
             result = WorkspaceEditor(root).apply(
                 EditProposal(
+                    task_id="task-1.step-1",
                     path="config.py",
                     operation=EditOperation.CREATE,
                     new_text="DEBUG = True\n",
@@ -262,6 +296,7 @@ class WorkspaceEditorTests(unittest.TestCase):
 
             result = WorkspaceEditor(root).apply(
                 EditProposal(
+                    task_id="task-1.step-1",
                     path="occupied/new.py",
                     operation=EditOperation.CREATE,
                     new_text="value = 1\n",
@@ -281,6 +316,7 @@ class WorkspaceEditorTests(unittest.TestCase):
 
             result = WorkspaceEditor(root).apply(
                 EditProposal(
+                    task_id="task-1.step-1",
                     path="binary.dat",
                     operation=EditOperation.EDIT,
                     base_hash=hashlib.sha256(original).hexdigest(),
@@ -302,6 +338,7 @@ class WorkspaceEditorTests(unittest.TestCase):
 
             result = WorkspaceEditor(root).apply(
                 EditProposal(
+                    task_id="task-1.step-1",
                     path="message.py",
                     operation=EditOperation.EDIT,
                     base_hash=sha256(original),
@@ -313,6 +350,101 @@ class WorkspaceEditorTests(unittest.TestCase):
             expected = "标题 = '新值'\r\nprint(标题)\r\n"
             self.assertEqual(result.status, EditStatus.APPLIED)
             self.assertEqual(target.read_bytes(), expected.encode("utf-8"))
+
+    def test_edit_preserves_missing_eof_newline(self) -> None:
+        with tempfile.TemporaryDirectory() as directory:
+            root = Path(directory)
+            target = root / "message.py"
+            original = "value = 1"
+            target.write_bytes(original.encode("utf-8"))
+
+            result = WorkspaceEditor(root).apply(
+                EditProposal(
+                    task_id="task-1.step-1",
+                    path="message.py",
+                    operation=EditOperation.EDIT,
+                    base_hash=sha256(original),
+                    old_text="value = 1",
+                    new_text="value = 2",
+                )
+            )
+
+            self.assertEqual(result.status, EditStatus.APPLIED)
+            self.assertEqual(target.read_bytes(), b"value = 2")
+
+    def test_apply_classifies_existing_file_read_error_as_read_failed(self) -> None:
+        with tempfile.TemporaryDirectory() as directory:
+            root = Path(directory)
+            target = root / "app.py"
+            target.write_text("value = 1\n", encoding="utf-8", newline="")
+            editor = WorkspaceEditor(root)
+
+            with patch.object(Path, "read_bytes", side_effect=OSError("denied")):
+                result = editor.apply(
+                    EditProposal(
+                        task_id="task-1.step-1",
+                        path="app.py",
+                        operation=EditOperation.EDIT,
+                        base_hash=sha256("value = 1\n"),
+                        old_text="value = 1",
+                        new_text="value = 2",
+                    )
+                )
+
+            self.assertEqual(result.status, EditStatus.REJECTED)
+            self.assertEqual(result.error_code, EditErrorCode.READ_FAILED)
+
+    def test_failed_nested_create_removes_directories_created_by_attempt(self) -> None:
+        with tempfile.TemporaryDirectory() as directory:
+            root = Path(directory)
+            editor = WorkspaceEditor(root)
+
+            with patch("agent.editing.files.os.link", side_effect=OSError("denied")):
+                result = editor.apply(
+                    EditProposal(
+                        task_id="task-1.step-1",
+                        path="new/package/module.py",
+                        operation=EditOperation.CREATE,
+                        new_text="value = 1\n",
+                    )
+                )
+
+            self.assertEqual(result.status, EditStatus.REJECTED)
+            self.assertEqual(result.error_code, EditErrorCode.WRITE_FAILED)
+            self.assertFalse((root / "new").exists())
+
+    @unittest.skipUnless(os.name == "nt", "junctions are a Windows path type")
+    def test_rejects_windows_junction_that_points_outside_workspace(self) -> None:
+        with tempfile.TemporaryDirectory() as directory:
+            parent = Path(directory)
+            root = parent / "workspace"
+            outside = parent / "outside"
+            root.mkdir()
+            outside.mkdir()
+            (outside / "secret.txt").write_text(
+                "private\n", encoding="utf-8", newline=""
+            )
+            junction = root / "linked"
+            completed = subprocess.run(
+                [
+                    "pwsh.exe",
+                    "-NoLogo",
+                    "-NoProfile",
+                    "-CommandWithArgs",
+                    "New-Item -ItemType Junction -Path $args[0] -Target $args[1] | Out-Null",
+                    str(junction),
+                    str(outside),
+                ],
+                capture_output=True,
+                text=True,
+                check=False,
+            )
+            if completed.returncode != 0:
+                self.skipTest(f"junction creation unavailable: {completed.stderr}")
+
+            result = WorkspaceEditor(root).snapshot("linked/secret.txt")
+
+            self.assertEqual(result.error_code, EditErrorCode.PATH_INVALID)
 
 
 if __name__ == "__main__":

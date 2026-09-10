@@ -14,10 +14,11 @@ class EditStatus(str, Enum):
 
 
 class EditErrorCode(str, Enum):
+    WORKSPACE_NOT_FOUND = "workspace_not_found"
+    WORKSPACE_INVALID = "workspace_invalid"
     PATH_INVALID = "path_invalid"
+    TASK_ID_INVALID = "task_id_invalid"
     READ_FAILED = "read_failed"
-    INVALID_PLAN = "invalid_plan"
-    INVALID_STATE = "invalid_state"
     FILE_NOT_FOUND = "file_not_found"
     FILE_EXISTS = "file_exists"
     HASH_MISMATCH = "hash_mismatch"
@@ -31,6 +32,7 @@ class EditErrorCode(str, Enum):
 
 @dataclass(frozen=True, slots=True)
 class EditProposal:
+    task_id: str
     path: str
     operation: EditOperation
     new_text: str
@@ -57,3 +59,25 @@ class EditResult:
     before_hash: str | None = None
     after_hash: str | None = None
     diff: str = ""
+    task_ids: tuple[str, ...] = ()
+
+
+@dataclass(frozen=True, slots=True)
+class WorkspaceTransaction:
+    path: str
+    existed: bool
+    original_content: str
+    working_content: str
+    base_hash: str | None
+    original_mode: int | None
+    task_ids: tuple[str, ...] = ()
+
+
+@dataclass(frozen=True, slots=True)
+class TransactionResult:
+    transaction: WorkspaceTransaction | None = None
+    edit_result: EditResult | None = None
+
+    @property
+    def ok(self) -> bool:
+        return self.transaction is not None and self.edit_result is None
