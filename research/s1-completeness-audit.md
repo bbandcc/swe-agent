@@ -7,7 +7,7 @@
 | 编号 | 审计结论 | S1 处理 |
 |---|---|---|
 | 1 | **问题存在。** `check_research_step` 同时存在条件边和无条件 `conduct_research` 边，invalid 分支仍可能研究。 | 删除无条件边，将 Architect 改为可注入 runtime；图事件测试确认 invalid 后先回到 planning，随后 valid 才进入 research。 |
-| 2 | **问题存在。** 原默认 `claude-sonnet-4-20250514` 已于 2026-06-15 退役。 | 先修正为官方迁移目标，随后按实际可用凭据将生产默认切换为 DeepSeek 官方 `deepseek-v4-flash` 和 Anthropic 兼容端点；统一模型工厂仍保留显式 Anthropic 配置。`scripts/smoke_model.py` 覆盖真实文本、工具调用和结构化输出，联网执行仍需本机安全配置新密钥。 |
+| 2 | **问题存在。** 原默认 `claude-sonnet-4-20250514` 已于 2026-06-15 退役。 | 生产默认切换为 DeepSeek 官方 `deepseek-v4-flash` 和专用 LangChain provider，统一模型工厂仍保留显式 Anthropic 配置。真实 smoke 已验证文本、工具调用和结构化输出；密钥不进入仓库。 |
 | 3 | **问题存在。** 四个读取工具直接接受模型路径并调用 `open`/`os.walk`。 | 新增统一 `WorkspacePathResolver`；search、definition、implementation、raw content 和 file tree 都经过相同边界并返回结构化结果，递归搜索不跟随 symlink/junction。 |
 | 4 | **问题存在。** 每个 atomic task 原先立即写盘，后一步失败会留下前一步。 | 引入 `begin → stage... → commit` 文件事务。stage 只修改不可变 working copy；任一步失败丢弃整份 working copy；全部成功后重新检查原始哈希并写一次。 |
 | 5 | **问题存在。** 空 tasks 一律映射为编辑错误，无法表达“已经满足，无需修改”。 | `ImplementationPlan.status` 明确区分 `ready` 与 `no_changes`；显式 no-change 必须 tasks 为空且提供 reason，隐式空计划仍是 `DeveloperErrorCode.INVALID_PLAN`。 |
@@ -26,11 +26,11 @@
 - Codex 的 Windows/UNC 与保留 symlink 语义实现见固定提交的 [`absolute-path`](https://github.com/openai/codex/blob/b5544d5732f40431c57bf6ca3bed5b127cdf27a0/codex-rs/utils/absolute-path/src/lib.rs#L132-L208)。本项目安全目标更窄：目标仓库内的模型文件工具拒绝任何 symlink/junction 路径，而不是保留逻辑别名。
 - 唯一 SEARCH/REPLACE 匹配继续沿用 Deep Agents 固定提交 [`18106be8`](https://github.com/langchain-ai/deepagents/blob/18106be837bcdd9005b2dd73280d871a0621bf99/libs/deepagents/deepagents/backends/utils.py#L521-L578) 的严格失败契约，以及 Aider 固定提交 [`5dc9490b`](https://github.com/Aider-AI/aider/blob/5dc9490bb35f9729ef2c95d00a19ccd30c26339c/aider/coders/editblock_coder.py#L21-L183) 的可读协议；没有采用 Aider 的首次匹配和部分成功语义。
 - Anthropic 官方[退役表](https://platform.claude.com/docs/en/about-claude/model-deprecations)记录旧 Sonnet 4 的退役日期并给出 Sonnet 4.6 迁移目标；[模型 ID 文档](https://platform.claude.com/docs/en/about-claude/models/model-ids-and-versions)用于核对可配置模型 ID。
-- DeepSeek 官方[模型列表](https://api-docs.deepseek.com/quick_start/pricing/)确认当前模型 ID 为 `deepseek-v4-flash`；[Anthropic API 兼容说明](https://api-docs.deepseek.com/guides/anthropic_api/)确认 `https://api.deepseek.com/anthropic`、工具字段和 `tool_choice` 可用。本项目因此复用已有协议客户端，没有增加第二套模型 SDK。
+- DeepSeek 官方[模型列表](https://api-docs.deepseek.com/quick_start/pricing/)确认当前模型 ID 为 `deepseek-v4-flash`。实测发现 Anthropic 兼容端点的默认 thinking 模式与当前强制 `tool_choice` 不兼容，因此采用 LangChain 官方 [`ChatDeepSeek` 1.1.0 固定源码](https://github.com/langchain-ai/langchain/blob/langchain-deepseek%3D%3D1.1.0/libs/partners/deepseek/langchain_deepseek/chat_models.py)和 OpenAI 兼容端点，并显式关闭 thinking；没有在旧客户端上叠加私有补丁。
 
 ## 当前验证边界
 
 - 确定性与 fake-model 测试已覆盖本次 S1 行为。
 - Windows junction 拒绝已在本机真实创建 junction 后验证。
 - 普通 symlink 测试仍受当前 Windows 权限限制而跳过，但实现与 junction 共用 resolver 检查。
-- 真实模型 smoke test 需要在被 Git 忽略的本机配置中提供有效密钥。脚本在缺少密钥时明确返回 skipped；通过前不能把“模型适配已完成”表述成“真实 Agent 已联网验证”。
+- 真实模型 smoke 已在 2026-09-10 使用本机忽略配置通过，确认鉴权、模型 ID、普通响应、强制工具调用和结构化输出。它不等于完整 Architect → Developer 任务效果评测。

@@ -114,15 +114,15 @@ AGENTS.md 已单独提交。上游源码和静态资源已导入并标记固定�
 
 ### 当前状态
 
-13 项已完成源码审计，详细判断见 `research/s1-completeness-audit.md`。文件事务、统一路径 resolver、Architect 路由、no-change 语义、模型配置和错误分类已经落地。切换 DeepSeek 配置后共有 41 项测试：40 项通过，Windows junction 用例实际通过，1 项普通 symlink 用例因 WinError 1314 跳过。Python 语法、Prompt 渲染、图导入、diff whitespace 和离线 sdist/wheel 构建通过。真实模型 smoke 仍需使用轮换后的本机密钥执行，因此没有把模型适配声明为联网验证通过。
+13 项已完成源码审计，详细判断见 `research/s1-completeness-audit.md`。文件事务、统一路径 resolver、Architect 路由、no-change 语义、模型配置和错误分类已经落地。切换 DeepSeek 配置后共有 41 项测试：40 项通过，Windows junction 用例实际通过，1 项普通 symlink 用例因 WinError 1314 跳过。Python 语法、Prompt 渲染、图导入、diff whitespace 和离线 sdist/wheel 构建通过。真实 DeepSeek smoke 已验证鉴权、普通响应、工具调用和结构化输出。
 
 ## 新增任务：S1.1 DeepSeek 真实模型适配
 
-- [x] 以 DeepSeek 官方文档核对当前模型 ID、Anthropic 兼容端点和工具调用能力。
+- [x] 以 DeepSeek 官方文档核对当前模型 ID、专用 provider、API 端点和工具调用能力。
 - [x] 通过公开模型配置 seam 写红测，将生产默认切换到 `deepseek-v4-flash`。
 - [x] 统一 Architect/Developer 的模型构造入口，同时保留显式 Anthropic 配置。
 - [x] 将真实 smoke 扩展为文本、强制工具调用和结构化输出三项检查。
-- [ ] 使用轮换后的本机密钥完成真实 API smoke。
+- [x] 使用被 Git 忽略的本机密钥完成真实 API smoke。
 - [x] 完成全量回归、构建检查并提交独立中文 Conventional Commit。
 
 ### 当前边界

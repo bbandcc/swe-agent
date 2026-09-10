@@ -21,7 +21,7 @@ class ModelConfigurationTests(unittest.TestCase):
         self.assertEqual(settings.base_url, DEFAULT_DEEPSEEK_BASE_URL)
         self.assertIsNone(settings.api_key)
 
-    def test_builds_deepseek_anthropic_client_from_environment(self) -> None:
+    def test_builds_deepseek_client_from_environment(self) -> None:
         environment = {
             "AGENT_MODEL_PROVIDER": "deepseek",
             "AGENT_MODEL": "deepseek-v4-flash",
@@ -30,10 +30,12 @@ class ModelConfigurationTests(unittest.TestCase):
         with patch.dict(os.environ, environment, clear=True):
             model = build_chat_model(max_tokens=16, temperature=0)
 
+        self.assertEqual(model._llm_type, "chat-deepseek")
         self.assertEqual(model.model, "deepseek-v4-flash")
-        self.assertEqual(model.anthropic_api_url, DEFAULT_DEEPSEEK_BASE_URL)
+        self.assertEqual(model.openai_api_base, DEFAULT_DEEPSEEK_BASE_URL)
+        self.assertEqual(model.extra_body, {"thinking": {"type": "disabled"}})
         self.assertEqual(
-            model.anthropic_api_key.get_secret_value(), "test-deepseek-key"
+            model.openai_api_key.get_secret_value(), "test-deepseek-key"
         )
 
     def test_retains_explicit_anthropic_provider(self) -> None:
@@ -43,10 +45,12 @@ class ModelConfigurationTests(unittest.TestCase):
         }
         with patch.dict(os.environ, environment, clear=True):
             settings = model_settings()
+            model = build_chat_model(max_tokens=16, temperature=0)
 
         self.assertEqual(settings.provider, "anthropic")
         self.assertEqual(settings.model, DEFAULT_ANTHROPIC_MODEL)
         self.assertIsNone(settings.base_url)
+        self.assertEqual(model._llm_type, "anthropic-chat")
         self.assertEqual(
             settings.api_key.get_secret_value(), "test-anthropic-key"
         )

@@ -1,6 +1,7 @@
 """Run small real-API checks against the configured production model."""
 
 import os
+import re
 from pathlib import Path
 from typing import Literal
 
@@ -48,12 +49,14 @@ def main() -> int:
         print(f"SKIPPED: {key_name} is not configured.")
         return 2
 
+    stage = "plain-response"
     try:
         model = build_chat_model(max_tokens=512, temperature=0)
         response = model.invoke("Reply with exactly: SMOKE_OK")
         if "SMOKE_OK" not in str(response.content):
             raise RuntimeError("plain response did not contain SMOKE_OK")
 
+        stage = "tool-call"
         tool_response = model.bind_tools(
             [smoke_probe], tool_choice="smoke_probe"
         ).invoke("Call smoke_probe with value SMOKE_OK.")
@@ -61,15 +64,18 @@ def main() -> int:
         if not calls or calls[0].get("name") != "smoke_probe":
             raise RuntimeError("forced tool call was not returned")
 
+        stage = "structured-output"
         structured = model.with_structured_output(SmokeResult).invoke(
             "Return status SMOKE_OK."
         )
         if structured is None or structured.status != "SMOKE_OK":
             raise RuntimeError("structured output did not validate")
     except Exception as error:
+        status = getattr(error, "status_code", "unknown")
+        detail = _safe_error_detail(error)
         print(
-            f"FAILED: {settings.provider}/{settings.model} "
-            f"raised {type(error).__name__}."
+            f"FAILED at {stage}: {settings.provider}/{settings.model} "
+            f"raised {type(error).__name__} (status={status}). {detail}"
         )
         return 1
 
@@ -78,6 +84,11 @@ def main() -> int:
         "tool-call, and structured-output requests."
     )
     return 0
+
+
+def _safe_error_detail(error: Exception) -> str:
+    text = str(getattr(error, "body", "") or error)
+    return re.sub(r"sk-[A-Za-z0-9_-]{8,}", "[REDACTED]", text)
 
 
 if __name__ == "__main__":

@@ -224,8 +224,8 @@ Final Result: Modified codebase
 
 - Python 3.12+
 - uv (Python package manager)
-- DeepSeek API key (the production default is `deepseek-v4-flash` through
-  DeepSeek's Anthropic-compatible endpoint)
+- DeepSeek API key (the production default is `deepseek-v4-flash` through the
+  official LangChain DeepSeek provider)
 
 ## ⚡ Quick Start
 
@@ -416,8 +416,9 @@ uv run python -m unittest discover -s tests -v
 ### Dependencies
 - **LangGraph**: Multi-agent workflow orchestration
 - **LangChain**: AI integration and tool management
-- **Model API**: DeepSeek V4 Flash by default through its Anthropic-compatible
-  API; explicit Anthropic configuration remains supported
+- **Model API**: DeepSeek V4 Flash by default through its OpenAI-compatible
+  API and dedicated LangChain provider; explicit Anthropic configuration
+  remains supported
 - **Tree-sitter**: Robust code parsing and analysis
 - **Pydantic**: Type-safe data validation and serialization
 
