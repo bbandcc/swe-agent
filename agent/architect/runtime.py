@@ -5,12 +5,11 @@ from dataclasses import dataclass
 from functools import lru_cache
 from typing import Any
 
-from langchain_anthropic import ChatAnthropic
 from langchain_core.output_parsers import JsonOutputParser
 
 from agent.architect.models import ResearchEvaluation, ResearchStep
 from agent.common.entities import ImplementationPlan
-from agent.config import anthropic_model_name
+from agent.config import build_chat_model
 from agent.tools.codemap import codemap_tools
 from agent.tools.search import search_tools
 from agent.tools.write import get_files_structure
@@ -33,9 +32,7 @@ def _plan_next_step_runnable():
     prompt = markdown_to_prompt_template(
         "agent/architect/prompts/plan_next_step_prompt.md"
     )
-    return prompt | ChatAnthropic(
-        model=anthropic_model_name()
-    ).with_structured_output(ResearchStep)
+    return prompt | build_chat_model().with_structured_output(ResearchStep)
 
 
 @lru_cache(maxsize=1)
@@ -43,9 +40,7 @@ def _check_research_runnable():
     prompt = markdown_to_prompt_template(
         "agent/architect/prompts/check_research_already_explored.md"
     )
-    return prompt | ChatAnthropic(
-        model=anthropic_model_name()
-    ).with_structured_output(ResearchEvaluation)
+    return prompt | build_chat_model().with_structured_output(ResearchEvaluation)
 
 
 @lru_cache(maxsize=1)
@@ -53,7 +48,7 @@ def _conduct_research_runnable():
     prompt = markdown_to_prompt_template(
         "agent/architect/prompts/conduct_research_plan_prompt.md"
     )
-    return prompt | ChatAnthropic(model=anthropic_model_name()).bind_tools(
+    return prompt | build_chat_model().bind_tools(
         search_tools + codemap_tools
     )
 
@@ -65,7 +60,7 @@ def _extract_implementation_runnable():
     )
     return (
         prompt
-        | ChatAnthropic(model=anthropic_model_name())
+        | build_chat_model()
         | JsonOutputParser(pydantic_object=ImplementationPlan)
     )
 

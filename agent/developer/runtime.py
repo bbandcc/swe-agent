@@ -5,10 +5,9 @@ from dataclasses import dataclass
 from functools import lru_cache
 from typing import Any
 
-from langchain_anthropic import ChatAnthropic
 from langchain_core.output_parsers import StrOutputParser
 
-from agent.config import anthropic_model_name
+from agent.config import build_chat_model
 from agent.developer.editing import DeveloperEditExecutor
 from agent.editing import WorkspaceEditor
 from agent.tools.codemap import codemap_tools
@@ -33,7 +32,7 @@ def _research_runnable():
     prompt = markdown_to_prompt_template(
         "agent/developer/prompts/get_clear_implementation_plan.md"
     )
-    return prompt | ChatAnthropic(model=anthropic_model_name()).bind_tools(
+    return prompt | build_chat_model().bind_tools(
         search_tools + codemap_tools
     )
 
@@ -45,7 +44,7 @@ def _edit_runnable():
     )
     return (
         prompt
-        | ChatAnthropic(model=anthropic_model_name())
+        | build_chat_model()
         | StrOutputParser()
     )
 
@@ -57,7 +56,7 @@ def _create_runnable():
     )
     return (
         prompt
-        | ChatAnthropic(model=anthropic_model_name())
+        | build_chat_model()
         | StrOutputParser()
     )
 

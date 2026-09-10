@@ -224,7 +224,8 @@ Final Result: Modified codebase
 
 - Python 3.12+
 - uv (Python package manager)
-- Anthropic API key (the default is Claude Sonnet 4.6 and can be changed with `ANTHROPIC_MODEL`)
+- DeepSeek API key (the production default is `deepseek-v4-flash` through
+  DeepSeek's Anthropic-compatible endpoint)
 
 ## ⚡ Quick Start
 
@@ -241,7 +242,7 @@ uv sync
 
 # Create environment file
 Copy-Item .env.example .env
-# Add your Anthropic API key and optional LangSmith settings to .env
+# Add DEEPSEEK_API_KEY and optional LangSmith settings to .env
 ```
 
 3. **Clone a repo to ./workspace_repo**
@@ -315,11 +316,12 @@ uv run python -m unittest discover -s tests -v
 uv run python -m unittest tests.developer.test_workflow -v
 ```
 
-Run one real request against the configured production model after setting
-`ANTHROPIC_API_KEY` in `.env`:
+Run the real model compatibility smoke after setting `DEEPSEEK_API_KEY` in
+`.env` or the ignored `.env.local`. It checks plain text, a forced tool call,
+and structured output:
 
 ```powershell
-uv run python scripts/smoke_anthropic.py
+uv run python scripts/smoke_model.py
 ```
 
 ## 📁 Main Directory Files
@@ -414,7 +416,8 @@ uv run python -m unittest discover -s tests -v
 ### Dependencies
 - **LangGraph**: Multi-agent workflow orchestration
 - **LangChain**: AI integration and tool management
-- **Anthropic**: Configurable Claude model integration; production default is Sonnet 4.6
+- **Model API**: DeepSeek V4 Flash by default through its Anthropic-compatible
+  API; explicit Anthropic configuration remains supported
 - **Tree-sitter**: Robust code parsing and analysis
 - **Pydantic**: Type-safe data validation and serialization
 
