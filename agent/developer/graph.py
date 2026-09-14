@@ -138,12 +138,16 @@ def create_developer_workflow(
             ),
             "file_path": transaction.path,
             "file_content": transaction.working_content,
+            "verification_feedback": state.verification_feedback or {},
         }
         if transaction.existed or transaction.task_ids:
             model_output = runtime.propose_existing_file_edit(values)
         else:
             model_output = runtime.propose_new_file(values)
-        task_id = (
+        repair_prefix = (
+            f"repair-{state.repair_attempts}." if state.repair_attempts else ""
+        )
+        task_id = repair_prefix + (
             f"task-{state.current_task_idx + 1}."
             f"step-{state.current_atomic_task_idx + 1}"
         )

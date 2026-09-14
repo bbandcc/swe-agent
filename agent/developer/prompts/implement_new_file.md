@@ -4,6 +4,7 @@ _type: "chat"
   - research
   - additional_context
   - file_path
+  - verification_feedback
 
 # System
 You are a senior skilled developer assistant implement a code change according to concrete task.
@@ -16,6 +17,9 @@ You are a senior skilled developer assistant implement a code change according t
 
 ## Additional Context
 {additional_context}
+
+## Verification Feedback
+{verification_feedback}
 
 ## Task
 {task}

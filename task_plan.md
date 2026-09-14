@@ -145,3 +145,39 @@ smoke 通过只能证明密钥、端点、模型、工具调用和结构化输�
 ### 验收结果
 
 统一工作区根、search 跳过文件诊断、重复 canonical 文件任务拒绝、父图状态传播与真实 ToolNode 循环均已覆盖。全量 48 项测试中 47 项通过，1 项因 Windows 缺少普通符号链接权限跳过；junction 用例通过。Python compile、Git diff whitespace 与真实 DeepSeek 三项 smoke 均通过。
+
+## 新增任务：S2 测试验收和有限修复
+
+### 固定范围
+
+- 基线：`022371ee769269f38d33cfe2f799884822444505`。
+- 只实现确定性 Verification Runner、baseline/post 判定、最多两次 repair 和顶层状态传播。
+- 保留全部 S1 契约；不实现 checkpoint、预算、RunRecorder、repo map、正式 benchmark、新 Agent、Docker sandbox 或 provider/依赖升级。
+
+### 阶段
+
+- [x] 阅读 AGENTS.md、架构评审和当前 Developer/父图实现。
+- [x] 固定 mini-swe-agent、SWE-bench、Aider 源码证据和适用边界。
+- [x] 以公开 Verification 接口完成 runner 的 red → green 测试。
+- [x] 以确定性判定接口覆盖 baseline/post 组合。
+- [x] 接入父图并完成最多两次的 repair 闭环测试。
+- [x] 运行全量测试、compile、diff check 并审计 S1 契约。
+- [x] 更新研究文档。
+- [x] 独立提交。
+
+### 已确认 seam
+
+- `VerificationRunner.run(VerificationSpec) -> VerificationResult`。
+- baseline/post 的纯确定性判定函数。
+- 注入 fake runtime、真实 Developer 编译子图和临时 workspace 的顶层图。
+
+### 当前状态
+
+实现、研究记录和最终验证已完成。全量 67 项测试中 66 项通过，1 项普通 symlink 用例因 Windows 权限跳过；compile、prompt 渲染和 diff check 通过，并以独立提交交付。
+
+### 问题与处理
+
+- GitHub 一次 TestSpec 猜测路径读取返回 404；改用固定提交的 SWE-bench grading 源码，不依赖错误路径。
+- 后台参考研究因工具额度中断；主任务已直接核对三个项目的固定提交源码并写入 S2 研究文档。
+- Windows venv 启动器的 timeout 测试一度留下短暂 cwd 句柄；runner 改为显式进程组/进程树终止，timeout 测试使用真实解释器进程验证。
+- 抽取 verification controller 后，LangGraph 对 bound method 的 state 注解推断与父图 Pydantic state 不一致；父图增加带 `AgentState` 注解的薄 wrapper，保持 controller 与图 schema 解耦。

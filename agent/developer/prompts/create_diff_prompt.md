@@ -5,6 +5,7 @@ _type: "chat"
   - additional_context
   - file_content
   - file_path
+  - verification_feedback
 
 # System
 You are a senior skilled developer assistant implement a code change according to concrete task
@@ -26,6 +27,9 @@ Your job is
 
 ## Additional Context
 {additional_context}
+
+## Verification Feedback
+{verification_feedback}
 
 ## Task
 {task}

@@ -1,5 +1,5 @@
 from enum import Enum
-from typing import Annotated
+from typing import Annotated, Any
 
 from langchain_core.messages import AnyMessage
 from langgraph.graph import add_messages
@@ -56,3 +56,5 @@ class SoftwareDeveloperState(BaseModel):
     developer_status: DeveloperStatus = Field(DeveloperStatus.PENDING)
     developer_error_code: DeveloperErrorCode | None = Field(None)
     developer_message: str = Field("")
+    verification_feedback: dict[str, Any] | None = Field(None)
+    repair_attempts: int = Field(0, ge=0)

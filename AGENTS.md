@@ -48,3 +48,7 @@
 ## 当前 S1 切片
 
 公开的单步 seam 保持为 `WorkspaceEditor.apply(proposal) -> EditResult`；同文件多步执行使用 `begin(path) → stage(transaction, proposal)... → commit(transaction)`。每个 proposal 必须带 task identity；stage 只更新内存 working copy，全部成功后才写盘一次。Architect/Developer 运行依赖和模型配置从外部注入，所有模型可调用的读取工具统一经过 workspace path resolver。测试只通过公开 interface、编译图事件、结构化结果和最终文件内容验收。
+
+## 当前 S2 切片
+
+Verification 命令只通过外部配置的 `VerificationSpec` 注入，使用 argv、`shell=False` 和 workspace 内 cwd。baseline 与 post 使用同一组 checks，确定性代码根据结构化结果判断 verified、improved、regression、pre-existing failure、unverified 或 execution error。只有 regression 可回到同一个 Developer，repair 最多两次；每次必须重读文件并继续经过 S1 WorkspaceTransaction。不得把配置缺失、timeout 或 execution error 当成功，也不得为本切片加入新 Agent 或 S3 之后的能力。

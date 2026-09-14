@@ -199,6 +199,8 @@ flowchart LR
 
 复现基线：用 PowerShell 7 将 [固定 developer/graph.py](https://raw.githubusercontent.com/langtalks/swe-agent/5946af4f57cba03761015837ad5f87ef5c8d99e9/agent/developer/graph.py) 保存到 `.research-cache/agent/developer/graph.py`，在项目根目录运行 `python research/reproduce_baseline.py`。缓存已 gitignore，不提交上游源码。诊断 JSON 中的 SHA256 是本地源码文件的字节指纹，换行格式变化会改变它。
 
+S2 的参考源码、确定性 verification 契约、baseline/post 判定表、repair 边界和实际验收记录见 [s2-verification-and-repair.md](s2-verification-and-repair.md)。
+
 [target-main]: https://github.com/langtalks/swe-agent/blob/5946af4f57cba03761015837ad5f87ef5c8d99e9/agent/graph.py#L14-L29
 [target-architect]: https://github.com/langtalks/swe-agent/blob/5946af4f57cba03761015837ad5f87ef5c8d99e9/agent/architect/graph.py
 [target-route]: https://github.com/langtalks/swe-agent/blob/5946af4f57cba03761015837ad5f87ef5c8d99e9/agent/architect/graph.py#L154-L162
