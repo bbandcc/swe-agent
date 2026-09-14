@@ -46,10 +46,7 @@ class DeveloperEditExecutor:
 
     def canonical_plan_path(self, plan_path: str) -> str | None:
         """Return the canonical comparison key for one plan-controlled path."""
-        relative_path = _workspace_relative_path(plan_path)
-        if relative_path is None:
-            return None
-        return os.path.normcase(relative_path.replace("/", os.sep))
+        return canonical_plan_path(plan_path)
 
     def begin(self, plan_path: str) -> TransactionResult:
         relative_path = _workspace_relative_path(plan_path)
@@ -173,6 +170,14 @@ def _workspace_relative_path(plan_path: str) -> str | None:
     if not parts:
         return None
     return "/".join(parts)
+
+
+def canonical_plan_path(plan_path: str) -> str | None:
+    """Return the S1 platform-aware identity for a plan-controlled path."""
+    relative_path = _workspace_relative_path(plan_path)
+    if relative_path is None:
+        return None
+    return os.path.normcase(relative_path.replace("/", os.sep))
 
 
 def _parse_search_replace_block(model_output: str) -> _SearchReplaceBlock | None:

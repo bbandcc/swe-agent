@@ -1,3 +1,4 @@
+import math
 import sys
 import tempfile
 import time
@@ -12,6 +13,16 @@ from agent.verification import (
 
 
 class VerificationRunnerTests(unittest.TestCase):
+    def test_spec_rejects_non_finite_or_non_positive_timeout(self) -> None:
+        for timeout in (math.nan, math.inf, -math.inf, 0, -1):
+            with self.subTest(timeout=timeout):
+                with self.assertRaisesRegex(ValueError, "finite positive"):
+                    VerificationSpec(
+                        name="invalid-timeout",
+                        argv=(sys.executable, "-c", "pass"),
+                        timeout_seconds=timeout,
+                    )
+
     def test_reports_pass_and_bounded_failure_diagnostics(self) -> None:
         with tempfile.TemporaryDirectory() as directory:
             root = Path(directory)

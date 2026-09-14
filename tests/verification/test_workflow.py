@@ -2,6 +2,7 @@ import sys
 import tempfile
 import unittest
 from pathlib import Path
+from unittest.mock import patch
 
 from langchain_core.messages import AIMessage
 
@@ -9,14 +10,16 @@ from agent.common.entities import AtomicTask, ImplementationPlan, Implementation
 from agent.developer.editing import DeveloperEditExecutor
 from agent.developer.graph import DeveloperRuntime, create_developer_workflow
 from agent.developer.state import DeveloperStatus
-from agent.editing import EditErrorCode, WorkspaceEditor
-from agent.graph import WorkflowOutcome, create_workflow_graph
+from agent.editing import EditErrorCode, EditResult, EditStatus, WorkspaceEditor
+from agent.graph import AgentState, WorkflowOutcome, create_workflow_graph
 from agent.verification import (
     VerificationCheckStatus,
     VerificationRunner,
+    VerificationResult,
     VerificationSpec,
     VerificationStatus,
 )
+from agent.verification.workflow import VerificationController
 
 
 def search_replace(old_text: str, new_text: str) -> str:
@@ -76,7 +79,121 @@ def run_parent(root: Path, child_developer, specs):
     ).compile().invoke({})
 
 
+class _SequenceRunner:
+    def __init__(self, *statuses: VerificationCheckStatus) -> None:
+        self._statuses = iter(statuses)
+
+    def run(self, spec: VerificationSpec) -> VerificationResult:
+        status = next(self._statuses)
+        return VerificationResult.create(
+            name=spec.name,
+            argv=spec.argv,
+            cwd=spec.cwd,
+            status=status,
+            exit_code=0 if status is VerificationCheckStatus.PASS else 1,
+            stderr=(
+                "failure"
+                if status is not VerificationCheckStatus.PASS
+                else ""
+            ),
+        )
+
+
 class VerificationWorkflowTests(unittest.TestCase):
+    def test_repair_path_uses_s1_case_sensitive_canonicalization(self) -> None:
+        plan_with_case_distinct_paths = ImplementationPlan(
+            tasks=[
+                ImplementationTask(
+                    file_path="workspace_repo/A.py",
+                    logical_task="upper",
+                    atomic_tasks=[AtomicTask(atomic_task="upper")],
+                ),
+                ImplementationTask(
+                    file_path="workspace_repo/a.py",
+                    logical_task="lower",
+                    atomic_tasks=[AtomicTask(atomic_task="lower")],
+                ),
+            ]
+        )
+        state = AgentState(
+            implementation_plan=plan_with_case_distinct_paths,
+            last_edit_result=EditResult(
+                status=EditStatus.APPLIED,
+                path="a.py",
+            ),
+            developer_status=DeveloperStatus.COMPLETED,
+            verification_status=VerificationStatus.REGRESSION,
+        )
+        controller = VerificationController((), None, ".")
+
+        with patch(
+            "agent.developer.editing.os.path.normcase",
+            side_effect=lambda path: path,
+        ):
+            update = controller.prepare_repair(state)
+
+        self.assertEqual(
+            update["repair_plan"].tasks[0].file_path,
+            "workspace_repo/a.py",
+        )
+
+    def test_no_changes_cannot_hide_post_verification_failure(self) -> None:
+        cases = (
+            (
+                VerificationCheckStatus.FAIL,
+                VerificationStatus.REGRESSION,
+            ),
+            (
+                VerificationCheckStatus.EXECUTION_ERROR,
+                VerificationStatus.VERIFICATION_ERROR,
+            ),
+        )
+        for post_status, expected_status in cases:
+            with self.subTest(post_status=post_status):
+                runner = _SequenceRunner(
+                    VerificationCheckStatus.PASS,
+                    post_status,
+                )
+                result = create_workflow_graph(
+                    architect=lambda _: {"implementation_plan": plan()},
+                    developer=lambda _: {
+                        "developer_status": DeveloperStatus.NO_CHANGES
+                    },
+                    verification_specs=(
+                        VerificationSpec(name="check", argv=("unused",)),
+                    ),
+                    verification_runner=runner,
+                ).compile().invoke({})
+
+                self.assertEqual(
+                    result["verification_status"], expected_status
+                )
+                self.assertEqual(result["outcome"], WorkflowOutcome.FAILED)
+
+    def test_incomplete_developer_cannot_be_completed_by_verification(self) -> None:
+        for developer_status in (
+            DeveloperStatus.PENDING,
+            DeveloperStatus.RUNNING,
+        ):
+            with self.subTest(developer_status=developer_status):
+                runner = _SequenceRunner(
+                    VerificationCheckStatus.PASS,
+                    VerificationCheckStatus.PASS,
+                )
+                result = create_workflow_graph(
+                    architect=lambda _: {"implementation_plan": plan()},
+                    developer=lambda _: {"developer_status": developer_status},
+                    verification_specs=(
+                        VerificationSpec(name="check", argv=("unused",)),
+                    ),
+                    verification_runner=runner,
+                ).compile().invoke({})
+
+                self.assertEqual(
+                    result["verification_status"], VerificationStatus.VERIFIED
+                )
+                self.assertEqual(result["outcome"], WorkflowOutcome.PENDING)
+
     def test_rejected_edit_cannot_produce_successful_outcome(self) -> None:
         with tempfile.TemporaryDirectory() as directory:
             root = Path(directory)

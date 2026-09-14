@@ -58,7 +58,8 @@ The developer agent:
 
 ### Workflow Overview
 ```
-User Request → Architect (Research & Plan) → Developer (Implement) → Results
+User Request → Architect → Baseline Verification → Developer
+             → Post Verification → Bounded Repair (max 2) → WorkflowOutcome
 ```
 
 **Key Components:**
@@ -440,7 +441,7 @@ commands to run before and after editing. Configure a JSON list whose `argv`
 values are argument arrays:
 
 ```dotenv
-SWE_AGENT_VERIFICATION_CHECKS=[{"name":"tests","argv":["python","-m","unittest"],"cwd":".","timeout_seconds":120,"max_output_bytes":20000}]
+SWE_AGENT_VERIFICATION_CHECKS='[{"name":"tests","argv":["python","-m","unittest"],"cwd":".","timeout_seconds":120,"max_output_bytes":20000}]'
 ```
 
 Commands run with `shell=False`, and `cwd` must resolve inside

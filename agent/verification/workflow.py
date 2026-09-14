@@ -2,10 +2,10 @@
 
 from collections.abc import Sequence
 from pathlib import Path
-from pathlib import PurePosixPath
 from typing import Any, Protocol
 
 from agent.common.entities import ImplementationPlan
+from agent.developer.editing import canonical_plan_path
 from agent.developer.state import DeveloperStatus
 from agent.editing import EditResult
 from agent.outcome import WorkflowOutcome
@@ -201,21 +201,29 @@ def _workflow_outcome(
     developer_status: DeveloperStatus,
     verification_status: VerificationStatus,
 ) -> WorkflowOutcome:
+    if verification_status in {
+        VerificationStatus.VERIFICATION_ERROR,
+        VerificationStatus.REPAIR_EXHAUSTED,
+    }:
+        return WorkflowOutcome.FAILED
+    if verification_status is VerificationStatus.REGRESSION:
+        return (
+            WorkflowOutcome.PENDING
+            if developer_status is DeveloperStatus.COMPLETED
+            else WorkflowOutcome.FAILED
+        )
     if developer_status is DeveloperStatus.FAILED:
         return WorkflowOutcome.FAILED
+    if developer_status in {
+        DeveloperStatus.PENDING,
+        DeveloperStatus.RUNNING,
+    }:
+        return WorkflowOutcome.PENDING
     if developer_status is DeveloperStatus.NO_CHANGES:
         return WorkflowOutcome.NO_CHANGES
     if verification_status is VerificationStatus.UNVERIFIED:
         return WorkflowOutcome.UNVERIFIED
-    if verification_status in {
-        VerificationStatus.VERIFIED,
-        VerificationStatus.IMPROVED,
-        VerificationStatus.PRE_EXISTING_FAILURE,
-    }:
-        return WorkflowOutcome.COMPLETED
-    if verification_status is VerificationStatus.REGRESSION:
-        return WorkflowOutcome.PENDING
-    return WorkflowOutcome.FAILED
+    return WorkflowOutcome.COMPLETED
 
 
 def _repair_plan(
@@ -223,15 +231,9 @@ def _repair_plan(
     result: EditResult | None,
 ) -> ImplementationPlan:
     if plan is not None and result is not None:
-        committed_path = _relative_plan_path(result.path)
-        for task in plan.tasks:
-            if _relative_plan_path(task.file_path) == committed_path:
-                return plan.model_copy(update={"tasks": [task]})
+        committed_path = canonical_plan_path(result.path)
+        if committed_path is not None:
+            for task in plan.tasks:
+                if canonical_plan_path(task.file_path) == committed_path:
+                    return plan.model_copy(update={"tasks": [task]})
     return ImplementationPlan(tasks=[])
-
-
-def _relative_plan_path(path: str) -> str:
-    parts = list(PurePosixPath(path.replace("\\", "/")).parts)
-    if parts and parts[0] == "workspace_repo":
-        parts.pop(0)
-    return "/".join(parts).casefold()

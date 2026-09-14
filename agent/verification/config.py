@@ -1,6 +1,7 @@
 """Load trusted verification command configuration from the environment."""
 
 import json
+import math
 import os
 from collections.abc import Mapping
 from typing import Any
@@ -61,6 +62,10 @@ def _parse_spec(value: Any, index: int) -> VerificationSpec:
         raise ValueError(f"{label}.cwd must be a non-empty string.")
     if isinstance(timeout, bool) or not isinstance(timeout, (int, float)):
         raise ValueError(f"{label}.timeout_seconds must be a number.")
+    if not math.isfinite(timeout) or timeout <= 0:
+        raise ValueError(
+            f"{label}.timeout_seconds must be a finite positive number."
+        )
     if isinstance(output_limit, bool) or not isinstance(output_limit, int):
         raise ValueError(f"{label}.max_output_bytes must be an integer.")
     return VerificationSpec(

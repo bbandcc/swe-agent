@@ -198,3 +198,14 @@ parent-child timeout 均由顶层或公开接口测试覆盖。
 
 并行执行 compile 与 prompt render 时曾因瞬时内存不足导致 Pydantic 初始化失败；
 改为顺序执行后两项均通过，最终全量测试也在顺序执行下通过。
+
+## 新增任务：S2 Acceptance Fix
+
+- [x] repair canonicalization 与 S1 `os.path.normcase` 完全一致。
+- [x] 修正 NO_CHANGES、PENDING、RUNNING 与 verification 的 outcome 优先级。
+- [x] 在公开 spec 和环境配置入口拒绝非有限或非正 timeout。
+- [x] 修正 `.env.example` JSON，并更新 README 主流程与 S2 research。
+- [x] 完成全量验收并独立提交。
+
+验收：83 项测试中 82 项通过，1 项普通 symlink 用例因 Windows 权限跳过；
+compile、prompt render 与 diff check 通过。

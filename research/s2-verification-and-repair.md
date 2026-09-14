@@ -63,7 +63,7 @@
 
 - S2 是本机进程执行器，不是安全沙箱；配置命令本身仍应由可信用户或仓库提供。
 - 通用 runner 不理解 pytest/Jest 的测试用例语义。failure id 对完整输出做严格摘要比较；含时间戳、随机顺序或临时路径的失败可能被保守地判为变化。
-- Windows timeout 使用系统进程树终止命令尽力清理子进程；本轮不引入 Job Object 或容器级隔离。
+- Windows timeout 使用 Job Object 管理进程树，并以有限等待的 `taskkill` 作为附加失败时的降级；POSIX 使用独立 process group。本轮不引入容器级隔离。
 - `VERIFIED` 只表示配置的 checks 通过，不代表未配置的业务行为正确。
 
 ## 本轮实际验证
@@ -94,3 +94,18 @@ prompt render 和 `git diff --check` 通过。
 
 当前 repair 的确定性目标是本轮最后成功提交的文件。若更早编辑的文件通过跨文件
 副作用引入回归，S2 没有足够证据自动定位它；本轮不会解析不可信测试文本来猜测路径。
+
+## S2 Acceptance Fix
+
+- repair path 直接复用 S1 的 canonical helper：先转为 workspace 相对路径，再按
+  `os.path.normcase` 使用当前平台的大小写语义。
+- outcome 先处理 verification error 与不可修复 regression，再处理 Developer
+  状态；NO_CHANGES 不能遮住验证错误，PENDING/RUNNING 不能成为 COMPLETED。
+- `VerificationSpec` 与环境配置入口都拒绝 NaN、正负 Infinity、零和负 timeout；
+  runner 保留同一防御检查。
+- `.env.example` 和 README 使用单引号包住 JSON，复制到 `.env` 后由 dotenv
+  保留内部 JSON 双引号。
+
+Acceptance Fix 全量 `unittest` 共 83 项，其中 82 项通过；1 项普通 symlink
+用例因 Windows 当前账户缺少创建权限跳过，junction 用例通过。compile、Developer
+prompt render 和 `git diff --check` 通过。

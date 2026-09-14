@@ -54,3 +54,5 @@
 Verification 命令只通过外部配置的 `VerificationSpec` 注入，使用 argv、`shell=False` 和 workspace 内 cwd。baseline 与 post 使用同一组 checks，确定性代码根据结构化结果判断 verified、improved、regression、pre-existing failure、unverified 或 execution error。只有 regression 可回到同一个 Developer，repair 最多两次；每次必须重读文件并继续经过 S1 WorkspaceTransaction。不得把配置缺失、timeout 或 execution error 当成功，也不得为本切片加入新 Agent 或 S3 之后的能力。
 
 生产图通过 `SWE_AGENT_VERIFICATION_CHECKS` 接收可信 JSON argv checks。顶层 `WorkflowOutcome` 是整体终态，Developer rejected、NOOP 或 failure 必须为 failed。多文件 repair 使用独立 `repair_plan` 只重放最后成功提交的文件，同时保留 Architect 原计划。verification 输出始终作为不可信诊断数据处理。
+
+Repair path identity 必须复用 S1 的 `os.path.normcase` canonical 规则。Verification error 和不可修复 regression 的 outcome 优先于 NO_CHANGES；PENDING/RUNNING 不得成为 completed。所有 verification timeout 必须是有限正数。

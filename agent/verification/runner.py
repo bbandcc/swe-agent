@@ -1,6 +1,7 @@
 """Run configured verification commands inside one workspace boundary."""
 
 import hashlib
+import math
 import os
 import subprocess
 import threading
@@ -130,8 +131,8 @@ def _validate_spec(spec: VerificationSpec) -> str | None:
         return "Verification name must not be empty."
     if not spec.argv or any(not item or "\x00" in item for item in spec.argv):
         return "Verification argv must contain non-empty strings."
-    if spec.timeout_seconds <= 0:
-        return "Verification timeout must be greater than zero."
+    if not math.isfinite(spec.timeout_seconds) or spec.timeout_seconds <= 0:
+        return "Verification timeout must be a finite positive number."
     if spec.max_output_bytes < len(_TRUNCATION_MARKER) + 2:
         return "Verification max_output_bytes is too small."
     return None

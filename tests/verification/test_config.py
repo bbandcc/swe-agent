@@ -1,11 +1,14 @@
 import json
+import math
 import os
 import sys
 import tempfile
 import unittest
+from io import StringIO
 from pathlib import Path
 from unittest.mock import patch
 
+from dotenv import dotenv_values
 from agent.common.entities import ImplementationPlan, PlanStatus
 from agent.developer.state import DeveloperStatus
 from agent.graph import (
@@ -50,6 +53,39 @@ class VerificationConfigurationTests(unittest.TestCase):
         with patch.dict(os.environ, {VERIFICATION_CHECKS_ENV: value}):
             with self.assertRaisesRegex(ValueError, "argv"):
                 configured_verification_specs()
+
+    def test_rejects_invalid_timeout_from_environment(self) -> None:
+        for timeout in (math.nan, math.inf, -math.inf, 0, -1):
+            with self.subTest(timeout=timeout):
+                value = json.dumps(
+                    [
+                        {
+                            "name": "invalid",
+                            "argv": ["test"],
+                            "timeout_seconds": timeout,
+                        }
+                    ]
+                )
+                with patch.dict(os.environ, {VERIFICATION_CHECKS_ENV: value}):
+                    with self.assertRaisesRegex(ValueError, "finite positive"):
+                        configured_verification_specs()
+
+    def test_env_example_is_valid_dotenv_and_json(self) -> None:
+        example = Path(".env.example").read_text(encoding="utf-8")
+        assignment = next(
+            line.removeprefix("# ")
+            for line in example.splitlines()
+            if line.startswith(f"# {VERIFICATION_CHECKS_ENV}=")
+        )
+        configured_value = assignment.split("=", 1)[1]
+        self.assertTrue(configured_value.startswith("'"))
+        self.assertTrue(configured_value.endswith("'"))
+        values = dotenv_values(stream=StringIO(assignment))
+
+        specs = configured_verification_specs(values)
+
+        self.assertEqual(len(specs), 1)
+        self.assertEqual(specs[0].argv, ("python", "-m", "unittest"))
 
     def test_production_graph_executes_configured_checks(self) -> None:
         with tempfile.TemporaryDirectory() as directory:

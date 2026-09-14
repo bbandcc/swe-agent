@@ -2,6 +2,7 @@
 
 import hashlib
 import json
+import math
 from dataclasses import dataclass
 from enum import Enum
 
@@ -33,6 +34,18 @@ class VerificationSpec:
     cwd: str = "."
     timeout_seconds: float = 60.0
     max_output_bytes: int = 20_000
+
+    def __post_init__(self) -> None:
+        timeout = self.timeout_seconds
+        if (
+            isinstance(timeout, bool)
+            or not isinstance(timeout, (int, float))
+            or not math.isfinite(timeout)
+            or timeout <= 0
+        ):
+            raise ValueError(
+                "Verification timeout must be a finite positive number."
+            )
 
 
 @dataclass(frozen=True, slots=True)
