@@ -129,6 +129,45 @@ class DeveloperWorkflowTests(unittest.TestCase):
             result["developer_error_code"], DeveloperErrorCode.INVALID_PLAN
         )
 
+    def test_rejects_duplicate_canonical_file_tasks_before_first_write(self) -> None:
+        with tempfile.TemporaryDirectory() as directory:
+            root = Path(directory)
+            target = root / "app.py"
+            target.write_text("value = 1\n", encoding="utf-8", newline="")
+            executor = DeveloperEditExecutor(WorkspaceEditor(root))
+            plan = ImplementationPlan(
+                tasks=[
+                    ImplementationTask(
+                        file_path="./workspace_repo/app.py",
+                        logical_task="第一次修改",
+                        atomic_tasks=[AtomicTask(atomic_task="改为 2")],
+                    ),
+                    ImplementationTask(
+                        file_path="workspace_repo/app.py",
+                        logical_task="重复修改",
+                        atomic_tasks=[AtomicTask(atomic_task="改为 3")],
+                    ),
+                ]
+            )
+            runtime = DeveloperRuntime(
+                edit_executor=lambda: executor,
+                load_codebase_structure=lambda: self.fail("workspace was scanned"),
+                research_atomic_task=lambda _: self.fail("research model was called"),
+                propose_existing_file_edit=lambda _: self.fail("edit model was called"),
+                propose_new_file=lambda _: self.fail("new-file model was called"),
+            )
+
+            result = create_developer_workflow(runtime, research_tools=[]).invoke(
+                {"implementation_plan": plan}
+            )
+
+            self.assertEqual(result["developer_status"], DeveloperStatus.FAILED)
+            self.assertEqual(
+                result["developer_error_code"], DeveloperErrorCode.INVALID_PLAN
+            )
+            self.assertIsNone(result["last_edit_result"])
+            self.assertEqual(target.read_text(encoding="utf-8"), "value = 1\n")
+
     def test_accepts_explicit_no_change_plan_without_calling_dependencies(self) -> None:
         runtime = DeveloperRuntime(
             edit_executor=lambda: self.fail("workspace was accessed"),

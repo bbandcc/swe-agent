@@ -1,5 +1,6 @@
 """Translate untrusted Developer model output into deterministic workspace edits."""
 
+import os
 from dataclasses import dataclass
 from pathlib import PurePosixPath, PureWindowsPath
 
@@ -42,6 +43,13 @@ class DeveloperEditExecutor:
                 message="The implementation plan path must stay inside workspace_repo.",
             )
         return self._editor.snapshot(relative_path)
+
+    def canonical_plan_path(self, plan_path: str) -> str | None:
+        """Return the canonical comparison key for one plan-controlled path."""
+        relative_path = _workspace_relative_path(plan_path)
+        if relative_path is None:
+            return None
+        return os.path.normcase(relative_path.replace("/", os.sep))
 
     def begin(self, plan_path: str) -> TransactionResult:
         relative_path = _workspace_relative_path(plan_path)

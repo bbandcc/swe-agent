@@ -13,6 +13,7 @@ from agent.editing import WorkspaceEditor
 from agent.tools.codemap import codemap_tools
 from agent.tools.search import search_tools
 from agent.tools.write import get_files_structure
+from agent.workspace import configured_workspace_root
 from helpers.prompts import markdown_to_prompt_template
 
 RunnableInput = dict[str, Any]
@@ -64,7 +65,7 @@ def _create_runnable():
 def default_developer_runtime() -> DeveloperRuntime:
     return DeveloperRuntime(
         edit_executor=lambda: DeveloperEditExecutor(
-            WorkspaceEditor("./workspace_repo")
+            WorkspaceEditor(configured_workspace_root())
         ),
         load_codebase_structure=_load_codebase_structure,
         research_atomic_task=lambda values: _research_runnable().invoke(values),

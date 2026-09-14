@@ -214,6 +214,9 @@ def _is_link_or_junction(path: Path) -> bool:
 
 
 def default_workspace_resolver() -> WorkspacePathResolver:
-    return WorkspacePathResolver(
-        os.environ.get("SWE_AGENT_WORKSPACE", "./workspace_repo")
-    )
+    return WorkspacePathResolver(configured_workspace_root())
+
+
+def configured_workspace_root() -> Path:
+    """Return the single workspace root used by default read and write paths."""
+    return Path(os.environ.get("SWE_AGENT_WORKSPACE", "./workspace_repo"))

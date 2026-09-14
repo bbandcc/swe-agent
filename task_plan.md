@@ -128,3 +128,20 @@ AGENTS.md 已单独提交。上游源码和静态资源已导入并标记固定�
 ### 当前边界
 
 smoke 通过只能证明密钥、端点、模型、工具调用和结构化输出与当前客户端兼容；它不等于完整 Architect → Developer 任务质量评测。完整效果仍需后续固定任务集、多次运行和执行器验收。
+
+## 新增任务：S1 Final Gate
+
+- [x] 统一默认读取工具与 Developer 编辑器的 workspace 配置来源。
+- [x] 将 search 文件读取失败暴露为 warnings 与 skipped_files。
+- [x] 在任何写盘前拒绝指向同一 canonical 文件的重复任务。
+- [x] 增加父图 fake-model 状态传播和真实 ToolNode 循环回归。
+- [x] 完成全量 S1 tests、compile、diff check 与 DeepSeek smoke。
+- [x] 独立提交 S1 Final Gate。
+
+### 范围边界
+
+本步只关闭 S1 最终验收缺口；保留现有单文件事务、角色划分、模型 provider 和依赖主版本，不引入 S2 能力。
+
+### 验收结果
+
+统一工作区根、search 跳过文件诊断、重复 canonical 文件任务拒绝、父图状态传播与真实 ToolNode 循环均已覆盖。全量 48 项测试中 47 项通过，1 项因 Windows 缺少普通符号链接权限跳过；junction 用例通过。Python compile、Git diff whitespace 与真实 DeepSeek 三项 smoke 均通过。

@@ -5,6 +5,9 @@ import unittest
 from pathlib import Path
 from unittest.mock import patch
 
+from agent.developer.editing import DeveloperEditExecutor
+from agent.developer.runtime import default_developer_runtime
+from agent.editing import EditStatus
 from agent.tools.codemap import (
     get_code_definitions,
     get_function_implementation,
@@ -14,6 +17,49 @@ from agent.tools.search import search_keyword_in_directory
 
 
 class WorkspaceReadBoundaryTests(unittest.TestCase):
+    def test_default_reader_and_editor_share_configured_workspace(self) -> None:
+        with tempfile.TemporaryDirectory() as directory:
+            parent = Path(directory)
+            configured = parent / "configured"
+            configured.mkdir()
+            target = configured / "app.py"
+            target.write_text("value = 1\n", encoding="utf-8", newline="")
+            fallback = parent / "workspace_repo"
+            fallback.mkdir()
+            decoy = fallback / "app.py"
+            decoy.write_text("value = 999\n", encoding="utf-8", newline="")
+            previous_cwd = Path.cwd()
+            try:
+                os.chdir(parent)
+                with patch.dict(
+                    os.environ,
+                    {"SWE_AGENT_WORKSPACE": str(configured)},
+                    clear=False,
+                ):
+                    read_result = get_raw_file_content.invoke(
+                        {"file_path": "./workspace_repo/app.py"}
+                    )
+                    executor: DeveloperEditExecutor = (
+                        default_developer_runtime().edit_executor()
+                    )
+                    snapshot = executor.prepare("workspace_repo/app.py")
+                    edit_result = executor.apply(
+                        snapshot,
+                        (
+                            "<<<<<<< SEARCH\nvalue = 1\n=======\n"
+                            "value = 2\n>>>>>>> REPLACE"
+                        ),
+                        task_id="workspace-config.step-1",
+                    )
+            finally:
+                os.chdir(previous_cwd)
+
+            self.assertTrue(read_result["ok"], read_result)
+            self.assertEqual(read_result["content"], "value = 1\n")
+            self.assertEqual(edit_result.status, EditStatus.APPLIED)
+            self.assertEqual(target.read_text(encoding="utf-8"), "value = 2\n")
+            self.assertEqual(decoy.read_text(encoding="utf-8"), "value = 999\n")
+
     def test_model_controlled_read_tools_read_workspace_files(self) -> None:
         with tempfile.TemporaryDirectory() as directory:
             root = Path(directory)
@@ -123,6 +169,51 @@ class WorkspaceReadBoundaryTests(unittest.TestCase):
 
             self.assertTrue(result["ok"])
             self.assertEqual(result["content"], "No matches found.")
+
+    def test_search_reports_files_skipped_for_decode_errors(self) -> None:
+        with tempfile.TemporaryDirectory() as directory:
+            root = Path(directory)
+            (root / "valid.py").write_text(
+                "TOKEN = 'visible'\n", encoding="utf-8", newline=""
+            )
+            (root / "invalid.py").write_bytes(b"TOKEN = '\xff'\n")
+
+            with patch.dict(
+                os.environ, {"SWE_AGENT_WORKSPACE": str(root)}, clear=False
+            ):
+                result = search_keyword_in_directory.invoke(
+                    {"directory": ".", "search_term": "TOKEN"}
+                )
+
+            self.assertTrue(result["ok"], result)
+            self.assertIn("valid.py", result["content"])
+            self.assertEqual(result["skipped_files"], ["invalid.py"])
+            self.assertEqual(len(result["warnings"]), 1)
+            self.assertIn("invalid.py", result["warnings"][0])
+
+    def test_search_reports_files_skipped_for_read_errors(self) -> None:
+        with tempfile.TemporaryDirectory() as directory:
+            root = Path(directory)
+            (root / "unreadable.py").write_text(
+                "TOKEN = 'hidden'\n", encoding="utf-8", newline=""
+            )
+
+            with (
+                patch.dict(
+                    os.environ,
+                    {"SWE_AGENT_WORKSPACE": str(root)},
+                    clear=False,
+                ),
+                patch.object(Path, "open", side_effect=OSError("read denied")),
+            ):
+                result = search_keyword_in_directory.invoke(
+                    {"directory": ".", "search_term": "TOKEN"}
+                )
+
+            self.assertTrue(result["ok"], result)
+            self.assertEqual(result["content"], "No matches found.")
+            self.assertEqual(result["skipped_files"], ["unreadable.py"])
+            self.assertIn("OSError", result["warnings"][0])
 
 
 if __name__ == "__main__":

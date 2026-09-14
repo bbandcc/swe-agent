@@ -1,6 +1,7 @@
 """Deterministic validation, routing, and message adaptation for Developer."""
 
 import json
+from collections.abc import Callable
 from typing import Any
 
 from langchain_core.messages import AIMessage, AnyMessage, HumanMessage
@@ -49,6 +50,29 @@ def start_implementing(state: SoftwareDeveloperState) -> dict[str, Any]:
             error or (plan.no_change_reason if plan is not None else "")
         ),
     }
+
+
+def duplicate_file_task_error(
+    state: SoftwareDeveloperState,
+    canonicalize_path: Callable[[str], str | None],
+) -> str | None:
+    """Describe the first duplicate file task without accessing the workspace."""
+    plan = state.implementation_plan
+    if plan is None:
+        return None
+    seen: dict[str, str] = {}
+    for task in plan.tasks:
+        canonical = canonicalize_path(task.file_path)
+        if canonical is None:
+            continue
+        previous = seen.get(canonical)
+        if previous is not None:
+            return (
+                "Implementation tasks must target unique workspace files; "
+                f"{task.file_path!r} duplicates {previous!r}."
+            )
+        seen[canonical] = task.file_path
+    return None
 
 
 def should_start(state: SoftwareDeveloperState):

@@ -2,12 +2,20 @@
 
 import os
 import re
+from dataclasses import dataclass
 from pathlib import Path
 
 from langchain_core.tools import tool
 
 from agent.tools.results import tool_error, tool_rejection, tool_success
 from agent.workspace import WorkspacePathResolver, default_workspace_resolver
+
+
+@dataclass(frozen=True, slots=True)
+class _DirectorySearchResult:
+    content: str
+    warnings: list[str]
+    skipped_files: list[str]
 
 
 def _is_link_or_junction(path: Path) -> bool:
@@ -40,8 +48,10 @@ def _search_directory(
     directory: Path,
     search_term: str,
     context: int,
-) -> str:
+) -> _DirectorySearchResult:
     output: list[str] = []
+    warnings: list[str] = []
+    skipped_files: list[str] = []
     for root, directories, files in os.walk(directory, followlinks=False):
         root_path = Path(root)
         directories[:] = [
@@ -57,12 +67,22 @@ def _search_directory(
                 continue
             resolved_file = resolver.resolve_file(str(file_path))
             if not resolved_file.ok or resolved_file.path is None:
+                skipped = resolved_file.relative_path or name
+                skipped_files.append(skipped)
+                warnings.append(
+                    f"Skipped {skipped}: {resolved_file.message or 'unsafe path.'}"
+                )
                 continue
             try:
                 matches = _search_in_file(
                     resolved_file.path, search_term, context
                 )
-            except (OSError, UnicodeError):
+            except (OSError, UnicodeError) as error:
+                skipped = resolved_file.relative_path or name
+                skipped_files.append(skipped)
+                warnings.append(
+                    f"Skipped {skipped}: {type(error).__name__}: {error}"
+                )
                 continue
             for match_line, snippet in matches:
                 output.append(f"\nFile: {resolved_file.relative_path}")
@@ -72,7 +92,11 @@ def _search_directory(
                     for line_number, code in snippet
                 )
                 output.append("-" * 50)
-    return "\n".join(output) if output else "No matches found."
+    return _DirectorySearchResult(
+        content="\n".join(output) if output else "No matches found.",
+        warnings=warnings,
+        skipped_files=skipped_files,
+    )
 
 
 @tool(parse_docstring=True)
@@ -98,10 +122,15 @@ def search_keyword_in_directory(
     resolution = resolver.resolve_directory(directory)
     if not resolution.ok or resolution.path is None:
         return tool_rejection(resolution)
-    content = _search_directory(
+    result = _search_directory(
         resolver, resolution.path, search_term, context
     )
-    return tool_success(resolution.relative_path or ".", content)
+    return tool_success(
+        resolution.relative_path or ".",
+        result.content,
+        warnings=result.warnings,
+        skipped_files=result.skipped_files,
+    )
 
 
 search_tools = [search_keyword_in_directory]

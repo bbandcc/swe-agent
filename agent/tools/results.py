@@ -3,8 +3,19 @@
 from agent.workspace import PathResolution
 
 
-def tool_success(path: str, content: str) -> dict[str, object]:
-    return {"ok": True, "path": path, "content": content}
+def tool_success(
+    path: str,
+    content: str,
+    *,
+    warnings: list[str] | None = None,
+    skipped_files: list[str] | None = None,
+) -> dict[str, object]:
+    result: dict[str, object] = {"ok": True, "path": path, "content": content}
+    if warnings is not None:
+        result["warnings"] = warnings
+    if skipped_files is not None:
+        result["skipped_files"] = skipped_files
+    return result
 
 
 def tool_rejection(resolution: PathResolution) -> dict[str, object]:

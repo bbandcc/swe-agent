@@ -10,11 +10,13 @@ from langgraph.prebuilt import ToolNode
 
 from agent.developer.runtime import DeveloperRuntime, default_developer_runtime
 from agent.developer.state import (
+    DeveloperErrorCode,
     DeveloperStatus,
     SoftwareDeveloperState,
 )
 from agent.developer.workflow_support import (
     convert_tools_messages_to_ai_and_human,
+    duplicate_file_task_error,
     failed_edit,
     invalid_state,
     route_after_commit,
@@ -39,6 +41,24 @@ def create_developer_workflow(
     tools = list(
         search_tools + codemap_tools if research_tools is None else research_tools
     )
+
+    def validate_and_start(
+        state: SoftwareDeveloperState,
+    ) -> dict[str, Any]:
+        result = start_implementing(state)
+        if result["developer_status"] is not DeveloperStatus.RUNNING:
+            return result
+        duplicate_error = duplicate_file_task_error(
+            state, runtime.edit_executor().canonical_plan_path
+        )
+        if duplicate_error is not None:
+            return {
+                **result,
+                "developer_status": DeveloperStatus.FAILED,
+                "developer_error_code": DeveloperErrorCode.INVALID_PLAN,
+                "developer_message": duplicate_error,
+            }
+        return result
 
     def prepare_for_implementation(
         state: SoftwareDeveloperState,
@@ -191,7 +211,7 @@ def create_developer_workflow(
         tools, messages_key="atomic_implementation_research"
     )
     workflow = StateGraph(SoftwareDeveloperState)
-    workflow.add_node("start_implementing", start_implementing)
+    workflow.add_node("start_implementing", validate_and_start)
     workflow.add_node("prepare_for_implementation", prepare_for_implementation)
     workflow.add_node(
         "get_clear_implementation_plan_for_atomic_task",
