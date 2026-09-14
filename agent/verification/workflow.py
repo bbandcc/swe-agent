@@ -2,9 +2,13 @@
 
 from collections.abc import Sequence
 from pathlib import Path
+from pathlib import PurePosixPath
 from typing import Any, Protocol
 
+from agent.common.entities import ImplementationPlan
 from agent.developer.state import DeveloperStatus
+from agent.editing import EditResult
+from agent.outcome import WorkflowOutcome
 from agent.verification.contracts import (
     VerificationCheckStatus,
     VerificationResult,
@@ -23,6 +27,8 @@ class _VerificationState(Protocol):
     verification_status: VerificationStatus
     repair_attempts: int
     developer_status: DeveloperStatus
+    implementation_plan: ImplementationPlan | None
+    last_edit_result: EditResult | None
 
 
 class VerificationController:
@@ -43,8 +49,10 @@ class VerificationController:
         initial = {
             "post_verification": (),
             "verification_feedback": None,
+            "repair_plan": None,
             "repair_attempts": 0,
             "developer_status": state.developer_status,
+            "outcome": WorkflowOutcome.PENDING,
         }
         if not self._specs:
             return {
@@ -62,6 +70,7 @@ class VerificationController:
                 "verification_message": (
                     "Baseline verification could not execute reliably."
                 ),
+                "outcome": WorkflowOutcome.FAILED,
             }
         return {
             **initial,
@@ -76,6 +85,9 @@ class VerificationController:
                 "post_verification": (),
                 "verification_status": VerificationStatus.UNVERIFIED,
                 "verification_message": "No verification checks are configured.",
+                "outcome": _workflow_outcome(
+                    state.developer_status, VerificationStatus.UNVERIFIED
+                ),
             }
         results = self._run_checks()
         status = classify_verification(state.baseline_verification, results)
@@ -88,15 +100,20 @@ class VerificationController:
             "post_verification": results,
             "verification_status": status,
             "verification_message": _verification_message(status),
+            "outcome": _workflow_outcome(state.developer_status, status),
         }
 
     def prepare_repair(self, state: _VerificationState) -> dict[str, Any]:
         attempt = state.repair_attempts + 1
         return {
             "repair_attempts": attempt,
+            "repair_plan": _repair_plan(
+                state.implementation_plan, state.last_edit_result
+            ),
             "verification_feedback": {
                 "attempt": attempt,
                 "status": VerificationStatus.REGRESSION.value,
+                "diagnostic_data_trust": "untrusted",
                 "baseline_results": [
                     _result_feedback(result)
                     for result in state.baseline_verification
@@ -109,6 +126,7 @@ class VerificationController:
             "developer_status": DeveloperStatus.PENDING,
             "developer_error_code": None,
             "developer_message": "",
+            "outcome": WorkflowOutcome.PENDING,
         }
 
     def route_after_baseline(self, state: _VerificationState) -> str:
@@ -150,6 +168,8 @@ def _result_feedback(result: VerificationResult) -> dict[str, object]:
         "exit_code": result.exit_code,
         "stdout": result.stdout,
         "stderr": result.stderr,
+        "stdout_truncated": result.stdout_truncated,
+        "stderr_truncated": result.stderr_truncated,
         "failure_id": result.failure_id,
         "message": result.message,
     }
@@ -175,3 +195,43 @@ def _verification_message(status: VerificationStatus) -> str:
         ),
     }
     return messages.get(status, status.value)
+
+
+def _workflow_outcome(
+    developer_status: DeveloperStatus,
+    verification_status: VerificationStatus,
+) -> WorkflowOutcome:
+    if developer_status is DeveloperStatus.FAILED:
+        return WorkflowOutcome.FAILED
+    if developer_status is DeveloperStatus.NO_CHANGES:
+        return WorkflowOutcome.NO_CHANGES
+    if verification_status is VerificationStatus.UNVERIFIED:
+        return WorkflowOutcome.UNVERIFIED
+    if verification_status in {
+        VerificationStatus.VERIFIED,
+        VerificationStatus.IMPROVED,
+        VerificationStatus.PRE_EXISTING_FAILURE,
+    }:
+        return WorkflowOutcome.COMPLETED
+    if verification_status is VerificationStatus.REGRESSION:
+        return WorkflowOutcome.PENDING
+    return WorkflowOutcome.FAILED
+
+
+def _repair_plan(
+    plan: ImplementationPlan | None,
+    result: EditResult | None,
+) -> ImplementationPlan:
+    if plan is not None and result is not None:
+        committed_path = _relative_plan_path(result.path)
+        for task in plan.tasks:
+            if _relative_plan_path(task.file_path) == committed_path:
+                return plan.model_copy(update={"tasks": [task]})
+    return ImplementationPlan(tasks=[])
+
+
+def _relative_plan_path(path: str) -> str:
+    parts = list(PurePosixPath(path.replace("\\", "/")).parts)
+    if parts and parts[0] == "workspace_repo":
+        parts.pop(0)
+    return "/".join(parts).casefold()

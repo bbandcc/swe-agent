@@ -181,3 +181,20 @@ smoke 通过只能证明密钥、端点、模型、工具调用和结构化输�
 - 后台参考研究因工具额度中断；主任务已直接核对三个项目的固定提交源码并写入 S2 研究文档。
 - Windows venv 启动器的 timeout 测试一度留下短暂 cwd 句柄；runner 改为显式进程组/进程树终止，timeout 测试使用真实解释器进程验证。
 - 抽取 verification controller 后，LangGraph 对 bound method 的 state 注解推断与父图 Pydantic state 不一致；父图增加带 `AgentState` 注解的薄 wrapper，保持 controller 与图 schema 解耦。
+
+## 新增任务：S2 Final Gate
+
+- [x] 让生产图从可信外部 JSON 配置加载 argv verification checks。
+- [x] 增加整体 outcome，确保 Developer 失败或 NOOP 不被测试通过覆盖。
+- [x] 将多文件 repair 收窄到最后提交并触发回归的文件。
+- [x] 有限等待进程树清理，并验证 parent-child timeout。
+- [x] 标记 verification 输出为不可信诊断数据并传递截断标志。
+- [x] 运行全量测试、compile、prompt render 和 diff check。
+- [x] 独立提交 S2 Final Gate。
+
+验收：全量 77 项测试中 76 项通过，1 项普通 symlink 用例因 Windows 权限跳过；
+compile、prompt render 与 diff check 通过。生产配置、整体终态、多文件 repair 和
+parent-child timeout 均由顶层或公开接口测试覆盖。
+
+并行执行 compile 与 prompt render 时曾因瞬时内存不足导致 Pydantic 初始化失败；
+改为顺序执行后两项均通过，最终全量测试也在顺序执行下通过。

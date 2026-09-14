@@ -33,6 +33,9 @@ class SoftwareDeveloperState(BaseModel):
     implementation_plan: ImplementationPlan | None = Field(
         None, description="The implementation plan to be executed"
     )
+    repair_plan: ImplementationPlan | None = Field(
+        None, description="Optional file-scoped plan for a repair attempt"
+    )
     current_task_idx: int = Field(0, description="Current logical task index")
     current_atomic_task_idx: int = Field(0, description="Current atomic task index")
     atomic_implementation_research: Annotated[
@@ -58,3 +61,7 @@ class SoftwareDeveloperState(BaseModel):
     developer_message: str = Field("")
     verification_feedback: dict[str, Any] | None = Field(None)
     repair_attempts: int = Field(0, ge=0)
+
+    @property
+    def active_implementation_plan(self) -> ImplementationPlan | None:
+        return self.repair_plan or self.implementation_plan

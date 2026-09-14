@@ -435,6 +435,18 @@ Key configuration files:
 - `.env`: API keys and environment variables
 - `pyproject.toml`: Python dependencies and project metadata
 
+At graph startup, the production `swe_agent` can load trusted verification
+commands to run before and after editing. Configure a JSON list whose `argv`
+values are argument arrays:
+
+```dotenv
+SWE_AGENT_VERIFICATION_CHECKS=[{"name":"tests","argv":["python","-m","unittest"],"cwd":".","timeout_seconds":120,"max_output_bytes":20000}]
+```
+
+Commands run with `shell=False`, and `cwd` must resolve inside
+`SWE_AGENT_WORKSPACE`. An unset or empty configuration produces the explicit
+`UNVERIFIED` result. Shell command strings are rejected.
+
 ## 📄 License
 
 This project is licensed under the MIT License - see the [LICENSE](LICENSE) file for details.

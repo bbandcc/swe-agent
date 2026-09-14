@@ -72,3 +72,25 @@
 - S2 runner、四类 baseline/post 判定、`UNVERIFIED`、一次 repair 成功、两次耗尽、次数上限和 S1 transaction 拒绝路径均通过测试。
 - Python compile、两个修改后 Developer prompt 的渲染以及 `git diff --check` 通过。
 - 本轮没有运行真实 Agent 任务或 SWE-bench，因此不声明任务成功率、成本或质量提升。
+
+## S2 Final Gate
+
+- 生产 `swe_agent` 通过 `SWE_AGENT_VERIFICATION_CHECKS` 读取 JSON argv
+  checks；未配置仍为 `UNVERIFIED`，字符串 shell command 会在配置解析时被拒绝。
+- 顶层 `WorkflowOutcome` 独立表达整体结果。post check 即使通过，也不能把
+  rejected、NOOP 或其他 Developer failure 覆盖为成功。
+- repair 使用独立 `repair_plan` 收窄到本轮最后提交的文件，并保留 Architect
+  原始 `implementation_plan`。两文件验收证明 A 只编辑一次且最终字节保持不变，
+  B 单独 repair 后通过。
+- verification stdout/stderr 被标记为不可信诊断数据，反馈同时携带两条流的
+  truncation 标志。
+- Windows 使用 [Job Objects](https://learn.microsoft.com/en-us/windows/win32/procthread/job-objects)
+  管理 parent-child 进程树；POSIX 继续使用新 session/process group。所有 wait
+  都带有限 timeout，parent-child 延迟写文件测试证明 timeout 返回后子进程未继续执行。
+
+Final Gate 全量 `unittest` 共 77 项，其中 76 项通过；1 项普通 symlink 用例因
+Windows 当前账户缺少创建权限跳过，junction 用例通过。compile、两个 Developer
+prompt render 和 `git diff --check` 通过。
+
+当前 repair 的确定性目标是本轮最后成功提交的文件。若更早编辑的文件通过跨文件
+副作用引入回归，S2 没有足够证据自动定位它；本轮不会解析不可信测试文本来猜测路径。

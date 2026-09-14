@@ -63,7 +63,7 @@ def create_developer_workflow(
     def prepare_for_implementation(
         state: SoftwareDeveloperState,
     ) -> dict[str, Any]:
-        plan = state.implementation_plan
+        plan = state.active_implementation_plan
         if plan is None:
             return invalid_state("The Developer has no implementation plan.")
         current_task = plan.tasks[state.current_task_idx]
@@ -95,7 +95,7 @@ def create_developer_workflow(
     def get_clear_implementation_plan_for_atomic_task(
         state: SoftwareDeveloperState,
     ) -> dict[str, list[AnyMessage]]:
-        plan = state.implementation_plan
+        plan = state.active_implementation_plan
         transaction = state.current_file_transaction
         if plan is None or transaction is None:
             return {"atomic_implementation_research": []}
@@ -120,7 +120,7 @@ def create_developer_workflow(
     def stage_diff_for_task(
         state: SoftwareDeveloperState,
     ) -> dict[str, Any]:
-        plan = state.implementation_plan
+        plan = state.active_implementation_plan
         transaction = state.current_file_transaction
         if plan is None or transaction is None:
             return invalid_state(

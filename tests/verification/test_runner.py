@@ -1,5 +1,6 @@
 import sys
 import tempfile
+import time
 import unittest
 from pathlib import Path
 
@@ -65,7 +66,7 @@ class VerificationRunnerTests(unittest.TestCase):
                         "-c",
                         "import time; print('started', flush=True); time.sleep(5)",
                     ),
-                    timeout_seconds=0.05,
+                    timeout_seconds=0.2,
                 )
             )
 
@@ -73,6 +74,32 @@ class VerificationRunnerTests(unittest.TestCase):
             self.assertIsNone(result.exit_code)
             self.assertIn("started", result.stdout)
             self.assertIn("timed out", result.message.lower())
+
+    def test_timeout_terminates_child_process_tree(self) -> None:
+        with tempfile.TemporaryDirectory() as directory:
+            root = Path(directory)
+            executable = getattr(sys, "_base_executable", sys.executable)
+            child_code = (
+                "import time; from pathlib import Path; time.sleep(0.8); "
+                "Path('child-survived.txt').write_text('alive')"
+            )
+            parent_code = (
+                "import subprocess, sys, time; "
+                f"subprocess.Popen([sys.executable, '-c', {child_code!r}]); "
+                "time.sleep(5)"
+            )
+
+            result = VerificationRunner(root).run(
+                VerificationSpec(
+                    name="process-tree",
+                    argv=(executable, "-c", parent_code),
+                    timeout_seconds=0.1,
+                )
+            )
+            time.sleep(1)
+
+            self.assertEqual(result.status, VerificationCheckStatus.TIMEOUT)
+            self.assertFalse((root / "child-survived.txt").exists())
 
     def test_reports_process_start_failure(self) -> None:
         with tempfile.TemporaryDirectory() as directory:

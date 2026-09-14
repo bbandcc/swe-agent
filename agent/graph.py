@@ -10,6 +10,7 @@ from agent.common.entities import ImplementationPlan
 from agent.developer.graph import swe_developer
 from agent.developer.state import DeveloperErrorCode, DeveloperStatus
 from agent.editing import EditResult
+from agent.outcome import WorkflowOutcome
 from agent.verification import (
     VerificationResult,
     VerificationRunner,
@@ -17,6 +18,7 @@ from agent.verification import (
     VerificationStatus,
 )
 from agent.verification.workflow import VerificationController
+from agent.verification.config import configured_verification_specs
 from agent.workspace import configured_workspace_root
 
 
@@ -26,6 +28,9 @@ class AgentState(BaseModel):
     ] = Field(default_factory=list)
     implementation_plan: Optional[ImplementationPlan] = Field(
         None, description="The implementation plan to be executed"
+    )
+    repair_plan: Optional[ImplementationPlan] = Field(
+        None, description="Current file-scoped repair plan"
     )
     last_edit_result: Optional[EditResult] = Field(
         None, description="The final Developer edit outcome"
@@ -45,6 +50,7 @@ class AgentState(BaseModel):
     verification_message: str = Field("")
     verification_feedback: dict[str, Any] | None = Field(None)
     repair_attempts: int = Field(0, ge=0)
+    outcome: WorkflowOutcome = Field(WorkflowOutcome.PENDING)
 
 
 def create_workflow_graph(
@@ -105,6 +111,21 @@ def create_workflow_graph(
     return graph_builder
 
 
-swe_agent = create_workflow_graph().compile().with_config(
+def create_production_workflow_graph(
+    *,
+    architect: Any = None,
+    developer: Any = None,
+    verification_runner: VerificationRunner | None = None,
+):
+    """Build the production graph from trusted external verification config."""
+    return create_workflow_graph(
+        architect=architect,
+        developer=developer,
+        verification_specs=configured_verification_specs(),
+        verification_runner=verification_runner,
+    )
+
+
+swe_agent = create_production_workflow_graph().compile().with_config(
     {"tags": ["agent-v1"], "recursion_limit": 200}
 )

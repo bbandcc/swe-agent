@@ -2,7 +2,6 @@
 
 import hashlib
 import os
-import signal
 import subprocess
 import threading
 import time
@@ -14,6 +13,7 @@ from agent.verification.contracts import (
     VerificationResult,
     VerificationSpec,
 )
+from agent.verification.process_tree import ProcessTree
 from agent.workspace import WorkspacePathResolver
 
 _TRUNCATION_MARKER = b"\n... output truncated ...\n"
@@ -58,6 +58,7 @@ class VerificationRunner:
                 f"Verification process could not start: {error}",
                 started_at,
             )
+        process_tree = ProcessTree(process)
 
         stdout_capture = _BoundedOutput(spec.max_output_bytes)
         stderr_capture = _BoundedOutput(spec.max_output_bytes)
@@ -83,7 +84,7 @@ class VerificationRunner:
                 else VerificationCheckStatus.FAIL
             )
         except subprocess.TimeoutExpired:
-            _terminate_process_tree(process)
+            process_tree.terminate()
             status = VerificationCheckStatus.TIMEOUT
             message = (
                 f"Verification timed out after {spec.timeout_seconds:g} seconds."
@@ -104,6 +105,8 @@ class VerificationRunner:
         if capture_error is not None:
             status = VerificationCheckStatus.EXECUTION_ERROR
             message = f"Verification output could not be captured: {capture_error}"
+
+        process_tree.close()
 
         return VerificationResult.create(
             name=spec.name,
@@ -185,27 +188,6 @@ class _BoundedOutput:
         self._tail.extend(chunk)
         if len(self._tail) > self._tail_limit:
             del self._tail[: -self._tail_limit]
-
-
-def _terminate_process_tree(process: subprocess.Popen[bytes]) -> None:
-    try:
-        if os.name == "posix":
-            os.killpg(process.pid, signal.SIGKILL)
-        else:
-            subprocess.run(
-                ["taskkill", "/PID", str(process.pid), "/T", "/F"],
-                shell=False,
-                stdin=subprocess.DEVNULL,
-                stdout=subprocess.DEVNULL,
-                stderr=subprocess.DEVNULL,
-                timeout=5,
-                check=False,
-            )
-    except (OSError, subprocess.TimeoutExpired):
-        pass
-    if process.poll() is None:
-        process.kill()
-    process.wait()
 
 
 def _execution_error(

@@ -17,7 +17,7 @@ from agent.editing import EditResult, EditStatus
 
 
 def start_implementing(state: SoftwareDeveloperState) -> dict[str, Any]:
-    plan = state.implementation_plan
+    plan = state.active_implementation_plan
     error: str | None = None
     status = DeveloperStatus.RUNNING
     if plan is None:
@@ -57,7 +57,7 @@ def duplicate_file_task_error(
     canonicalize_path: Callable[[str], str | None],
 ) -> str | None:
     """Describe the first duplicate file task without accessing the workspace."""
-    plan = state.implementation_plan
+    plan = state.active_implementation_plan
     if plan is None:
         return None
     seen: dict[str, str] = {}
@@ -97,7 +97,7 @@ def should_continue_after_preparation(state: SoftwareDeveloperState):
 def route_after_staging(state: SoftwareDeveloperState):
     if state.developer_status is DeveloperStatus.FAILED:
         return END
-    plan = state.implementation_plan
+    plan = state.active_implementation_plan
     if plan is None:
         return END
     task = plan.tasks[state.current_task_idx]
@@ -114,7 +114,7 @@ def route_after_commit(state: SoftwareDeveloperState):
 
 
 def route_after_task_advance(state: SoftwareDeveloperState):
-    plan = state.implementation_plan
+    plan = state.active_implementation_plan
     if plan is not None and state.current_task_idx < len(plan.tasks):
         return "continue"
     return "complete"
