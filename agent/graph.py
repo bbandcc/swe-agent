@@ -82,6 +82,9 @@ def create_workflow_graph(
     def route_after_post(state: AgentState) -> str:
         return verification.route_after_post(state)
 
+    def finalize_outcome(state: AgentState) -> dict[str, Any]:
+        return verification.finalize_outcome(state)
+
     graph_builder = StateGraph(AgentState)
 
     graph_builder.add_node(
@@ -93,20 +96,22 @@ def create_workflow_graph(
     graph_builder.add_node("run_baseline_verification", run_baseline)
     graph_builder.add_node("run_post_verification", run_post)
     graph_builder.add_node("prepare_repair", prepare_repair)
+    graph_builder.add_node("finalize_outcome", finalize_outcome)
     graph_builder.add_edge(START, "swe_architect")
     graph_builder.add_edge("swe_architect", "run_baseline_verification")
     graph_builder.add_conditional_edges(
         "run_baseline_verification",
         route_after_baseline,
-        {"develop": "swe_developer", "end": END},
+        {"develop": "swe_developer", "end": "finalize_outcome"},
     )
     graph_builder.add_edge("swe_developer", "run_post_verification")
     graph_builder.add_conditional_edges(
         "run_post_verification",
         route_after_post,
-        {"repair": "prepare_repair", "end": END},
+        {"repair": "prepare_repair", "end": "finalize_outcome"},
     )
     graph_builder.add_edge("prepare_repair", "swe_developer")
+    graph_builder.add_edge("finalize_outcome", END)
 
     return graph_builder
 

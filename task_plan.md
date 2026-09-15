@@ -209,3 +209,13 @@ parent-child timeout 均由顶层或公开接口测试覆盖。
 
 验收：83 项测试中 82 项通过，1 项普通 symlink 用例因 Windows 权限跳过；
 compile、prompt render 与 diff check 通过。
+
+## 新增任务：S2 Seal Fix
+
+- [x] 父图所有 END 路径将残留 PENDING outcome 封口为 FAILED。
+- [x] Windows timeout 先执行有界 PID tree taskkill，Job Object 作为 backstop。
+- [x] 加强终态矩阵和 parent-child timeout 黑盒测试。
+- [x] 完成全量验收并独立提交。
+
+验收：84 项测试中 83 项通过，1 项普通 symlink 用例因 Windows 权限跳过；
+compile、prompt render 与 diff check 通过。

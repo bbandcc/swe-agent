@@ -63,7 +63,7 @@
 
 - S2 是本机进程执行器，不是安全沙箱；配置命令本身仍应由可信用户或仓库提供。
 - 通用 runner 不理解 pytest/Jest 的测试用例语义。failure id 对完整输出做严格摘要比较；含时间戳、随机顺序或临时路径的失败可能被保守地判为变化。
-- Windows timeout 使用 Job Object 管理进程树，并以有限等待的 `taskkill` 作为附加失败时的降级；POSIX 使用独立 process group。本轮不引入容器级隔离。
+- Windows timeout 先用有限等待的 `taskkill /PID /T /F` 清理当前 PID tree，再用 Job Object 兜底；POSIX 使用独立 process group。本轮不引入容器级隔离。
 - `VERIFIED` 只表示配置的 checks 通过，不代表未配置的业务行为正确。
 
 ## 本轮实际验证
@@ -84,9 +84,10 @@
   B 单独 repair 后通过。
 - verification stdout/stderr 被标记为不可信诊断数据，反馈同时携带两条流的
   truncation 标志。
-- Windows 使用 [Job Objects](https://learn.microsoft.com/en-us/windows/win32/procthread/job-objects)
-  管理 parent-child 进程树；POSIX 继续使用新 session/process group。所有 wait
-  都带有限 timeout，parent-child 延迟写文件测试证明 timeout 返回后子进程未继续执行。
+- Windows 使用有界 `taskkill` 清理当前 PID tree，并以
+  [Job Objects](https://learn.microsoft.com/en-us/windows/win32/procthread/job-objects)
+  作为 backstop；POSIX 继续使用新 session/process group。所有 wait 都带有限
+  timeout，parent-child 延迟写文件测试证明当前环境下 timeout 返回后子进程未继续执行。
 
 Final Gate 全量 `unittest` 共 77 项，其中 76 项通过；1 项普通 symlink 用例因
 Windows 当前账户缺少创建权限跳过，junction 用例通过。compile、两个 Developer
@@ -109,3 +110,19 @@ prompt render 和 `git diff --check` 通过。
 Acceptance Fix 全量 `unittest` 共 83 项，其中 82 项通过；1 项普通 symlink
 用例因 Windows 当前账户缺少创建权限跳过，junction 用例通过。compile、Developer
 prompt render 和 `git diff --check` 通过。
+
+## S2 Seal Fix
+
+- 父图所有结束分支先进入 `finalize_outcome`；残留的 `PENDING` 会确定性封口为
+  `FAILED`，原 `developer_status` 保留用于诊断。repair 路由中的 PENDING 仍只是中间态。
+- Windows timeout 固定先执行 0.5 秒上限的 PID tree `taskkill`，随后终止 Job
+  Object；进程本身的两次 wait 各有 1 秒上限。parent-child 黑盒测试同时检查子进程
+  不产生延迟文件且 cleanup 总耗时有界。
+
+Windows 清理仍是 best-effort：不使用 `CREATE_SUSPENDED` 意味着无法从进程创建瞬间
+消除所有竞态；外部重新托管、主动脱离进程树或系统拒绝两个清理机制的子进程不在 S2
+保证范围内。
+
+Seal Fix 全量 `unittest` 共 84 项，其中 83 项通过；1 项普通 symlink 用例因
+Windows 当前账户缺少创建权限跳过，junction 用例通过。compile、prompt render 和
+`git diff --check` 通过。

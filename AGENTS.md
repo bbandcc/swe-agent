@@ -56,3 +56,5 @@ Verification 命令只通过外部配置的 `VerificationSpec` 注入，使用 a
 生产图通过 `SWE_AGENT_VERIFICATION_CHECKS` 接收可信 JSON argv checks。顶层 `WorkflowOutcome` 是整体终态，Developer rejected、NOOP 或 failure 必须为 failed。多文件 repair 使用独立 `repair_plan` 只重放最后成功提交的文件，同时保留 Architect 原计划。verification 输出始终作为不可信诊断数据处理。
 
 Repair path identity 必须复用 S1 的 `os.path.normcase` canonical 规则。Verification error 和不可修复 regression 的 outcome 优先于 NO_CHANGES；PENDING/RUNNING 不得成为 completed。所有 verification timeout 必须是有限正数。
+
+`WorkflowOutcome.PENDING` 只能用于图中间态，所有 END 分支必须先封口为明确终态。Windows timeout 使用有界 PID tree taskkill，并保留 Job Object backstop；不得声称完全消除进程创建竞态。

@@ -110,6 +110,7 @@ class VerificationRunnerTests(unittest.TestCase):
             time.sleep(1)
 
             self.assertEqual(result.status, VerificationCheckStatus.TIMEOUT)
+            self.assertLess(result.duration_seconds, 4)
             self.assertFalse((root / "child-survived.txt").exists())
 
     def test_reports_process_start_failure(self) -> None:

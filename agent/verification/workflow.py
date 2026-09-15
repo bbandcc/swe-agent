@@ -29,6 +29,7 @@ class _VerificationState(Protocol):
     developer_status: DeveloperStatus
     implementation_plan: ImplementationPlan | None
     last_edit_result: EditResult | None
+    outcome: WorkflowOutcome
 
 
 class VerificationController:
@@ -142,6 +143,12 @@ class VerificationController:
         ):
             return "repair"
         return "end"
+
+    def finalize_outcome(self, state: _VerificationState) -> dict[str, Any]:
+        """Seal graph-terminal state so PENDING never escapes through END."""
+        if state.outcome is WorkflowOutcome.PENDING:
+            return {"outcome": WorkflowOutcome.FAILED}
+        return {"outcome": state.outcome}
 
     def _run_checks(self) -> tuple[VerificationResult, ...]:
         assert self._runner is not None

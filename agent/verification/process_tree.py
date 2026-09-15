@@ -7,6 +7,7 @@ import subprocess
 from ctypes import wintypes
 
 _TERMINATION_WAIT_SECONDS = 1.0
+_TASKKILL_WAIT_SECONDS = 0.5
 
 
 class ProcessTree:
@@ -22,10 +23,10 @@ class ProcessTree:
                 os.killpg(self._process.pid, signal.SIGKILL)
             except OSError:
                 pass
-        elif self._windows_job is not None:
-            _terminate_windows_job(self._windows_job)
         else:
             _taskkill(self._process.pid)
+            if self._windows_job is not None:
+                _terminate_windows_job(self._windows_job)
         _bounded_process_wait(self._process)
 
     def close(self) -> None:
@@ -127,7 +128,7 @@ def _taskkill(pid: int) -> None:
             stdin=subprocess.DEVNULL,
             stdout=subprocess.DEVNULL,
             stderr=subprocess.DEVNULL,
-            timeout=_TERMINATION_WAIT_SECONDS,
+            timeout=_TASKKILL_WAIT_SECONDS,
             check=False,
         )
     except (OSError, subprocess.TimeoutExpired):

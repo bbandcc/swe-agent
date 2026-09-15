@@ -170,7 +170,7 @@ class VerificationWorkflowTests(unittest.TestCase):
                 )
                 self.assertEqual(result["outcome"], WorkflowOutcome.FAILED)
 
-    def test_incomplete_developer_cannot_be_completed_by_verification(self) -> None:
+    def test_incomplete_developer_is_failed_before_graph_end(self) -> None:
         for developer_status in (
             DeveloperStatus.PENDING,
             DeveloperStatus.RUNNING,
@@ -192,7 +192,35 @@ class VerificationWorkflowTests(unittest.TestCase):
                 self.assertEqual(
                     result["verification_status"], VerificationStatus.VERIFIED
                 )
-                self.assertEqual(result["outcome"], WorkflowOutcome.PENDING)
+                self.assertEqual(result["outcome"], WorkflowOutcome.FAILED)
+
+    def test_all_non_repair_end_states_have_terminal_outcome(self) -> None:
+        cases = (
+            (DeveloperStatus.PENDING, WorkflowOutcome.FAILED),
+            (DeveloperStatus.RUNNING, WorkflowOutcome.FAILED),
+            (DeveloperStatus.FAILED, WorkflowOutcome.FAILED),
+            (DeveloperStatus.NO_CHANGES, WorkflowOutcome.NO_CHANGES),
+            (DeveloperStatus.COMPLETED, WorkflowOutcome.COMPLETED),
+        )
+        for developer_status, expected_outcome in cases:
+            with self.subTest(developer_status=developer_status):
+                runner = _SequenceRunner(
+                    VerificationCheckStatus.PASS,
+                    VerificationCheckStatus.PASS,
+                )
+                result = create_workflow_graph(
+                    architect=lambda _: {"implementation_plan": plan()},
+                    developer=lambda _, status=developer_status: {
+                        "developer_status": status
+                    },
+                    verification_specs=(
+                        VerificationSpec(name="check", argv=("unused",)),
+                    ),
+                    verification_runner=runner,
+                ).compile().invoke({})
+
+                self.assertEqual(result["outcome"], expected_outcome)
+                self.assertIsNot(result["outcome"], WorkflowOutcome.PENDING)
 
     def test_rejected_edit_cannot_produce_successful_outcome(self) -> None:
         with tempfile.TemporaryDirectory() as directory:
