@@ -219,3 +219,24 @@ compile、prompt render 与 diff check 通过。
 
 验收：84 项测试中 83 项通过，1 项普通 symlink 用例因 Windows 权限跳过；
 compile、prompt render 与 diff check 通过。
+
+## 新增任务：S3 Design Gate
+
+### 固定范围
+
+- 基线：`8d89670e97442f652d592a3e0f6f63c373fe3717`。
+- 只设计最小 RunConfig、预算与 usage、运行轨迹、SQLite checkpoint 与恢复对账。
+- 本轮不修改生产代码或依赖，不进入 S4/SWE-bench，不增加 Agent、UI、sandbox 或 provider。
+
+### 阶段
+
+- [x] 审计现有 S1/S2 的配置、状态、模型/工具边界、编辑 hash 与图装配 seam。
+- [x] 核对 LangGraph 1.x 官方 SQLite saver 接口、thread_id 与子图传播行为。
+- [x] 核对 mini-swe-agent 等固定版本源码中的预算、usage、trajectory 与恢复机制。
+- [x] 设计公开 seam、状态字段、图节点、恢复状态机、预算规则和测试矩阵。
+- [x] 明确拟修改文件、必要依赖变化、迁移顺序与已知限制。
+- [x] 仅完成研究文档与本计划的检查并独立提交。
+
+### 当前状态
+
+Design Gate 已完成。仅修改 `research/s3-runtime-recovery.md` 和本计划；84 项 S1/S2 测试中 83 项通过、1 项因 Windows 普通 symlink 权限跳过，compile、11 个 prompt render、设计结构检查和 `git diff --check` 均通过。未修改生产代码或依赖。
