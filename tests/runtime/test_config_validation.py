@@ -185,7 +185,7 @@ class RunConfigValidationTests(RunConfigTestCase):
                 raised.exception.code, RunConfigErrorCode.INVALID_ROOT
             )
 
-    def test_rejects_root_below_symbolic_link_component(self) -> None:
+    def test_canonicalizes_root_below_symbolic_link_ancestor(self) -> None:
         with tempfile.TemporaryDirectory() as directory:
             root = Path(directory)
             real_parent = root / "real-parent"
@@ -196,11 +196,11 @@ class RunConfigValidationTests(RunConfigTestCase):
             except OSError as error:
                 self.skipTest(f"directory symlinks are unavailable: {error}")
 
-            with self.assertRaises(RunConfigError) as raised:
-                self.make_config(root, runtime_root=link / "runtime")
+            config = self.make_config(root, runtime_root=link / "runtime")
 
             self.assertEqual(
-                raised.exception.code, RunConfigErrorCode.INVALID_ROOT
+                config.runtime_root,
+                (real_parent / "runtime").resolve(),
             )
 
     @unittest.skipUnless(os.name == "nt", "junctions are a Windows path type")

@@ -14,9 +14,70 @@ from agent.tools.codemap import (
     get_raw_file_content,
 )
 from agent.tools.search import search_keyword_in_directory
+from agent.workspace import WorkspacePathResolver
 
 
 class WorkspaceReadBoundaryTests(unittest.TestCase):
+    def test_resolver_accepts_workspace_below_symlink_ancestor(self) -> None:
+        with tempfile.TemporaryDirectory() as directory:
+            parent = Path(directory)
+            real_parent = parent / "real-parent"
+            workspace = real_parent / "workspace"
+            workspace.mkdir(parents=True)
+            target = workspace / "app.py"
+            target.write_text("value = 1\n", encoding="utf-8", newline="")
+            link = parent / "linked-parent"
+            try:
+                link.symlink_to(real_parent, target_is_directory=True)
+            except OSError as error:
+                self.skipTest(f"directory symlinks are unavailable: {error}")
+
+            result = WorkspacePathResolver(link / "workspace").resolve_file(
+                "app.py"
+            )
+
+            self.assertTrue(result.ok, result)
+            self.assertEqual(result.path, target.resolve())
+
+    @unittest.skipUnless(os.name == "nt", "junctions are a Windows path type")
+    def test_resolver_accepts_workspace_below_junction_ancestor(self) -> None:
+        with tempfile.TemporaryDirectory() as directory:
+            parent = Path(directory)
+            real_parent = parent / "real-parent"
+            workspace = real_parent / "workspace"
+            workspace.mkdir(parents=True)
+            target = workspace / "app.py"
+            target.write_text("value = 1\n", encoding="utf-8", newline="")
+            junction = parent / "junction-parent"
+            completed = subprocess.run(
+                [
+                    "pwsh.exe",
+                    "-NoLogo",
+                    "-NoProfile",
+                    "-CommandWithArgs",
+                    (
+                        "New-Item -ItemType Junction -Path $args[0] "
+                        "-Target $args[1] | Out-Null"
+                    ),
+                    str(junction),
+                    str(real_parent),
+                ],
+                capture_output=True,
+                text=True,
+                check=False,
+            )
+            if completed.returncode != 0:
+                self.skipTest(
+                    f"junction creation unavailable: {completed.stderr}"
+                )
+
+            result = WorkspacePathResolver(
+                junction / "workspace"
+            ).resolve_file("app.py")
+
+            self.assertTrue(result.ok, result)
+            self.assertEqual(result.path, target.resolve())
+
     def test_default_reader_and_editor_share_configured_workspace(self) -> None:
         with tempfile.TemporaryDirectory() as directory:
             parent = Path(directory)

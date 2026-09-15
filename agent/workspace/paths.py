@@ -216,7 +216,7 @@ def canonicalize_root_path(
     *,
     must_exist: bool = True,
 ) -> Path:
-    """Return one absolute directory root with no link/junction component."""
+    """Resolve an absolute directory whose root entry is not a link."""
     if isinstance(root, str) and not root.strip():
         raise WorkspaceRootError(
             WorkspaceRootErrorCode.INVALID,
@@ -229,13 +229,10 @@ def canonicalize_root_path(
             WorkspaceRootErrorCode.INVALID,
             "The configured root path is invalid.",
         ) from error
-    if any(
-        _is_link_or_junction(candidate)
-        for candidate in (*reversed(configured.parents), configured)
-    ):
+    if _is_link_or_junction(configured):
         raise WorkspaceRootError(
             WorkspaceRootErrorCode.INVALID,
-            "The configured root must not use symbolic links or junctions.",
+            "The configured root itself must not be a symlink or junction.",
         )
     if must_exist and not configured.exists():
         raise WorkspaceRootError(

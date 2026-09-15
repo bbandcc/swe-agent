@@ -82,7 +82,6 @@ class ModelConfigurationTests(unittest.TestCase):
             model = build_chat_model(
                 settings,
                 max_output_tokens=321,
-                temperature=0,
             )
 
         self.assertEqual(model.model, "deepseek-v4-flash")
@@ -91,20 +90,31 @@ class ModelConfigurationTests(unittest.TestCase):
             model.openai_api_key.get_secret_value(), "explicit-key"
         )
 
-    def test_explicit_output_limit_rejects_ambiguous_max_tokens(self) -> None:
+    def test_explicit_settings_reject_unbound_model_options(self) -> None:
         settings = ModelSettings(
             provider="anthropic",
             model="claude-sonnet-4-6",
             base_url=None,
             api_key=None,
         )
+        options = {
+            "model": "other-model",
+            "base_url": "https://example.invalid",
+            "api_key": SecretStr("override-key"),
+            "temperature": 0,
+            "extra_body": {"thinking": {"type": "enabled"}},
+            "max_tokens": 256,
+            "streaming": True,
+        }
 
-        with self.assertRaisesRegex(ValueError, "max_tokens"):
-            build_chat_model(
-                settings,
-                max_output_tokens=128,
-                max_tokens=256,
-            )
+        for name, value in options.items():
+            with self.subTest(name=name):
+                with self.assertRaisesRegex(ValueError, "semantic RunConfig"):
+                    build_chat_model(
+                        settings,
+                        max_output_tokens=128,
+                        **{name: value},
+                    )
 
     def test_builds_explicit_anthropic_with_output_limit(self) -> None:
         settings = ModelSettings(
@@ -117,7 +127,6 @@ class ModelConfigurationTests(unittest.TestCase):
         model = build_chat_model(
             settings,
             max_output_tokens=654,
-            temperature=0,
         )
 
         self.assertIsInstance(model, ChatAnthropic)

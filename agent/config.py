@@ -63,6 +63,13 @@ def build_chat_model(
     **options: Any,
 ) -> BaseChatModel:
     """Build an existing provider from explicit or legacy environment config."""
+    explicit_settings = settings is not None
+    if explicit_settings and options:
+        names = ", ".join(sorted(options))
+        raise ValueError(
+            "Explicit ModelSettings only accept max_output_tokens because "
+            f"other options are not bound by the semantic RunConfig: {names}"
+        )
     settings = model_settings() if settings is None else settings
     if settings.provider not in {"deepseek", "anthropic"}:
         raise ValueError("Model provider must be deepseek or anthropic")

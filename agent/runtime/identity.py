@@ -3,6 +3,7 @@
 from __future__ import annotations
 
 import hashlib
+import os
 import re
 from dataclasses import dataclass
 from enum import Enum
@@ -17,33 +18,38 @@ _DIGEST_PATTERN = re.compile(r"^[0-9a-f]{64}$")
 
 @dataclass(frozen=True, slots=True, eq=False)
 class WorkspaceIdentity:
-    """Canonical path identity; it does not fingerprint workspace contents."""
+    """Persisted path value; use from_root to validate a live workspace."""
 
     canonical_root: str
     root_digest: str
 
     @classmethod
     def from_root(cls, root: str | Path) -> "WorkspaceIdentity":
+        """Validate and canonicalize the current filesystem root."""
         canonical = canonicalize_root_path(root)
         comparison_key = canonical_path_key(canonical)
         digest = hashlib.sha256(comparison_key.encode("utf-8")).hexdigest()
         return cls(canonical_root=str(canonical), root_digest=digest)
 
     def __post_init__(self) -> None:
-        try:
-            canonical = canonicalize_root_path(self.canonical_root)
-        except ValueError as error:
-            raise ValueError("Workspace identity root is invalid.") from error
+        if (
+            not isinstance(self.canonical_root, str)
+            or not self.canonical_root
+            or "\x00" in self.canonical_root
+            or not Path(self.canonical_root).is_absolute()
+            or canonical_path_key(os.path.normpath(self.canonical_root))
+            != canonical_path_key(self.canonical_root)
+        ):
+            raise ValueError("Workspace identity root is invalid.")
         expected_digest = hashlib.sha256(
-            canonical_path_key(canonical).encode("utf-8")
+            canonical_path_key(self.canonical_root).encode("utf-8")
         ).hexdigest()
         if (
-            not self.canonical_root
+            not isinstance(self.root_digest, str)
             or not _DIGEST_PATTERN.fullmatch(self.root_digest)
             or self.root_digest != expected_digest
         ):
             raise ValueError("Workspace identity is invalid.")
-        object.__setattr__(self, "canonical_root", str(canonical))
 
     def __eq__(self, other: object) -> bool:
         if not isinstance(other, WorkspaceIdentity):

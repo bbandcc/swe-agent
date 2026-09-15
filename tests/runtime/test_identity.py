@@ -71,23 +71,36 @@ class IdentityTests(unittest.TestCase):
             with self.assertRaises(ValueError):
                 WorkspaceIdentity.from_root(link)
 
-            comparison_key = os.path.normcase(str(link.absolute()))
-            digest = hashlib.sha256(
-                comparison_key.encode("utf-8")
-            ).hexdigest()
-            with self.assertRaises(ValueError):
-                WorkspaceIdentity(str(link.absolute()), digest)
-
-    def test_rejects_identity_for_missing_workspace(self) -> None:
+    def test_persisted_identity_rebuild_does_not_access_filesystem(self) -> None:
         with tempfile.TemporaryDirectory() as directory:
-            missing = Path(directory) / "missing"
-            comparison_key = os.path.normcase(str(missing.absolute()))
-            digest = hashlib.sha256(
-                comparison_key.encode("utf-8")
-            ).hexdigest()
+            root = Path(directory) / "workspace"
+            root.mkdir()
+            saved = WorkspaceIdentity.from_root(root)
 
-            with self.assertRaises(ValueError):
-                WorkspaceIdentity(str(missing.absolute()), digest)
+        restored = WorkspaceIdentity(
+            canonical_root=saved.canonical_root,
+            root_digest=saved.root_digest,
+        )
+
+        self.assertEqual(restored, saved)
+        with self.assertRaises(ValueError):
+            WorkspaceIdentity.from_root(saved.canonical_root)
+
+    def test_from_root_accepts_workspace_below_symlink_ancestor(self) -> None:
+        with tempfile.TemporaryDirectory() as directory:
+            parent = Path(directory)
+            real_parent = parent / "real-parent"
+            workspace = real_parent / "workspace"
+            workspace.mkdir(parents=True)
+            link = parent / "linked-parent"
+            try:
+                link.symlink_to(real_parent, target_is_directory=True)
+            except OSError as error:
+                self.skipTest(f"directory symlinks are unavailable: {error}")
+
+            identity = WorkspaceIdentity.from_root(link / "workspace")
+
+            self.assertEqual(identity.canonical_root, str(workspace.resolve()))
 
     def test_rejects_forged_workspace_path_digest_pair(self) -> None:
         with tempfile.TemporaryDirectory() as directory:

@@ -312,3 +312,17 @@ compile、11 个 prompt render、diff whitespace、敏感值和禁止范围审�
 普通 symlink 与 Windows junction 用例均实际通过；仅有现有 tree-sitter
 弃用告警。未修改依赖或生产图，max_steps/max_cost 只完成校验与语义绑定，
 SQLite、durable CLI 和预算执行仍留在 S3.2。
+
+## 新增任务：S3.1 Acceptance Fix
+
+- [x] 显式 ModelSettings 装配拒绝所有未进入 semantic digest 的额外模型参数；旧 non-durable 环境入口保持兼容。
+- [x] 将 WorkspaceIdentity 的持久化值校验与 `from_root()` 的实时文件系统校验分离。
+- [x] 恢复 S1 对祖先 symlink/junction 的兼容，同时继续拒绝 workspace root 自身及内部目标链接。
+- [x] 运行全量测试、compile、prompt render、diff check，并独立提交。
+
+### 当前状态
+
+三项边界修复及最终验收已完成。全量 127 项测试与 117 项 unittest
+subtests 通过；Python compile、11 个 prompt render、diff whitespace 和
+禁止范围审计通过。普通 symlink 与 Windows junction 用例均实际通过；仅有
+现存 tree-sitter 弃用告警。未引入 S3.2 能力或依赖变化。
