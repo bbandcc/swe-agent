@@ -484,11 +484,11 @@ enforcement remains part of S3.2.
 
 For explicit S3 model assembly, `ModelSettings` supplies provider, model,
 endpoint, and credentials, while `max_output_tokens` is the only accepted
-model option. Extra keyword options are rejected because they are absent from
-the semantic digest. The legacy `build_chat_model()` environment path continues
-to accept its existing keyword options. A persisted `WorkspaceIdentity` can be
-rebuilt after its old directory disappears; only `WorkspaceIdentity.from_root`
-inspects and validates a live filesystem root.
+model option and must be supplied. Extra keyword options are rejected because
+they are absent from the semantic digest. The legacy `build_chat_model()`
+environment path continues to accept its existing keyword options. A persisted
+`WorkspaceIdentity` can be rebuilt after its old directory disappears; only
+`WorkspaceIdentity.from_root` inspects and validates a live filesystem root.
 
 ## 📄 License
 

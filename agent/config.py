@@ -70,6 +70,10 @@ def build_chat_model(
             "Explicit ModelSettings only accept max_output_tokens because "
             f"other options are not bound by the semantic RunConfig: {names}"
         )
+    if explicit_settings and max_output_tokens is None:
+        raise ValueError(
+            "Explicit ModelSettings require max_output_tokens from RunConfig."
+        )
     settings = model_settings() if settings is None else settings
     if settings.provider not in {"deepseek", "anthropic"}:
         raise ValueError("Model provider must be deepseek or anthropic")

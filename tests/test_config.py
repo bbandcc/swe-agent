@@ -116,6 +116,17 @@ class ModelConfigurationTests(unittest.TestCase):
                         **{name: value},
                     )
 
+    def test_explicit_settings_require_output_limit(self) -> None:
+        settings = ModelSettings(
+            provider="deepseek",
+            model="deepseek-v4-flash",
+            base_url="https://api.deepseek.com",
+            api_key=None,
+        )
+
+        with self.assertRaisesRegex(ValueError, "max_output_tokens"):
+            build_chat_model(settings)
+
     def test_builds_explicit_anthropic_with_output_limit(self) -> None:
         settings = ModelSettings(
             provider="anthropic",
