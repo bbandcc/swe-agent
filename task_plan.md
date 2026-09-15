@@ -264,3 +264,25 @@ Design Gate 已完成。仅修改 `research/s3-runtime-recovery.md` 和本计划
 ### 当前状态
 
 设计修订与验证已完成。全量 84 项 S1/S2 测试通过，41 项 unittest subtests 通过；Python compile、11 个 prompt render、Markdown 围栏、27 个固定 GitHub 源码链接和 `git diff --check` 均通过。S3 生产实现尚未开始，项目依赖文件未变化。
+
+## 新增任务：S3 Design Seal 最终集成边界
+
+### 固定范围
+
+- 基线：`8808be1da787d79a2d5c84aaa5379d4ae941340b`。
+- 只修订 `research/s3-runtime-recovery.md` 与本计划；不修改生产代码、测试或依赖。
+- 保持 S3.1 为 Config + Identity，S3.2 才启用 SQLite + durable Budget；不进入 S4 或其他禁止能力。
+
+### 审查与设计封口
+
+- [x] 审核四项调整，确认都能加强 S3 恢复一致性且不扩大阶段范围。
+- [x] 定义版本化 semantic RunConfig digest、纳入/排除字段，以及允许 API key 轮换的 resume binding。
+- [x] 将本地 durable CLI/library seam 定为 S3 正式入口，明确 `langgraph.json:swe_agent` 仅为非 durable Studio/dev 兼容入口。
+- [x] checkpoint 绑定 clean Agent commit；known mismatch 拒绝、unknown 告警，不设计 migration framework。
+- [x] 分离业务 `max_steps` 与 LangGraph `recursion_limit`，固定当前拓扑公式、cycle 约束和最坏路径测试。
+- [x] 完成指定文件范围、Markdown、全量 S1/S2、compile、prompt render 与 `git diff --check` 验证。
+- [x] 使用独立中文 Conventional Commit 提交。
+
+### 当前状态
+
+设计修订与验收已完成。全量 84 项 S1/S2 测试与 41 项 unittest subtests 通过；Python compile、11 个 prompt render、Markdown 围栏、27 个固定 GitHub 源码链接和 `git diff --check` 通过。仅两份指定文档有差异；S3 生产实现尚未开始，项目依赖文件未变化。

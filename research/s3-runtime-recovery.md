@@ -3,6 +3,7 @@
 调研日期：2026-09-15
 初始项目基线：`8d89670e97442f652d592a3e0f6f63c373fe3717`
 本次设计封口基线：`06d0db01dd0e9a483386e3241afe9e75f5b74565`
+最终集成边界基线：`8808be1da787d79a2d5c84aaa5379d4ae941340b`
 阶段：Design Gate Seal，仅形成可实施、可验收的设计；本轮未修改生产代码或依赖。
 
 ## 0. 五项调整的审查结论
@@ -16,6 +17,17 @@
 | 保持 ToolNode 和最小实现 | 成立 | 保留现有公开 `ToolNode`，仅在其前后增加批量 reservation/settlement 节点；不读取或包装 LangGraph 私有 checkpoint 表，不建立 telemetry 平台。 |
 
 五项都处于 S3 的配置、预算、轨迹和恢复边界内，没有进入 S4 检索、评测、sandbox、新 Agent 或 provider 扩展。上表对第一项作了保守收紧：即使 reservation 后实际上尚未 dispatch，只要崩溃后无法由持久化证据证明，仍按调用结果不确定停止。这会牺牲部分可用性，但不会静默重复外部副作用或回退预算。
+
+### 最终四项集成边界审查
+
+| 调整 | 结论 | 设计中的落实与限定 |
+|---|---|---|
+| Resume config binding | 成立，且是恢复正确性的必要条件 | checkpoint 保存版本化 semantic RunConfig digest；resume 在任何 graph node 前比较。API key 不影响运行语义且必须支持轮换，所以明确排除；provider/model、公开模型参数、verification、预算、pricing、output limit 和 timeout 等行为字段必须纳入。 |
+| 明确真实运行入口 | 成立 | S3 以本地 durable CLI/library entry 为正式入口，由它持有 `SqliteSaver` 生命周期并调用 `start_run/resume_run`。`langgraph.json:swe_agent` 保持 Studio/dev 与 S1/S2 非 durable 兼容入口，不接 LangGraph Server persistence，也不能对外宣称具备 S3 恢复。 |
+| Agent revision binding | 成立 | checkpoint 保存启动时 Agent revision。旧、新 revision 都是已知 clean commit 且不同时拒绝；任一为 `UNKNOWN` 时如实记录未验证告警，不虚构一致性，也不引入 migration framework。 |
+| max_steps 与 recursion_limit | 成立，但两者不能共用一个计数 | `max_steps` 只计算 model invocation 和模型请求的每个 ToolNode call。`recursion_limit` 是 LangGraph graph-step guard，按 `max_steps` 的保守拓扑公式配置；确定性 helper 不扣业务 step，但受 deadline 和 graph-step 上界约束。 |
+
+四项均收紧已有 S3 seam，没有改变 S3.1/S3.2 分界，也没有引入 Server persistence、S4、SWE-bench、sandbox、新 Agent、UI 或 provider 扩展。
 
 ## 1. 设计结论
 
@@ -125,6 +137,7 @@ def load_run_config(env: Mapping[str, str]) -> RunConfig: ...
 
 - `workspace_root` 在解析配置时转换为 S1 resolver 使用的 canonical 绝对目录；图、工具、编辑器和 verification runner 都接收该值。
 - `runtime_root` 同样 canonicalize，但必须与 workspace 不相等、互不为 ancestor/descendant，并拒绝 symlink/junction 逃逸。checkpoint、trajectory、artifact 和临时 spool 都位于该目录，且任何模型可调用的 workspace 工具都不能访问它。
+- model base URL 必须是可信配置，拒绝 URL userinfo、query 和 fragment；digest 纳入规范化后的 scheme/host/port/path，因此 endpoint 改变会被识别，又不会把 URL 凭据带入 checkpoint。
 - `verification_specs` 直接复用 S2 可信 argv 契约；不接受 LLM 生成命令。
 - `timeout_seconds` 是从首次运行接纳开始计算的总 wall-clock deadline，必须是有限正数；checkpoint 保存绝对 deadline，进程停机时间也计算在内。
 - `max_steps` 必须是正整数。一个模型 invocation 算一步，一个模型发起的 workspace tool invocation 算一步；一条 AIMessage 中多个 tool calls 分别计数。
@@ -133,6 +146,29 @@ def load_run_config(env: Mapping[str, str]) -> RunConfig: ...
 - 解析失败在任何模型、工具或 workspace 写入前结构化返回 `CONFIG_INVALID`。
 
 环境变量只作为生产 loader 的一种来源。测试和库调用直接构造 `RunConfig`；不得在模块导入时读取环境或创建客户端。
+
+#### Semantic RunConfig digest
+
+`semantic_config_digest(config) -> str` 先生成版本化 canonical JSON，再计算 SHA-256。canonical JSON 使用固定字段名、UTF-8、排序后的 mapping key 和稳定 Decimal/string 表示；verification specs 保留执行顺序。它只表示会改变本次运行行为的配置：
+
+| 纳入 digest | 不纳入 digest |
+|---|---|
+| provider、model、脱敏后的 endpoint identity、全部公开生成参数、model output-token limit | API key、认证 header、token、环境变量原文 |
+| verification specs 的有序 `name/argv/cwd/timeout_seconds/max_output_bytes` | runtime_root 的物理位置、checkpoint/trajectory/artifact 文件名 |
+| run timeout、max_steps、max_cost、pricing snapshot/source、digest schema version | workspace path、run/thread/task id、启动时间和已计算的绝对 deadline |
+
+workspace 由独立 `WorkspaceIdentity` 绑定；runtime root 是定位当前 checkpoint 的存储参数。绝对 deadline 和 budget ledger 以首次 start 的 checkpoint 为准，不能在 resume 时重新计算。resume 先比较 checkpoint 的 semantic digest；不一致返回 `RUN_CONFIG_MISMATCH`，只记录旧/新 digest，零 graph node、模型、工具或文件调用。API key 轮换产生相同 digest，因此允许用新凭据恢复。checkpoint 不必为生成字段级 diff 而再保存一份完整配置。
+
+#### max_steps 与 recursion_limit
+
+两者用途分离：
+
+- `max_steps` 是业务预算，只在 durable reservation 时递增。一次 model invocation 计 1；一条 AIMessage 请求的每个 ToolNode call 各计 1，即便多个 call 由一个 ToolNode batch 执行。baseline/post verification、路径校验、状态路由、parser、stage/commit/reconcile、event/artifact 写入等确定性 helper 不计业务 step。
+- `recursion_limit` 是 LangGraph 对 graph superstep 的防失控保护，不承担预算语义。S3 调用入口不再沿用固定 200，而是传入 `max(200, 8 * max_steps + 64)`。每个预算 step 的 `reserve/dispatch/settle` 占最多 3 个持续化阶段，额外 5 个覆盖当前 Architect/Developer 的 route、parse、stage 和 task/file transition；固定 64 覆盖 start、baseline/post、最多两次 repair、finalize 和父子图边界。一个 ToolNode batch 含多个 calls 时该公式只会更保守。
+- 拓扑约束是所有可重复 cycle 必须经过 model/tool reservation；唯一不经过 reservation 的 repair cycle 继续由 S2 的 2 次上限约束。新增确定性无界 cycle 必须被 graph contract test 拒绝，不能靠调高 recursion limit 掩盖。
+- 每个 graph node 入口检查 persisted deadline；确定性 helper 不扣 step，但仍使用剩余 deadline，并在返回后再次检查。无法中断的同步 helper 可能越过 deadline，随后必须以 `TIMEOUT_OVERRUN` 停止，不能继续副作用。
+
+`8` 和 `64` 是当前公开图拓扑的保守常量，不是 LangGraph 私有实现推断。compiled-graph 最坏路径测试必须覆盖最小/典型 `max_steps`、多 tool-call batch、两次 repair 和父子图传播，并证明预算终态先于 `GraphRecursionError`。以后改变节点或 cycle 时必须先更新该显式成本模型与测试；若仍提前触发，返回 `INTERNAL_GRAPH_LIMIT`，不能伪装成 `MAX_STEPS`。
 
 ### 4.2 Budget / usage
 
@@ -284,18 +320,47 @@ RunIdentity(
 )
 ```
 
+```python
+@dataclass(frozen=True, slots=True)
+class AgentCodeRevision:
+    commit_sha: str | None
+    status: Literal["known", "unknown"]
+    reason: str | None  # not_git/dirty/git_unavailable/query_failed
+```
+
 `WorkspaceIdentity` v1 只保存 S1 resolver 得到的 canonical absolute root 和其 SHA-256 digest；Windows comparison 复用 `os.path.normcase` 语义。它只提供路径绑定：同一路径下整个 working copy 被替换时 digest 不变，不能宣称这是稳定 working-copy identity。`RunRecord` 的 workspace revision 是审计证据，不参与绑定，因为合法编辑会让 revision/dirty 状态变化；具体待写文件仍由 S1 before/after hash 对账。新的用户任务即使复用 workspace 也生成新 thread。恢复链必须复用原 thread/run/task identity。
+
+Agent revision 用有界 `git rev-parse HEAD` 读取运行本项目代码的 checkout。只有 clean Git checkout 的完整 commit SHA 记为 `KNOWN`；dirty checkout、非 Git 安装、Git 不可用或查询失败都记为 `UNKNOWN + reason`，避免用 HEAD 冒充实际运行代码。start 将该值写入第一个 checkpoint 和 RunRecord。
 
 运行入口明确分离，调用方不能用一个“存在则恢复、不存在则创建”的模糊接口：
 
 1. `start_run(config, identity)` 先用 `graph.get_state(thread_config)` 读取公开 snapshot。只要同一 thread 已有任何 checkpoint，包括已完成运行，就返回 `THREAD_ALREADY_EXISTS`；只有确认不存在时才初始化新 identity。
 2. `resume_run(config, identity)` 若没有 checkpoint，返回 `CHECKPOINT_NOT_FOUND`，不能隐式创建新 run。
-3. resume 有 checkpoint 时比较 workspace digest、canonical root、run_id/task_id。workspace 不一致返回 `WORKSPACE_MISMATCH`；task/run 不一致返回 `THREAD_IDENTITY_MISMATCH`。
-4. identity 通过后再检查 `IN_FLIGHT` reservation、`pending_write` 和公开 `snapshot.next`，决定继续 deterministic settlement、写入对账或保守停止。任何 preflight 失败都不得执行 graph node、外部调用或文件操作。
+3. resume 有 checkpoint 时先比较 workspace digest、canonical root、run_id/task_id。workspace 不一致返回 `WORKSPACE_MISMATCH`；task/run 不一致返回 `THREAD_IDENTITY_MISMATCH`。
+4. 比较 checkpoint 的 `run_config_digest` 与当前 semantic digest；不一致返回 `RUN_CONFIG_MISMATCH`。API key 不参与，因此单纯轮换凭据可继续。
+5. 比较 checkpoint 与当前 Agent revision。两者都是 `KNOWN` 且 SHA 不同时返回 `AGENT_REVISION_MISMATCH`。任一为 `UNKNOWN` 时允许继续，但写入 `AGENT_REVISION_UNVERIFIED` warning 和事件；S3 不迁移 checkpoint state。
+6. 上述绑定通过后再检查 `IN_FLIGHT` reservation、`pending_write` 和公开 `snapshot.next`，决定继续 deterministic settlement、写入对账或保守停止。任何 preflight 失败都不得执行 graph node、外部调用或文件操作。
 
 不能把新输入中的 workspace identity直接覆盖旧 checkpoint 后再检查。SQLite 数据库文件和 trajectory/artifact 目录必须在 editable workspace 外部。
 
-### 5.2 图节点变化
+### 5.2 真实运行入口
+
+当前源码已确认 `langgraph.json` 将 `agent` 指向 `./agent/graph.py:swe_agent`，而该 module-level graph 直接 compile、没有本地 saver 生命周期。S3 不把本地 SQLite 塞进模块导入，也不依赖 LangGraph Server 的托管 persistence。
+
+S3 的正式 durable 入口是本地 `python -m agent.runtime start ...` 与 `python -m agent.runtime resume ...`，并同时公开同语义的 library seam：
+
+```python
+def start_run(config: RunConfig, request: StartRequest) -> RunResult: ...
+def resume_run(config: RunConfig, request: ResumeRequest) -> RunResult: ...
+```
+
+入口负责在 `runtime_root` 定位 SQLite/trajectory/artifact，持有 `SqliteSaver.from_conn_string(...)` context，使用现有 graph factory 装配依赖并 compile，设置计算出的 `recursion_limit` 与 `durability="sync"`，最后调用严格的 start/resume preflight。这样 S3 能力有可执行的生产路径，不只停留在 factory。
+
+`langgraph.json:swe_agent` 继续作为 LangGraph Studio/dev、现有图检查和 S1/S2 非 durable 兼容入口；README 必须明确它不提供 S3 checkpoint/resume、durable budget 或 crash recovery。它不能自动切换为 Server persistence，也不能与本地 runtime 共用 thread。S3 正式恢复验收只针对上述本地入口。
+
+S3.1 只实现并测试 RunConfig、semantic digest、Run/Workspace/Agent identity 和入口请求/结果 contracts，可用 fake checkpoint lookup 验证 preflight；不安装或启用 SQLite。S3.2 才增加 SQLite saver、可执行本地 CLI、durable budget 和真实 start/resume integration。
+
+### 5.3 图节点变化
 
 父图拟调整：
 
@@ -324,13 +389,14 @@ post → bounded repair（每个 model/tool 仍经过相同三步）
 
 Developer 只做一处恢复相关行为变化：现有 `commit_file_transaction` 内部先执行 hash reconcile，再决定调用现有 `WorkspaceEditor.commit()`、合成已应用结果或停止。必须放在 commit node 内，因为崩溃恢复可能直接重放该 node，不会重新经过其前一个 graph node。
 
-### 5.3 AgentState 新字段
+### 5.4 AgentState 新字段
 
 顶层新增字段保持精简：
 
 ```text
 run_identity: RunIdentity | None
 run_config_digest: str
+agent_code_revision: AgentCodeRevision
 budget: BudgetSnapshot
 runtime_error_code: RuntimeErrorCode | None
 runtime_message: str
@@ -345,7 +411,7 @@ Developer state 增加 `pending_write: WriteIntent | None`。`WriteIntent` 保�
 3. `CONFLICT` 保留 intent 并标记冲突，整体停止；不能自动清除、覆盖、merge 或 repair。
 4. 每个 repair attempt 重读当前文件，并用新 `write_intent_id` 创建自己的 intent；已经完成的原始 intent 不得被复用。repair 失败/耗尽保留最后诊断所需的 intent 状态。
 
-`RuntimeErrorCode` 至少区分 `CONFIG_INVALID/THREAD_ALREADY_EXISTS/CHECKPOINT_NOT_FOUND/MAX_STEPS/MAX_COST/BUDGET_USAGE_UNKNOWN/CALL_OUTCOME_UNKNOWN/RUN_TIMEOUT/WORKSPACE_MISMATCH/THREAD_IDENTITY_MISMATCH/RECOVERY_CONFLICT/SENSITIVE_DATA_DETECTED/CHECKPOINT_ERROR/TRAJECTORY_ERROR`。这些错误令整体 outcome 为 `FAILED`，不扩大 S2 verification 状态枚举。
+`RuntimeErrorCode` 至少区分 `CONFIG_INVALID/THREAD_ALREADY_EXISTS/CHECKPOINT_NOT_FOUND/RUN_CONFIG_MISMATCH/AGENT_REVISION_MISMATCH/MAX_STEPS/MAX_COST/BUDGET_USAGE_UNKNOWN/CALL_OUTCOME_UNKNOWN/RUN_TIMEOUT/INTERNAL_GRAPH_LIMIT/WORKSPACE_MISMATCH/THREAD_IDENTITY_MISMATCH/RECOVERY_CONFLICT/SENSITIVE_DATA_DETECTED/CHECKPOINT_ERROR/TRAJECTORY_ERROR`。`AGENT_REVISION_UNVERIFIED` 是 warning，不是错误。错误令整体 outcome 为 `FAILED`，不扩大 S2 verification 状态枚举。
 
 ## 6. 文件恢复状态机
 
@@ -405,10 +471,14 @@ stateDiagram-v2
 | 自定义 workspace/model/verification/limits | 读、写、runner、模型工厂均接收同一个 config |
 | runtime_root 与 workspace 相同、嵌套或经 symlink/junction 重叠 | `CONFIG_INVALID`；不创建 checkpoint/artifact，不发生外部调用 |
 | output-token limit 为非正整数 | `CONFIG_INVALID`；合法值传给现有 DeepSeek/Anthropic client |
+| model base URL 含 userinfo/query/fragment | `CONFIG_INVALID`，避免 secret 进入 endpoint identity/digest |
 | timeout 为 0、负数、NaN、Infinity | `CONFIG_INVALID`，零外部调用 |
 | max_steps 非正整数；max_cost 非正/非有限 | 结构化拒绝 |
 | DeepSeek/Anthropic 显式配置 | 继续构造当前 provider；无新增 provider |
 | config/event/checkpoint 序列化 | 不出现 API key；descriptor digest 稳定 |
+| semantic config 相同、mapping key 顺序不同 | canonical digest 相同 |
+| provider/model/endpoint/public parameter/verification 顺序或参数/timeout/max_steps/max_cost/pricing/output limit 任一变化 | resume 返回 `RUN_CONFIG_MISMATCH`，零 graph node/外部调用 |
+| 仅 API key 轮换 | semantic digest 不变，其他 identity 检查通过后允许 resume |
 
 ### 7.2 Budget / usage
 
@@ -428,6 +498,8 @@ stateDiagram-v2
 | 配置 max_cost 后遇 unknown cost | 当前响应可完成，下一模型调用返回 `BUDGET_USAGE_UNKNOWN` |
 | deadline 在 model/tool/verification 前耗尽 | 不发起对应调用；整体 FAILED，保留原 S2 诊断 |
 | Architect → Developer → repair → 进程重启 | 同一 budget ledger、step/call identity 和 deadline 跨父子图保持；次数/成本不重置 |
+| `max_steps` 为 1、典型 N、tool batch 和两次 repair 最坏路径 | 入口使用 `max(200, 8*N+64)`；先得到业务预算/正常终态，不提前抛 `GraphRecursionError` |
+| 确定性 helper 执行 | 不增加 `steps_reserved`；deadline 到期后停止，不能借 helper 绕过时限 |
 
 ### 7.3 Trajectory / artifact
 
@@ -450,8 +522,12 @@ stateDiagram-v2
 | `start_run` 遇已有 thread，包括已完成 thread | `THREAD_ALREADY_EXISTS`，不执行 graph node |
 | `resume_run` 遇无 checkpoint | `CHECKPOINT_NOT_FOUND`，不初始化新 run |
 | resume 同 thread + 同 workspace/identity | 通过 preflight 后允许 `invoke(None, ..., durability="sync")` |
+| checkpoint/current Agent revision 均 known 且不同 | `AGENT_REVISION_MISMATCH`，零 graph node/外部调用 |
+| 任一 Agent revision unknown | 允许继续，checkpoint/trajectory/RunRecord 存在 `AGENT_REVISION_UNVERIFIED` 与 reason |
 | 同 thread + 不同 workspace/task/run | preflight 结构化拒绝，零 graph node/文件调用 |
 | 新 thread + 同 workspace | 独立新运行，不继承旧子图消息或预算 |
+| 本地 durable CLI start → 关闭进程 → CLI resume | 重开 SQLite 后从同一 thread 恢复；预算和 identity 不重置 |
+| `langgraph.json:swe_agent` 运行 | 保持非 durable S1/S2 图；不创建本地 SQLite，也不声称可 resume |
 
 ### 7.5 写成功但 checkpoint 未保存
 
@@ -491,6 +567,7 @@ stateDiagram-v2
 |---|---|
 | `agent/runtime/{config,budget,calls,trajectory,artifacts,recovery,wiring}.py` | 新增上述小型公开 seam、start/resume 装配和文件实现 |
 | `agent/runtime/__init__.py` | 只导出稳定 contracts |
+| `agent/runtime/__main__.py` | 最小本地 durable `start/resume` CLI；持有 saver context，不引入 RunManager |
 | `agent/config.py` | 让现有 DeepSeek/Anthropic 构造接收显式 ModelSettings；不再由 cached runnable 隐式读环境 |
 | `agent/graph.py` | 接收 RunConfig/runtime seams，增加 initialize/finalize record，父图 compile 时可注入 saver |
 | `agent/architect/runtime.py`、`agent/developer/runtime.py` | 在现有 callable 外接 model boundary；缓存按显式配置装配 |
@@ -499,10 +576,10 @@ stateDiagram-v2
 | `agent/editing/models.py` | 只在确有需要时新增 `WriteIntent`，不改变 editor/transaction 公开语义 |
 | `agent/verification/contracts.py`、`agent/verification/runner.py` | 保留 S2 判定语义；state 改存 secret-safe summary，pipe drain 同步生成脱敏完整 artifact |
 | `tests/runtime/test_{config,budget,trajectory,recovery}.py` | 确定性 contracts、raw usage、secret canary、event replay 和边界测试 |
-| `tests/runtime/test_checkpoint_integration.py` | 真实 SQLite、子图传播、重开进程与 crash-window 测试 |
+| `tests/runtime/test_checkpoint_integration.py` | 真实 SQLite、config/revision binding、CLI 重开进程、子图传播与 crash-window 测试 |
 | `tests/test_graph_integration.py` | 顶层身份、预算、最终 record 与 S1/S2 传播回归 |
 | `pyproject.toml`、`uv.lock` | 只新增 SQLite saver 依赖并锁定，不升级现有主依赖 |
-| `.env.example`、`README.md` | 记录可信配置、恢复命令、unknown usage 与非 exactly-once 边界 |
+| `.env.example`、`README.md` | 记录可信配置、本地 durable start/resume、`langgraph.json` 非 durable 边界、unknown usage 与非 exactly-once 限制 |
 
 `agent/state.py` 是当前未参与主图的旧状态文件，S3 不借机清理。现有 S1/S2 文件只做连接 seam 所需的最小变化。
 
@@ -522,8 +599,8 @@ stateDiagram-v2
 
 后续应继续小步交付，而不是一次完成全部 S3：
 
-1. **S3.1 Config + Identity**：公开 RunConfig/identity contracts、runtime/workspace 隔离、output-token limit、显式模型装配，以及 start/resume preflight；尚不发起持久化调用。
-2. **S3.2 Checkpoint + Durable Budget**：新增 SQLite 依赖、父 saver、子图传播和 `reserve → dispatch → settle` graph boundary；先证明 reservation 已持久化与崩溃后预算不回退，才允许预算进入生产调用路径。
+1. **S3.1 Config + Identity**：公开 RunConfig、semantic digest、Run/Workspace/Agent identity、入口请求/结果 contracts、runtime/workspace 隔离、output-token limit 和显式模型装配；只用 pure/fake checkpoint lookup 测 preflight，不启用 SQLite 或 durable runtime。
+2. **S3.2 Checkpoint + Durable Budget**：新增 SQLite 依赖、本地 `python -m agent.runtime start/resume`、父 saver、config/revision binding、子图传播、动态 recursion limit 和 `reserve → dispatch → settle` graph boundary；先证明 reservation 已持久化与崩溃后预算不回退，才允许预算进入生产调用路径。
 3. **S3.3 Usage + Trajectory + Artifacts**：raw model usage boundary、event `append_once`、代码 revision、secret-safe state 和 verification streaming spool；以 fake model/runner 验证。
 4. **S3.4 Write Recovery**：`pending_write` 完整生命周期、Developer commit 前 hash 状态机、repair intent 和 subprocess crash-window 测试。
 5. **S3 Final Gate**：全量 S1/S2/S3、compile、prompt render、diff check、真实 DeepSeek smoke；只声明实测结果。
@@ -533,10 +610,13 @@ stateDiagram-v2
 ## 11. 已知限制
 
 - `max_steps` 可以在 dispatch 前形成确定性边界；`max_cost` 只能基于已经返回或可靠估算的成本阻止后续调用，不能保证账单绝不超过阈值。
+- `recursion_limit = max(200, 8 * max_steps + 64)` 只对本文冻结的图拓扑成立；节点/cycle 变化必须同步更新成本模型和最坏路径测试。它是失控保护，不是用户预算。
 - durable reservation 后崩溃可能发生在实际 dispatch 之前。由于没有外部幂等证据，恢复仍按结果不确定停止，因此会消耗一个未实际执行的 step；这是避免重复副作用的保守选择。
 - provider 不返回 usage、且未配置价格快照时，成本保持 unknown；配置了 max cost 的运行会在下一模型调用前保守停止。
 - run deadline 包含进程停机时间。同步 provider 或工具不支持取消时，timeout 只能阻止后续动作，不能保证立即终止正在阻塞的调用。
 - SQLite saver 适合本地单进程/轻量同步运行，不适合多进程服务。LangGraph Agent Server 的托管 persistence 是另一部署路径，不能把本地 SQLite 测试结果直接外推。
+- S3 durable recovery 只由本地 runtime 入口提供；`langgraph.json:swe_agent` 仍是非 durable Studio/dev 兼容图，两个入口的 thread/checkpoint 不互通。
+- API key 被排除在 semantic digest 外，凭据轮换可以恢复，但新凭据失效或权限不同仍会作为后续真实调用错误记录。Agent revision 任一为 `UNKNOWN` 时也只能告警，不能证明代码兼容。
 - checkpoint 会序列化 Developer working copy，长文件会增大数据库；S3 先测量后再决定是否将内容 artifact 化，不提前建立 storage registry。
 - checkpoint、event JSONL、artifact 和 workspace 文件没有跨介质事务。事件可能落后 checkpoint，但 `append_once` 会按 idempotency key 去重重放；不能从事件反向推断 checkpoint 已提交。
 - durable reservation 只能检测不确定调用，不能证明 provider/tool exactly-once；没有匹配 durable result 时必须人工决定是否新开运行，S3 不提供自动重放。
