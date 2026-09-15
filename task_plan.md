@@ -240,3 +240,27 @@ compile、prompt render 与 diff check 通过。
 ### 当前状态
 
 Design Gate 已完成。仅修改 `research/s3-runtime-recovery.md` 和本计划；84 项 S1/S2 测试中 83 项通过、1 项因 Windows 普通 symlink 权限跳过，compile、11 个 prompt render、设计结构检查和 `git diff --check` 均通过。未修改生产代码或依赖。
+
+## 新增任务：S3 Design Gate Seal
+
+### 固定范围
+
+- 基线：`06d0db01dd0e9a483386e3241afe9e75f5b74565`。
+- 只修订 S3 设计文档与本计划；不修改生产代码、测试或依赖。
+- 保留 S1/S2 契约与 Architect → Developer → bounded repair 主链；不进入 S4/SWE-bench，不增加 Agent、UI、sandbox 或 provider。
+
+### 审查与设计封口
+
+- [x] 逐项审核五项调整，确认均属于 S3 且优于原设计，并记录必要的保守边界。
+- [x] 将预算改为 checkpoint 先行的 `reserve → dispatch → settle` graph steps；恢复遇到结果不确定的 `IN_FLIGHT` 调用停止，step 不回退。
+- [x] 将 usage boundary 放在 raw model response 与 parser 之间；设计 secret-safe checkpoint/event 与 Runner pipe-drain 完整日志 artifact。
+- [x] 定义 durable step/call/write identity、事件幂等键、严格分离的 start/resume，以及 pending write/repair 生命周期。
+- [x] 补充 runtime root、model output-token limit、Agent/workspace revision 和 path-only WorkspaceIdentity 限制。
+- [x] 保留公开 ToolNode，只增加前后预算节点；不包装私有 checkpoint 表或建立 telemetry 平台。
+- [x] 补齐 crash 预算不回退、raw usage、secret canary、event replay、start/resume、完整日志 artifact，以及跨 Architect → Developer → repair → restart 的预算测试矩阵。
+- [x] 完成 Markdown 结构/固定链接/禁止范围、全量 S1/S2、compile、prompt render 与 `git diff --check` 验证。
+- [x] 仅提交 `research/s3-runtime-recovery.md` 与 `task_plan.md` 的独立中文 Conventional Commit。
+
+### 当前状态
+
+设计修订与验证已完成。全量 84 项 S1/S2 测试通过，41 项 unittest subtests 通过；Python compile、11 个 prompt render、Markdown 围栏、27 个固定 GitHub 源码链接和 `git diff --check` 均通过。S3 生产实现尚未开始，项目依赖文件未变化。
