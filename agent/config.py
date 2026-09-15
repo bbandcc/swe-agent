@@ -1,6 +1,7 @@
 """Environment-backed model configuration shared by agent runtimes."""
 
 import os
+from collections.abc import Mapping
 from dataclasses import dataclass
 from typing import Any, Literal
 
@@ -24,36 +25,59 @@ class ModelSettings:
     api_key: SecretStr | None
 
 
-def model_settings() -> ModelSettings:
-    provider = os.environ.get("AGENT_MODEL_PROVIDER", "deepseek").strip().lower()
-    configured_model = os.environ.get("AGENT_MODEL", "").strip()
+def model_settings(
+    environ: Mapping[str, str] | None = None,
+) -> ModelSettings:
+    source = os.environ if environ is None else environ
+    provider = source.get("AGENT_MODEL_PROVIDER", "deepseek").strip().lower()
+    configured_model = source.get("AGENT_MODEL", "").strip()
 
     if provider == "deepseek":
         return ModelSettings(
             provider="deepseek",
             model=configured_model or DEFAULT_DEEPSEEK_MODEL,
             base_url=(
-                os.environ.get("AGENT_MODEL_BASE_URL", "").strip()
+                source.get("AGENT_MODEL_BASE_URL", "").strip()
                 or DEFAULT_DEEPSEEK_BASE_URL
             ),
-            api_key=_secret_from_environment("DEEPSEEK_API_KEY"),
+            api_key=_secret_from_environment(source, "DEEPSEEK_API_KEY"),
         )
     if provider == "anthropic":
         return ModelSettings(
             provider="anthropic",
             model=configured_model or DEFAULT_ANTHROPIC_MODEL,
             base_url=(
-                os.environ.get("AGENT_MODEL_BASE_URL", "").strip() or None
+                source.get("AGENT_MODEL_BASE_URL", "").strip() or None
             ),
-            api_key=_secret_from_environment("ANTHROPIC_API_KEY"),
+            api_key=_secret_from_environment(source, "ANTHROPIC_API_KEY"),
         )
     raise ValueError(
         "AGENT_MODEL_PROVIDER must be either 'deepseek' or 'anthropic'"
     )
 
 
-def build_chat_model(**options: Any) -> BaseChatModel:
-    settings = model_settings()
+def build_chat_model(
+    settings: ModelSettings | None = None,
+    *,
+    max_output_tokens: int | None = None,
+    **options: Any,
+) -> BaseChatModel:
+    """Build an existing provider from explicit or legacy environment config."""
+    settings = model_settings() if settings is None else settings
+    if settings.provider not in {"deepseek", "anthropic"}:
+        raise ValueError("Model provider must be deepseek or anthropic")
+    if max_output_tokens is not None:
+        if (
+            isinstance(max_output_tokens, bool)
+            or not isinstance(max_output_tokens, int)
+            or max_output_tokens <= 0
+        ):
+            raise ValueError("max_output_tokens must be a positive integer")
+        if "max_tokens" in options:
+            raise ValueError(
+                "max_tokens and max_output_tokens cannot both be provided"
+            )
+        options["max_tokens"] = max_output_tokens
     connection: dict[str, Any] = {
         "model": settings.model,
         "base_url": settings.base_url,
@@ -68,6 +92,8 @@ def build_chat_model(**options: Any) -> BaseChatModel:
     return ChatAnthropic(**connection)
 
 
-def _secret_from_environment(name: str) -> SecretStr | None:
-    value = os.environ.get(name, "").strip()
+def _secret_from_environment(
+    environ: Mapping[str, str], name: str
+) -> SecretStr | None:
+    value = environ.get(name, "").strip()
     return SecretStr(value) if value else None

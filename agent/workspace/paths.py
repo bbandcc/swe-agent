@@ -15,6 +15,19 @@ class WorkspacePathErrorCode(str, Enum):
     EXPECTED_DIRECTORY = "expected_directory"
 
 
+class WorkspaceRootErrorCode(str, Enum):
+    NOT_FOUND = "not_found"
+    INVALID = "invalid"
+
+
+class WorkspaceRootError(ValueError):
+    """Failure to establish a canonical, link-free directory root."""
+
+    def __init__(self, code: WorkspaceRootErrorCode, message: str) -> None:
+        self.code = code
+        super().__init__(message)
+
+
 @dataclass(frozen=True, slots=True)
 class PathResolution:
     requested_path: str
@@ -138,32 +151,17 @@ class WorkspacePathResolver:
 
     def _resolve_root(self, requested_path: str) -> Path | PathResolution:
         try:
-            root = self._configured_root.absolute()
-        except OSError:
-            return self._error(
-                requested_path,
-                WorkspacePathErrorCode.WORKSPACE_INVALID,
-                "The configured workspace path is invalid.",
+            return canonicalize_root_path(self._configured_root)
+        except WorkspaceRootError as error:
+            error_code = (
+                WorkspacePathErrorCode.WORKSPACE_NOT_FOUND
+                if error.code is WorkspaceRootErrorCode.NOT_FOUND
+                else WorkspacePathErrorCode.WORKSPACE_INVALID
             )
-        if not root.exists():
             return self._error(
                 requested_path,
-                WorkspacePathErrorCode.WORKSPACE_NOT_FOUND,
-                "The configured workspace root does not exist.",
-            )
-        if not root.is_dir() or _is_link_or_junction(root):
-            return self._error(
-                requested_path,
-                WorkspacePathErrorCode.WORKSPACE_INVALID,
-                "The configured workspace root must be a real directory.",
-            )
-        try:
-            return root.resolve(strict=True)
-        except OSError:
-            return self._error(
-                requested_path,
-                WorkspacePathErrorCode.WORKSPACE_INVALID,
-                "The configured workspace root could not be resolved.",
+                error_code,
+                str(error),
             )
 
     def _workspace_relative_path(
@@ -211,6 +209,56 @@ def _is_link_or_junction(path: Path) -> bool:
         )
     except OSError:
         return True
+
+
+def canonicalize_root_path(
+    root: str | Path,
+    *,
+    must_exist: bool = True,
+) -> Path:
+    """Return one absolute directory root with no link/junction component."""
+    if isinstance(root, str) and not root.strip():
+        raise WorkspaceRootError(
+            WorkspaceRootErrorCode.INVALID,
+            "The configured root must be a non-empty path.",
+        )
+    try:
+        configured = Path(root).expanduser().absolute()
+    except (OSError, RuntimeError, TypeError) as error:
+        raise WorkspaceRootError(
+            WorkspaceRootErrorCode.INVALID,
+            "The configured root path is invalid.",
+        ) from error
+    if any(
+        _is_link_or_junction(candidate)
+        for candidate in (*reversed(configured.parents), configured)
+    ):
+        raise WorkspaceRootError(
+            WorkspaceRootErrorCode.INVALID,
+            "The configured root must not use symbolic links or junctions.",
+        )
+    if must_exist and not configured.exists():
+        raise WorkspaceRootError(
+            WorkspaceRootErrorCode.NOT_FOUND,
+            "The configured workspace root does not exist.",
+        )
+    if configured.exists() and not configured.is_dir():
+        raise WorkspaceRootError(
+            WorkspaceRootErrorCode.INVALID,
+            "The configured root must be a directory.",
+        )
+    try:
+        return configured.resolve(strict=must_exist)
+    except (OSError, RuntimeError) as error:
+        raise WorkspaceRootError(
+            WorkspaceRootErrorCode.INVALID,
+            "The configured root could not be resolved safely.",
+        ) from error
+
+
+def canonical_path_key(path: str | Path) -> str:
+    """Return the S1 cross-platform comparison key for a canonical path."""
+    return os.path.normcase(str(path))
 
 
 def default_workspace_resolver() -> WorkspacePathResolver:

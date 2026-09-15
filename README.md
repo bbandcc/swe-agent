@@ -283,6 +283,7 @@ agent/
 │   ├── state.py       # State definitions
 │   └── prompts/       # Prompt templates
 ├── editing/            # Deterministic workspace read/write boundary
+├── runtime/            # S3 run configuration and identity contracts
 ├── common/            # Shared entities and state
 │   └── entities.py    # Pydantic models
 └── tools/             # File operations and search tools
@@ -447,6 +448,39 @@ SWE_AGENT_VERIFICATION_CHECKS='[{"name":"tests","argv":["python","-m","unittest"
 Commands run with `shell=False`, and `cwd` must resolve inside
 `SWE_AGENT_WORKSPACE`. An unset or empty configuration produces the explicit
 `UNVERIFIED` result. Shell command strings are rejected.
+
+S3.1 adds an explicit, validated runtime configuration contract for library
+callers:
+
+```python
+import os
+
+from agent.runtime import load_run_config, semantic_config_digest
+
+config = load_run_config(os.environ)
+digest = semantic_config_digest(config)
+```
+
+`RunConfig` binds the workspace, a separate runtime directory, the existing
+DeepSeek or Anthropic settings, model output limit, ordered verification
+checks, run timeout, step limit, optional cost limit, and optional pricing
+snapshot. The semantic digest excludes API keys and physical workspace/runtime
+paths, so credentials can rotate while behavior-changing configuration remains
+detectable. `build_chat_model(settings, max_output_tokens=...)` is the explicit
+model assembly seam; calling `build_chat_model()` remains compatible with the
+existing environment-backed graph.
+
+The runtime directory must be disjoint from the workspace. S3.1 defines only
+configuration, identity, and pure start/resume preflight contracts. It does not
+install SQLite, persist checkpoints, or add a durable CLI; `langgraph dev`
+continues to run the existing non-durable compatibility graph.
+
+`WorkspaceIdentity` is deliberately path-only. `preflight_start` rejects an
+existing thread, while `preflight_resume` compares workspace, run/task/thread,
+semantic config, and known Agent revisions through an injected checkpoint
+lookup. An unknown Agent revision produces a warning. The configured step and
+cost limits are validated and bound into the digest in S3.1; production budget
+enforcement remains part of S3.2.
 
 ## 📄 License
 

@@ -78,4 +78,5 @@ coverage.xml
 .DS_Store
 .env.local
 workspace_repo/
+.swe-agent-runtime/
 .research-cache/

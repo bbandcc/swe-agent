@@ -286,3 +286,29 @@ Design Gate 已完成。仅修改 `research/s3-runtime-recovery.md` 和本计划
 ### 当前状态
 
 设计修订与验收已完成。全量 84 项 S1/S2 测试与 41 项 unittest subtests 通过；Python compile、11 个 prompt render、Markdown 围栏、27 个固定 GitHub 源码链接和 `git diff --check` 通过。仅两份指定文档有差异；S3 生产实现尚未开始，项目依赖文件未变化。
+
+## 新增任务：S3.1 Config + Identity
+
+### 固定范围
+
+- 基线：`1503e62efa32f95a45983961fc07b3f8ad6d6112`。
+- 只实现 RunConfig、semantic digest、显式双 provider 装配、Identity 和纯 preflight。
+- 不安装 SQLite，不增加 durable CLI，不把 BudgetController 或 reserve/dispatch/settle 接入生产图。
+
+### TDD 纵向切片
+
+- [x] 红测固定 RunConfig 数值、base URL、workspace/runtime 隔离和 symlink/junction 拒绝行为。
+- [x] 实现显式 mapping loader、TokenPricing 和版本化 secret-free semantic digest。
+- [x] 红测并实现 DeepSeek/Anthropic 显式 ModelSettings + output-token limit 装配，保留旧环境入口。
+- [x] 红测并实现 path-only WorkspaceIdentity、clean/dirty/unknown AgentCodeRevision。
+- [x] 红测并实现 Start/Resume request/result、injectable CheckpointLookup 与全部结构化拒绝路径。
+- [x] 完成全量 S1/S2/S3.1、compile、prompt render、diff check、敏感值与禁止范围审计。
+- [x] 更新最小文档并独立提交。
+
+### 当前状态
+
+S3.1 已完成。全量 124 项测试与 110 项 unittest subtests 通过；Python
+compile、11 个 prompt render、diff whitespace、敏感值和禁止范围审计通过。
+普通 symlink 与 Windows junction 用例均实际通过；仅有现有 tree-sitter
+弃用告警。未修改依赖或生产图，max_steps/max_cost 只完成校验与语义绑定，
+SQLite、durable CLI 和预算执行仍留在 S3.2。
