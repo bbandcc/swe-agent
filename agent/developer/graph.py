@@ -4,6 +4,7 @@ from collections.abc import Sequence
 from typing import Any
 
 from langchain_core.messages import AnyMessage
+from langchain_core.runnables import RunnableConfig
 from langgraph.constants import END, START
 from langgraph.graph import StateGraph
 from langgraph.prebuilt import ToolNode
@@ -96,7 +97,7 @@ def create_developer_workflow(
 
     def get_clear_implementation_plan_for_atomic_task(
         state: SoftwareDeveloperState,
-    ) -> dict[str, list[AnyMessage]]:
+    ) -> dict[str, Any]:
         plan = state.active_implementation_plan
         transaction = state.current_file_transaction
         if plan is None or transaction is None:
@@ -105,18 +106,21 @@ def create_developer_workflow(
         current_atomic_task = current_task.atomic_tasks[
             state.current_atomic_task_idx
         ]
-        result = runtime.research_atomic_task(
-            {
-                "development_task": current_atomic_task.atomic_task,
-                "file_content": transaction.working_content,
-                "target_file": transaction.path,
-                "codebase_structure": state.codebase_structure,
-                "additional_context": current_atomic_task.additional_context,
-                "atomic_implementation_research": (
-                    state.atomic_implementation_research
-                ),
-            }
-        )
+        values = {
+            "development_task": current_atomic_task.atomic_task,
+            "file_content": transaction.working_content,
+            "target_file": transaction.path,
+            "codebase_structure": state.codebase_structure,
+            "additional_context": current_atomic_task.additional_context,
+            "atomic_implementation_research": (
+                state.atomic_implementation_research
+            ),
+        }
+        if budget_boundary is not None:
+            deadline_update = budget_boundary.guard_dispatch(state)
+            if deadline_update:
+                return deadline_update
+        result = runtime.research_atomic_task(values)
         budget_update: dict[str, Any] = {}
         if budget_boundary is not None:
             result, budget_update = budget_boundary.capture_model(state, result)
@@ -150,6 +154,10 @@ def create_developer_workflow(
             "file_content": transaction.working_content,
             "verification_feedback": state.verification_feedback or {},
         }
+        if budget_boundary is not None:
+            deadline_update = budget_boundary.guard_dispatch(state)
+            if deadline_update:
+                return deadline_update
         if transaction.existed or transaction.task_ids:
             model_output = runtime.propose_existing_file_edit(values)
         else:
@@ -204,11 +212,24 @@ def create_developer_workflow(
         if transaction is None:
             return invalid_state("The Developer has no transaction to commit.")
         result = runtime.edit_executor().commit(transaction)
+        deadline_update = (
+            budget_boundary.check_deadline(
+                state,
+                message=(
+                    "The file commit completed after the absolute run deadline; "
+                    "the applied result was preserved and later side effects "
+                    "were blocked."
+                ),
+            )
+            if budget_boundary is not None
+            else {}
+        )
         if result.status is not EditStatus.APPLIED:
-            return failed_edit(result)
+            return {**failed_edit(result), **deadline_update}
         return {
             "last_edit_result": result,
             "current_file_transaction": None,
+            **deadline_update,
         }
 
     def proceed_to_next_task(
@@ -260,11 +281,29 @@ def create_developer_workflow(
         state: SoftwareDeveloperState,
     ) -> dict[str, Any]:
         assert budget_boundary is not None
-        return budget_boundary.check_deadline(state)
+        return budget_boundary.check_deadline(
+            state,
+            message=(
+                "The absolute run deadline expired before file commit; "
+                "no write was attempted."
+            ),
+        )
 
     research_tool_node = ToolNode(
         tools, messages_key="atomic_implementation_research"
     )
+
+    def dispatch_research_tools(
+        state: SoftwareDeveloperState, config: RunnableConfig
+    ) -> dict[str, Any]:
+        assert budget_boundary is not None
+        deadline_update = budget_boundary.guard_dispatch(state)
+        if deadline_update:
+            return deadline_update
+        return research_tool_node.invoke(state, config)
+
+    def route_after_tool_dispatch(state: SoftwareDeveloperState) -> str:
+        return "settle" if state.durable_call_result is not None else "record"
     workflow = StateGraph(SoftwareDeveloperState)
     workflow.add_node("start_implementing", validate_and_start)
     workflow.add_node("prepare_for_implementation", prepare_for_implementation)
@@ -272,7 +311,14 @@ def create_developer_workflow(
         "get_clear_implementation_plan_for_atomic_task",
         get_clear_implementation_plan_for_atomic_task,
     )
-    workflow.add_node("research_tool_node", research_tool_node)
+    workflow.add_node(
+        "research_tool_node",
+        (
+            dispatch_research_tools
+            if budget_boundary is not None
+            else research_tool_node
+        ),
+    )
     workflow.add_node("stage_diff_for_task", stage_diff_for_task)
     workflow.add_node(
         "proceed_to_next_atomic_task", proceed_to_next_atomic_task
@@ -305,7 +351,14 @@ def create_developer_workflow(
             budget_boundary.may_dispatch,
             {"dispatch": "research_tool_node", "end": END},
         )
-        workflow.add_edge("research_tool_node", "record_research_tool_results")
+        workflow.add_conditional_edges(
+            "research_tool_node",
+            route_after_tool_dispatch,
+            {
+                "record": "record_research_tool_results",
+                "settle": "settle_research_tools",
+            },
+        )
         workflow.add_edge("record_research_tool_results", "settle_research_tools")
 
         workflow.add_edge(START, "start_implementing")
@@ -372,8 +425,12 @@ def create_developer_workflow(
         )
         workflow.add_conditional_edges(
             "commit_file_transaction",
-            route_after_commit,
-            {"advance": "proceed_to_next_task", END: END},
+            lambda state: (
+                "end"
+                if state.runtime_error_code is not None
+                else route_after_commit(state)
+            ),
+            {"advance": "proceed_to_next_task", END: END, "end": END},
         )
         workflow.add_conditional_edges(
             "proceed_to_next_task",

@@ -6,6 +6,7 @@ from typing import Any, NotRequired, TypedDict
 
 from langchain_core.messages import AIMessage, AnyMessage, HumanMessage
 from langchain_core.output_parsers import JsonOutputParser
+from langchain_core.runnables import RunnableConfig
 from langgraph.constants import END, START
 from langgraph.graph import StateGraph
 from langgraph.prebuilt import ToolNode
@@ -99,6 +100,10 @@ def create_architect_workflow(
                 ),
                 "codebase_structure": runtime.load_codebase_structure(),
             }
+        if budget_boundary is not None:
+            deadline_update = budget_boundary.guard_dispatch(state)
+            if deadline_update:
+                return deadline_update
         response = runtime.plan_next_step(values)
         budget_update: dict[str, Any] = {}
         if budget_boundary is not None:
@@ -126,6 +131,10 @@ def create_architect_workflow(
                     state.implementation_research_scratchpad
                 )
             }
+        if budget_boundary is not None:
+            deadline_update = budget_boundary.guard_dispatch(state)
+            if deadline_update:
+                return deadline_update
         response = runtime.check_research_step(values)
         budget_update: dict[str, Any] = {}
         if budget_boundary is not None:
@@ -152,6 +161,10 @@ def create_architect_workflow(
                 ),
                 "codebase_structure": runtime.load_codebase_structure(),
             }
+        if budget_boundary is not None:
+            deadline_update = budget_boundary.guard_dispatch(state)
+            if deadline_update:
+                return deadline_update
         response = runtime.conduct_research(values)
         budget_update: dict[str, Any] = {}
         if budget_boundary is not None:
@@ -175,6 +188,10 @@ def create_architect_workflow(
                     pydantic_object=ImplementationPlan
                 ).get_format_instructions(),
             }
+        if budget_boundary is not None:
+            deadline_update = budget_boundary.guard_dispatch(state)
+            if deadline_update:
+                return deadline_update
         response = runtime.extract_implementation_plan(values)
         budget_update: dict[str, Any] = {}
         if budget_boundary is not None:
@@ -224,6 +241,18 @@ def create_architect_workflow(
     tool_node = ToolNode(
         tools, messages_key="implementation_research_scratchpad"
     )
+
+    def dispatch_tools(
+        state: SoftwareArchitectState, config: RunnableConfig
+    ) -> dict[str, Any]:
+        assert budget_boundary is not None
+        deadline_update = budget_boundary.guard_dispatch(state)
+        if deadline_update:
+            return deadline_update
+        return tool_node.invoke(state, config)
+
+    def route_after_tool_dispatch(state: SoftwareArchitectState) -> str:
+        return "settle" if state.durable_call_result is not None else "record"
     workflow = StateGraph(
         SoftwareArchitectState,
         input_schema=SoftwareArchitectInput,
@@ -237,7 +266,9 @@ def create_architect_workflow(
     }
     for name, node in model_nodes.items():
         workflow.add_node(name, node)
-    workflow.add_node("tools", tool_node)
+    workflow.add_node(
+        "tools", dispatch_tools if budget_boundary is not None else tool_node
+    )
 
     if budget_boundary is not None:
         for name in model_nodes:
@@ -257,7 +288,11 @@ def create_architect_workflow(
             budget_boundary.may_dispatch,
             {"dispatch": "tools", "end": END},
         )
-        workflow.add_edge("tools", "record_tool_results")
+        workflow.add_conditional_edges(
+            "tools",
+            route_after_tool_dispatch,
+            {"record": "record_tool_results", "settle": "settle_tools"},
+        )
         workflow.add_edge("record_tool_results", "settle_tools")
         workflow.add_edge(START, "reserve_come_up_with_research_next_step")
         workflow.add_conditional_edges(

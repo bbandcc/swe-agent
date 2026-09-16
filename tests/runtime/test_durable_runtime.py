@@ -18,19 +18,27 @@ from agent.architect.graph import (
 from agent.common.entities import AtomicTask, ImplementationPlan, ImplementationTask
 from agent.developer.editing import DeveloperEditExecutor
 from agent.developer.graph import DeveloperRuntime, create_developer_workflow
-from agent.editing import WorkspaceEditor
+from agent.editing import (
+    EditResult,
+    EditStatus,
+    WorkspaceEditor,
+    WorkspaceTransaction,
+)
 from agent.graph import create_workflow_graph
 from agent.outcome import WorkflowOutcome
 from agent.runtime import (
     AgentCodeRevision,
     AgentRevisionStatus,
+    BudgetSnapshot,
     DurableBudgetBoundary,
     DurableBudgetState,
+    DurableCallResult,
     ModelCallResult,
     ResumeRequest,
     RunIdentity,
     StartRequest,
     UsageMeasurement,
+    UsageRecord,
     UsageStatus,
     WorkspaceIdentity,
     semantic_config_digest,
@@ -262,7 +270,103 @@ class DeadlineFactory:
         )
 
 
+class GuardedDeadlineFactory:
+    def __init__(self) -> None:
+        self.compiles = 0
+        self.external_calls = 0
+
+    def __call__(self, config, run_id, saver, clock):
+        self.compiles += 1
+        boundary = DurableBudgetBoundary(run_id, clock=clock)
+        builder = StateGraph(TinyState)
+        builder.add_node(
+            "reserve_model",
+            lambda state: boundary.reserve_model(
+                state, "model", {"value": state.value}
+            ),
+        )
+
+        def dispatch(state):
+            deadline_update = boundary.guard_dispatch(state)
+            if deadline_update:
+                return deadline_update
+            self.external_calls += 1
+            value, update = boundary.capture_model(
+                state,
+                ModelCallResult(
+                    state.value + 1,
+                    UsageMeasurement(
+                        UsageStatus.PARTIAL, 1, 1, 2, None, None
+                    ),
+                    "a" * 64,
+                ),
+            )
+            return {**update, "value": value}
+
+        builder.add_node("dispatch_model", dispatch)
+        builder.add_node("settle_model", boundary.settle)
+        builder.add_edge(START, "reserve_model")
+        builder.add_edge("reserve_model", "dispatch_model")
+        builder.add_edge("dispatch_model", "settle_model")
+        builder.add_edge("settle_model", END)
+        return builder.compile(
+            checkpointer=saver,
+            interrupt_after=["dispatch_model"] if self.compiles == 1 else None,
+        )
+
+
 class DurableRuntimeTests(RunConfigTestCase):
+    def test_checkpoint_tuple_fields_accept_sequences_but_reject_scalars(self) -> None:
+        usage = UsageRecord.unknown("call")
+        values = (
+            BudgetSnapshot(2, None, 200.0, [], []),
+            DurableCallResult(["call"], [usage], ["d" * 64]),
+            VerificationResult(
+                "check",
+                ["python"],
+                ".",
+                VerificationCheckStatus.PASS,
+                0,
+            ),
+            EditResult(EditStatus.APPLIED, "app.py", task_ids=["task"]),
+            WorkspaceTransaction(
+                "app.py", True, "old", "new", "a" * 64, None, ["task"]
+            ),
+        )
+        normalized = (
+            values[0].reservations,
+            values[0].usage,
+            values[1].call_ids,
+            values[1].usage,
+            values[1].response_digests,
+            values[2].argv,
+            values[3].task_ids,
+            values[4].task_ids,
+        )
+        self.assertTrue(all(isinstance(value, tuple) for value in normalized))
+
+        invalid = (
+            lambda: BudgetSnapshot(2, None, 200.0, "bad", ()),
+            lambda: BudgetSnapshot(2, None, 200.0, (), 7),
+            lambda: DurableCallResult("x", [usage], ["d" * 64]),
+            lambda: DurableCallResult(["call"], 7, ["d" * 64]),
+            lambda: DurableCallResult(["call"], [usage], "d" * 64),
+            lambda: VerificationResult(
+                "check",
+                "python",
+                ".",
+                VerificationCheckStatus.PASS,
+                0,
+            ),
+            lambda: EditResult(EditStatus.APPLIED, "app.py", task_ids="task"),
+            lambda: WorkspaceTransaction(
+                "app.py", True, "old", "new", "a" * 64, None, 7
+            ),
+        )
+        for factory in invalid:
+            with self.subTest(factory=factory), self.assertRaises(ValueError):
+                factory()
+
     def request(self, config, *, digest=None):
         identity = RunIdentity(
             run_id="run-1",
@@ -623,6 +727,52 @@ class DurableRuntimeTests(RunConfigTestCase):
             self.assertEqual(resumed.status, DurableRunStatus.FAILED)
             self.assertEqual(resumed.error_code, "deadline_exceeded")
             self.assertEqual(resumed.state["budget"].steps_used, 1)
+
+    def test_pre_dispatch_deadline_result_resumes_at_settle(self) -> None:
+        with tempfile.TemporaryDirectory() as directory:
+            config = self.make_config(
+                Path(directory),
+                verification_specs=(),
+                max_cost_usd=None,
+                timeout_seconds=100.0,
+            )
+            request = self.request(config)
+            factory = GuardedDeadlineFactory()
+            ticks = iter((100.0, 100.0, 201.0))
+
+            started = start_run(
+                config,
+                request,
+                {"value": 0},
+                graph_factory=factory,
+                clock=lambda: next(ticks),
+            )
+            resumed = resume_run(
+                config,
+                ResumeRequest(
+                    request.identity,
+                    request.run_config_digest,
+                    request.agent_revision,
+                ),
+                graph_factory=factory,
+                clock=lambda: 201.0,
+            )
+
+            self.assertEqual(started.status, DurableRunStatus.FAILED)
+            self.assertEqual(started.error_code, "timeout_overrun")
+            self.assertEqual(resumed.status, DurableRunStatus.FAILED)
+            self.assertEqual(resumed.error_code, "timeout_overrun")
+            self.assertEqual(factory.external_calls, 0)
+            self.assertEqual(resumed.state["budget"].steps_used, 1)
+            self.assertEqual(
+                resumed.state["budget"].reservations[0].status.value,
+                "failed",
+            )
+            self.assertEqual(
+                resumed.state["budget"].usage[0].status,
+                UsageStatus.UNKNOWN,
+            )
+            self.assertIsNone(resumed.state["budget"].usage[0].cost_microusd)
 
     def test_real_sqlite_start_and_resume_preflight_rejections(self) -> None:
         with tempfile.TemporaryDirectory() as directory:

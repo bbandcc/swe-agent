@@ -405,3 +405,30 @@ model/tool deadline overrun、verification 零进程、真实 SQLite 生产链�
 repair 均通过。Python compile、11 个 prompt render、CLI help、SQLite saver
 3.1.1、non-durable 图导入和 `git diff --check` 通过；仅有既存 tree-sitter
 弃用告警。同步 provider/tool 调用仍只能在返回后检测越期，S3.3 能力未实现。
+
+## 新增任务：S3.2 Final Seal
+
+### 固定范围
+
+- 基线：`48738bd5d1489e31f51f96be6cb2e80c5a4148bd`。
+- 只封闭 reserve→dispatch deadline、commit overrun、recursion-limit 证明和恢复序列输入边界。
+- 不修改阶段顺序、`MASTER_PLAN.md` 或 `notes.md`，不进入 S1a/S3.3/S4。
+
+### TDD 验收切片
+
+- [x] reserve 后、dispatch 前越期时零外部调用，step 保留且 reservation 确定性终结。
+- [x] commit 成功返回后越期时保留真实文件与 EditResult，并阻止后续节点。
+- [x] 用实际 compiled graph 最坏路径证明现有 recursion-limit 公式充足。
+- [x] checkpoint 值对象只归一化合法序列，拒绝 string 和 scalar。
+- [x] 运行全量 tests、compile、11 prompt render、CLI 与 diff check。
+- [x] 使用独立中文 Conventional Commit 提交，不 amend。
+
+### 当前状态
+
+Final Seal 实现与验收已完成。全量 168 项测试中 162 项通过、6 项因当前
+Windows 账户缺少普通 symlink 创建权限跳过；junction 用例通过。fake-clock
+覆盖 MODEL/ToolNode reserve 后越期零调用、SQLite 中断恢复后确定性 settle，
+以及 commit 成功返回后越期保留文件与 EditResult。实际 compiled graph 以
+40 个业务 step 的单工具循环正常到达 `MAX_STEPS_EXCEEDED`，证明现有
+`max(200, 8*max_steps+64)` 公式充足，无需调整。Python compile、11 个
+prompt render、CLI help 和 `git diff --check` 通过。

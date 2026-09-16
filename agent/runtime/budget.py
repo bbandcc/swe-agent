@@ -4,6 +4,7 @@ from __future__ import annotations
 
 import math
 import re
+from collections.abc import Sequence
 from dataclasses import dataclass, replace
 from decimal import Decimal, ROUND_CEILING
 from enum import Enum
@@ -128,8 +129,12 @@ class BudgetSnapshot:
     cost_unknown: bool = False
 
     def __post_init__(self) -> None:
-        object.__setattr__(self, "reservations", tuple(self.reservations))
-        object.__setattr__(self, "usage", tuple(self.usage))
+        object.__setattr__(
+            self,
+            "reservations",
+            _sequence_tuple(self.reservations, "reservations"),
+        )
+        object.__setattr__(self, "usage", _sequence_tuple(self.usage, "usage"))
         if (
             isinstance(self.max_steps, bool)
             or not isinstance(self.max_steps, int)
@@ -371,3 +376,11 @@ class BudgetController:
                 for item in snapshot.reservations
             ),
         )
+
+
+def _sequence_tuple(value: object, name: str) -> tuple:
+    if isinstance(value, (str, bytes, bytearray)) or not isinstance(
+        value, Sequence
+    ):
+        raise ValueError(f"{name} must be a non-string sequence.")
+    return tuple(value)

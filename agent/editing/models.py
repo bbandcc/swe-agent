@@ -1,3 +1,4 @@
+from collections.abc import Sequence
 from dataclasses import dataclass
 from enum import Enum
 
@@ -62,7 +63,9 @@ class EditResult:
     task_ids: tuple[str, ...] = ()
 
     def __post_init__(self) -> None:
-        object.__setattr__(self, "task_ids", tuple(self.task_ids))
+        object.__setattr__(
+            self, "task_ids", _sequence_tuple(self.task_ids, "task_ids")
+        )
 
 
 @dataclass(frozen=True, slots=True)
@@ -76,7 +79,9 @@ class WorkspaceTransaction:
     task_ids: tuple[str, ...] = ()
 
     def __post_init__(self) -> None:
-        object.__setattr__(self, "task_ids", tuple(self.task_ids))
+        object.__setattr__(
+            self, "task_ids", _sequence_tuple(self.task_ids, "task_ids")
+        )
 
 
 @dataclass(frozen=True, slots=True)
@@ -87,3 +92,11 @@ class TransactionResult:
     @property
     def ok(self) -> bool:
         return self.transaction is not None and self.edit_result is None
+
+
+def _sequence_tuple(value: object, name: str) -> tuple:
+    if isinstance(value, (str, bytes, bytearray)) or not isinstance(
+        value, Sequence
+    ):
+        raise ValueError(f"{name} must be a non-string sequence.")
+    return tuple(value)

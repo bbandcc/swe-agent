@@ -5,7 +5,7 @@ from __future__ import annotations
 import hashlib
 import json
 import time
-from collections.abc import Callable, Mapping
+from collections.abc import Callable, Mapping, Sequence
 from dataclasses import dataclass
 from typing import Any
 
@@ -26,13 +26,20 @@ class DurableCallResult:
     call_ids: tuple[str, ...]
     usage: tuple[UsageRecord, ...]
     response_digests: tuple[str, ...]
+    failed: bool = False
 
     def __post_init__(self) -> None:
-        object.__setattr__(self, "call_ids", tuple(self.call_ids))
-        object.__setattr__(self, "usage", tuple(self.usage))
         object.__setattr__(
-            self, "response_digests", tuple(self.response_digests)
+            self, "call_ids", _sequence_tuple(self.call_ids, "call_ids")
         )
+        object.__setattr__(self, "usage", _sequence_tuple(self.usage, "usage"))
+        object.__setattr__(
+            self,
+            "response_digests",
+            _sequence_tuple(self.response_digests, "response_digests"),
+        )
+        if not isinstance(self.failed, bool):
+            raise ValueError("failed must be a boolean.")
         size = len(self.call_ids)
         if size == 0 or len(self.usage) != size or len(self.response_digests) != size:
             raise ValueError("Durable call result fields must have equal non-zero size.")
@@ -126,6 +133,38 @@ class DurableBudgetBoundary:
             **self._deadline_overrun_update(snapshot),
         }
 
+    def guard_dispatch(self, state: DurableBudgetState) -> dict[str, Any]:
+        """Recheck the persisted deadline immediately before an external call."""
+        snapshot = self._snapshot(state)
+        if self.clock() < snapshot.deadline_at:
+            return {}
+        active = snapshot.active
+        if not active:
+            raise ValueError("A dispatch guard requires active reservations.")
+        usage = tuple(UsageRecord.unknown(item.call_id) for item in active)
+        digests = tuple(
+            _digest(
+                {
+                    "call_id": item.call_id,
+                    "status": "deadline_expired_before_dispatch",
+                }
+            )
+            for item in active
+        )
+        return {
+            "durable_call_result": DurableCallResult(
+                tuple(item.call_id for item in active),
+                usage,
+                digests,
+                failed=True,
+            ),
+            "runtime_error_code": BudgetErrorCode.TIMEOUT_OVERRUN,
+            "runtime_message": (
+                "The absolute run deadline expired after reservation and "
+                "before dispatch; no external call was made."
+            ),
+        }
+
     def record_tool_results(self, state: DurableBudgetState) -> dict[str, Any]:
         active = self._snapshot(state).active
         messages = getattr(state, "atomic_implementation_research", None)
@@ -156,15 +195,19 @@ class DurableBudgetBoundary:
             **self._deadline_overrun_update(self._snapshot(state)),
         }
 
-    def check_deadline(self, state: DurableBudgetState) -> dict[str, Any]:
+    def check_deadline(
+        self, state: DurableBudgetState, *, message: str | None = None
+    ) -> dict[str, Any]:
         """Guard deterministic side effects without consuming a budget step."""
-        return self._deadline_overrun_update(self._snapshot(state))
+        return self._deadline_overrun_update(self._snapshot(state), message)
 
     def settle(self, state: DurableBudgetState) -> dict[str, Any]:
         result = state.durable_call_result
         if result is None:
             raise ValueError("A durable call result is required before settle.")
-        snapshot = self.controller.settle(self._snapshot(state), result.usage)
+        snapshot = self.controller.settle(
+            self._snapshot(state), result.usage, failed=result.failed
+        )
         return {
             "budget": snapshot,
             "durable_call_result": None,
@@ -194,13 +237,14 @@ class DurableBudgetBoundary:
         }
 
     def _deadline_overrun_update(
-        self, snapshot: BudgetSnapshot
+        self, snapshot: BudgetSnapshot, message: str | None = None
     ) -> dict[str, Any]:
         if self.clock() < snapshot.deadline_at:
             return {}
         return {
             "runtime_error_code": BudgetErrorCode.TIMEOUT_OVERRUN,
-            "runtime_message": (
+            "runtime_message": message
+            or (
                 "The external call crossed the absolute run deadline; "
                 "its result was recorded but later side effects were blocked."
             ),
@@ -224,3 +268,11 @@ def _safe_json(value: object) -> object:
     if hasattr(value, "get_secret_value"):
         return "<secret>"
     return {"type": type(value).__name__}
+
+
+def _sequence_tuple(value: object, name: str) -> tuple:
+    if isinstance(value, (str, bytes, bytearray)) or not isinstance(
+        value, Sequence
+    ):
+        raise ValueError(f"{name} must be a non-string sequence.")
+    return tuple(value)

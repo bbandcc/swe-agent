@@ -18,10 +18,12 @@ from agent.editing import WorkspaceEditor
 from agent.runtime import (
     BudgetErrorCode,
     BudgetSnapshot,
+    CallStatus,
     DurableBudgetBoundary,
     ModelCallResult,
     UsageMeasurement,
     UsageStatus,
+    durable_recursion_limit,
 )
 from agent.graph import create_workflow_graph
 from agent.outcome import WorkflowOutcome
@@ -53,6 +55,106 @@ def ready_plan() -> ImplementationPlan:
 
 
 class BudgetedGraphTests(unittest.TestCase):
+    def test_model_dispatch_rechecks_deadline_after_reservation(self) -> None:
+        calls = 0
+        ticks = iter((100.0, 201.0))
+
+        def plan_next_step(_):
+            nonlocal calls
+            calls += 1
+            return measured(ResearchStep(reasoning="r", hypothesis="h"))
+
+        runtime = ArchitectRuntime(
+            plan_next_step=plan_next_step,
+            check_research_step=lambda _: self.fail("model must not run"),
+            conduct_research=lambda _: self.fail("model must not run"),
+            extract_implementation_plan=lambda _: self.fail("model must not run"),
+            load_codebase_structure=lambda: "app.py",
+        )
+
+        result = create_architect_workflow(
+            runtime,
+            research_tools=[],
+            budget_boundary=DurableBudgetBoundary(
+                "run", clock=lambda: next(ticks)
+            ),
+        ).invoke(
+            {
+                "implementation_research_scratchpad": [HumanMessage(content="task")],
+                "budget": BudgetSnapshot.create(
+                    max_steps=2, max_cost_usd=None, deadline_at=200.0
+                ),
+            }
+        )
+
+        self.assertEqual(calls, 0)
+        self.assertEqual(result["budget"].steps_used, 1)
+        self.assertEqual(result["budget"].reservations[0].status, CallStatus.FAILED)
+        self.assertEqual(result["budget"].usage[0].status, UsageStatus.UNKNOWN)
+        self.assertIsNone(result["budget"].usage[0].cost_microusd)
+        self.assertEqual(
+            result["runtime_error_code"], BudgetErrorCode.TIMEOUT_OVERRUN
+        )
+
+    def test_tool_dispatch_rechecks_deadline_after_reservation(self) -> None:
+        executed: list[str] = []
+        ticks = iter((100.0,) * 10 + (201.0,))
+
+        @tool
+        def inspect_file(path: str) -> str:
+            """Record an external tool execution."""
+            executed.append(path)
+            return path
+
+        runtime = ArchitectRuntime(
+            plan_next_step=lambda _: measured(
+                ResearchStep(reasoning="r", hypothesis="h")
+            ),
+            check_research_step=lambda _: measured(
+                ResearchEvaluation(is_valid=True, reasoning="ok")
+            ),
+            conduct_research=lambda _: measured(
+                AIMessage(
+                    content="",
+                    tool_calls=[
+                        {
+                            "name": "inspect_file",
+                            "args": {"path": "app.py"},
+                            "id": "tool-1",
+                        }
+                    ],
+                )
+            ),
+            extract_implementation_plan=lambda _: self.fail(
+                "tool dispatch must stop the next model"
+            ),
+            load_codebase_structure=lambda: "app.py",
+        )
+
+        result = create_architect_workflow(
+            runtime,
+            research_tools=[inspect_file],
+            budget_boundary=DurableBudgetBoundary(
+                "run", clock=lambda: next(ticks)
+            ),
+        ).invoke(
+            {
+                "implementation_research_scratchpad": [HumanMessage(content="task")],
+                "budget": BudgetSnapshot.create(
+                    max_steps=5, max_cost_usd=None, deadline_at=200.0
+                ),
+            }
+        )
+
+        self.assertEqual(executed, [])
+        self.assertEqual(result["budget"].steps_used, 4)
+        self.assertEqual(result["budget"].reservations[-1].status, CallStatus.FAILED)
+        self.assertEqual(result["budget"].usage[-1].status, UsageStatus.UNKNOWN)
+        self.assertIsNone(result["budget"].usage[-1].cost_microusd)
+        self.assertEqual(
+            result["runtime_error_code"], BudgetErrorCode.TIMEOUT_OVERRUN
+        )
+
     def test_architect_accounts_each_model_call_and_stops_at_n_plus_one(self) -> None:
         runtime = ArchitectRuntime(
             plan_next_step=lambda _: measured(ResearchStep(reasoning="r", hypothesis="h")),
@@ -278,6 +380,133 @@ class BudgetedGraphTests(unittest.TestCase):
             self.assertEqual(len(result["budget"].usage), 2)
             self.assertEqual(runner.calls, 1)
             self.assertEqual(target.read_text(encoding="utf-8"), "value = 1\n")
+
+    def test_commit_overrun_preserves_applied_result_and_stops_without_checks(self) -> None:
+        with tempfile.TemporaryDirectory() as directory:
+            root = Path(directory)
+            target = root / "app.py"
+            target.write_text("value = 1\n", encoding="utf-8")
+            now = [100.0]
+            delegate = DeveloperEditExecutor(WorkspaceEditor(root))
+
+            class Executor:
+                def __getattr__(self, name):
+                    return getattr(delegate, name)
+
+                def commit(self, transaction):
+                    result = delegate.commit(transaction)
+                    now[0] = 201.0
+                    return result
+
+            executor = Executor()
+            runtime = DeveloperRuntime(
+                edit_executor=lambda: executor,
+                load_codebase_structure=lambda: "app.py",
+                research_atomic_task=lambda _: measured(AIMessage(content="ready")),
+                propose_existing_file_edit=lambda _: measured(
+                    "<<<<<<< SEARCH\nvalue = 1\n=======\nvalue = 2\n>>>>>>> REPLACE"
+                ),
+                propose_new_file=lambda _: self.fail("unexpected create"),
+            )
+            boundary = DurableBudgetBoundary("run", clock=lambda: now[0])
+            developer = create_developer_workflow(
+                runtime, research_tools=[], budget_boundary=boundary
+            )
+
+            result = create_workflow_graph(
+                architect=lambda _: {"implementation_plan": ready_plan()},
+                developer=developer,
+                verification_specs=(),
+                workspace_root=root,
+                durable_runtime=True,
+                clock=lambda: now[0],
+            ).compile().invoke(
+                {
+                    "budget": BudgetSnapshot.create(
+                        max_steps=4, max_cost_usd=None, deadline_at=200.0
+                    )
+                }
+            )
+
+            self.assertEqual(target.read_text(encoding="utf-8"), "value = 2\n")
+            self.assertEqual(result["last_edit_result"].status.value, "applied")
+            self.assertEqual(result["repair_attempts"], 0)
+            self.assertEqual(
+                result["runtime_error_code"], BudgetErrorCode.TIMEOUT_OVERRUN
+            )
+            self.assertIn("file commit completed", result["runtime_message"])
+            self.assertEqual(result["outcome"], WorkflowOutcome.FAILED)
+
+    def test_recursion_limit_outlasts_worst_one_tool_call_cycles(self) -> None:
+        max_steps = 40
+        executed: list[int] = []
+        model_calls = 0
+
+        @tool
+        def inspect_file(ordinal: int) -> str:
+            """Record one model-requested tool call."""
+            executed.append(ordinal)
+            return str(ordinal)
+
+        def conduct(_):
+            nonlocal model_calls
+            model_calls += 1
+            return measured(
+                AIMessage(
+                    content="",
+                    tool_calls=[
+                        {
+                            "name": "inspect_file",
+                            "args": {"ordinal": model_calls},
+                            "id": f"tool-{model_calls}",
+                        }
+                    ],
+                )
+            )
+
+        boundary = DurableBudgetBoundary("run", clock=lambda: 100.0)
+        architect = create_architect_workflow(
+            ArchitectRuntime(
+                plan_next_step=lambda _: measured(
+                    ResearchStep(reasoning="r", hypothesis="h")
+                ),
+                check_research_step=lambda _: measured(
+                    ResearchEvaluation(is_valid=True, reasoning="ok")
+                ),
+                conduct_research=conduct,
+                extract_implementation_plan=lambda _: self.fail(
+                    "business budget must stop the loop"
+                ),
+                load_codebase_structure=lambda: "app.py",
+            ),
+            research_tools=[inspect_file],
+            budget_boundary=boundary,
+        )
+
+        result = create_workflow_graph(
+            architect=architect,
+            developer=lambda _: self.fail("Developer must not run"),
+            verification_specs=(),
+            durable_runtime=True,
+            clock=lambda: 100.0,
+        ).compile().invoke(
+            {
+                "implementation_research_scratchpad": [HumanMessage(content="task")],
+                "budget": BudgetSnapshot.create(
+                    max_steps=max_steps,
+                    max_cost_usd=None,
+                    deadline_at=200.0,
+                ),
+            },
+            {"recursion_limit": durable_recursion_limit(max_steps)},
+        )
+
+        self.assertEqual(result["budget"].steps_used, max_steps)
+        self.assertEqual(len(executed), 19)
+        self.assertEqual(
+            result["runtime_error_code"], BudgetErrorCode.MAX_STEPS_EXCEEDED
+        )
+        self.assertEqual(result["outcome"], WorkflowOutcome.FAILED)
 
     def test_tool_deadline_overrun_settles_batch_and_stops_next_model(self) -> None:
         now = [100.0]
