@@ -1,5 +1,23 @@
 # SWE Agent 架构优化调研计划
 
+## 状态文件治理（长期有效）
+
+- 本文件是项目当前进度的唯一实时状态源；`MASTER_PLAN.md` 只维护总目标、阶段设计和 D 项，不记录日常进度。
+- 每当阶段开始、完成/审核通过、出现 blocker/遗漏/风险、计划或验收变化、下一阶段变化时，必须同步更新本文件。
+- 每次实质更新后，先执行 `git diff -- task_plan.md` 和 `git status`，再将本文件与相关代码/测试放入同一完整 checkpoint 提交；配置远程且具备权限时继续 push，并如实记录失败。
+- 只有源码、测试和审核证据确认后，阶段才能标记为完成；不得按计划预先勾选。
+- 新阶段开始前必须核对工作区文件、HEAD 中版本和远程跟踪分支；发现未提交或未推送内容时，先处理同步再开始。
+
+### 当前状态文件基线
+
+- 当前阶段：S3.2 Checkpoint + Durable Budget 已完成；不自动推进下一阶段。
+- 已完成项：S3.1/S3.2 的配置、身份、SQLite checkpoint、预算边界、start/resume 和现有图接入均已有源码与测试证据。
+- 未完成项：trajectory、artifact/log spool、pending-write/hash recovery、exactly-once，以及 MASTER_PLAN 中后续 D 项仍未实现。
+- 实际验证：157 项测试通过；Python compile、11 个 prompt render、CLI help、SQLite saver 版本检查、禁止范围/密钥扫描和 `git diff --check` 通过；仅 6 项普通 Windows symlink 用例因权限跳过，存在 tree-sitter 弃用告警。
+- 已知限制：尚未完成 S3.3/S3.4 及后续验收，未运行真实 benchmark，不能据此声明效果提升。
+- 下一阶段：等待 ChatGPT 审核并按 MASTER_PLAN §5.2 的依赖顺序决定；本次仅建立状态文件治理，不推进阶段。
+- MASTER_PLAN 对应：当前基线为 S3.2；重点映射 D4/D5，未完成能力涉及 D5/D6；下一默认切片为 S1a（MASTER_PLAN §5.2），但不在本次自动启动。
+
 ## 当前文档任务：独立 MASTER PLAN（2026-09-16）
 
 - 基线：`330f20f25426ce9b0ceb26ea926a11f6a8cb9d15`，开始时工作区干净。
