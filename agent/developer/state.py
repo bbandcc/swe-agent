@@ -8,6 +8,7 @@ from pydantic import BaseModel, Field
 
 from agent.common.entities import ImplementationPlan
 from agent.editing import EditResult, WorkspaceSnapshot, WorkspaceTransaction
+from agent.runtime.boundary import DurableBudgetState
 
 
 class DeveloperStatus(str, Enum):
@@ -29,7 +30,7 @@ def add_messages_with_clear(left: Messages, right: Messages) -> Messages:
     return add_messages(left, right)
 
 
-class SoftwareDeveloperState(BaseModel):
+class SoftwareDeveloperState(DurableBudgetState):
     implementation_plan: ImplementationPlan | None = Field(
         None, description="The implementation plan to be executed"
     )

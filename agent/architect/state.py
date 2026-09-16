@@ -3,9 +3,10 @@ from pydantic import BaseModel, Field
 from langchain_core.messages import AnyMessage
 from langgraph.graph import add_messages
 from agent.common.entities import ImplementationPlan
+from agent.runtime.boundary import DurableBudgetState
 
 
-class SoftwareArchitectState(BaseModel):
+class SoftwareArchitectState(DurableBudgetState):
     research_next_step: Optional[str] = Field(None, description="The next research step to be conducted")
     implementation_plan: Optional[ImplementationPlan] = Field(None, description="The implementation plan to be executed")
     implementation_research_scratchpad: Annotated[list[AnyMessage], add_messages] = Field([], description="The scratchpad for implementation research")

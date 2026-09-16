@@ -20,9 +20,15 @@ from agent.verification import (
 from agent.verification.workflow import VerificationController
 from agent.verification.config import configured_verification_specs
 from agent.workspace import configured_workspace_root
+from agent.runtime.boundary import DurableBudgetState
+from agent.runtime.identity import RunIdentity
+from agent.runtime.revision import AgentCodeRevision
 
 
-class AgentState(BaseModel):
+class AgentState(DurableBudgetState):
+    run_identity: RunIdentity | None = None
+    run_config_digest: str | None = None
+    agent_revision: AgentCodeRevision | None = None
     implementation_research_scratchpad: Annotated[
         list[AnyMessage], add_messages
     ] = Field(default_factory=list)
@@ -59,12 +65,14 @@ def create_workflow_graph(
     developer: Any = None,
     verification_specs: Sequence[VerificationSpec] = (),
     verification_runner: VerificationRunner | None = None,
+    durable_runtime: bool = False,
+    workspace_root: Any = None,
 ):
     """Create the parent workflow with injectable compiled child graphs."""
     verification = VerificationController(
         verification_specs,
         verification_runner,
-        configured_workspace_root(),
+        configured_workspace_root() if workspace_root is None else workspace_root,
     )
 
     def run_baseline(state: AgentState) -> dict[str, Any]:
@@ -85,6 +93,16 @@ def create_workflow_graph(
     def finalize_outcome(state: AgentState) -> dict[str, Any]:
         return verification.finalize_outcome(state)
 
+    def route_after_runtime_node(state: AgentState) -> str:
+        return "fail" if state.runtime_error_code is not None else "continue"
+
+    def finalize_runtime_failure(state: AgentState) -> dict[str, Any]:
+        return {
+            "outcome": WorkflowOutcome.FAILED,
+            "developer_status": DeveloperStatus.FAILED,
+            "developer_message": state.runtime_message,
+        }
+
     graph_builder = StateGraph(AgentState)
 
     graph_builder.add_node(
@@ -97,14 +115,36 @@ def create_workflow_graph(
     graph_builder.add_node("run_post_verification", run_post)
     graph_builder.add_node("prepare_repair", prepare_repair)
     graph_builder.add_node("finalize_outcome", finalize_outcome)
+    if durable_runtime:
+        graph_builder.add_node("finalize_runtime_failure", finalize_runtime_failure)
     graph_builder.add_edge(START, "swe_architect")
-    graph_builder.add_edge("swe_architect", "run_baseline_verification")
+    if durable_runtime:
+        graph_builder.add_conditional_edges(
+            "swe_architect",
+            route_after_runtime_node,
+            {
+                "continue": "run_baseline_verification",
+                "fail": "finalize_runtime_failure",
+            },
+        )
+    else:
+        graph_builder.add_edge("swe_architect", "run_baseline_verification")
     graph_builder.add_conditional_edges(
         "run_baseline_verification",
         route_after_baseline,
         {"develop": "swe_developer", "end": "finalize_outcome"},
     )
-    graph_builder.add_edge("swe_developer", "run_post_verification")
+    if durable_runtime:
+        graph_builder.add_conditional_edges(
+            "swe_developer",
+            route_after_runtime_node,
+            {
+                "continue": "run_post_verification",
+                "fail": "finalize_runtime_failure",
+            },
+        )
+    else:
+        graph_builder.add_edge("swe_developer", "run_post_verification")
     graph_builder.add_conditional_edges(
         "run_post_verification",
         route_after_post,
@@ -112,6 +152,8 @@ def create_workflow_graph(
     )
     graph_builder.add_edge("prepare_repair", "swe_developer")
     graph_builder.add_edge("finalize_outcome", END)
+    if durable_runtime:
+        graph_builder.add_edge("finalize_runtime_failure", END)
 
     return graph_builder
 

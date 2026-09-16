@@ -326,3 +326,25 @@ SQLite、durable CLI 和预算执行仍留在 S3.2。
 subtests 通过；Python compile、11 个 prompt render、diff whitespace 和
 禁止范围审计通过。普通 symlink 与 Windows junction 用例均实际通过；仅有
 现存 tree-sitter 弃用告警。未引入 S3.2 能力或依赖变化。
+
+## 新增任务：S3.2 Checkpoint + Durable Budget
+
+### 固定范围
+
+- 基线：`5929328cbde1af10f27a5405ff80d08ebf0fba5f`。
+- 只实现同步 SQLite durable runtime、严格 start/resume、可恢复预算和现有图调用边界。
+- 不实现 trajectory、artifact/log spool、pending-write recovery、S4 或新 Agent/provider。
+
+### TDD 纵向切片
+
+- [x] 锁定 SQLite saver 3.1.1，验证父图 checkpointer 与默认子图传播、关闭重开恢复。
+- [x] 实现不可变 Budget contracts，覆盖 step、usage、cost、deadline 与批量准入。
+- [x] 实现 reserve → dispatch → settle durable boundary 和不确定调用恢复。
+- [x] 接入 Architect、Developer 与 ToolNode，保持 S1/S2 主链和 non-durable 图行为。
+- [x] 实现 library start/resume 与最小 CLI，覆盖所有 preflight 拒绝路径。
+- [x] 完成全量 tests、compile、prompt render、diff check 和禁止范围审计。
+- [x] 更新最小文档并独立提交。
+
+### 当前状态
+
+S3.2 实现与验收已完成。全量 157 项测试通过，6 项普通 Windows symlink 用例因当前账户缺少创建权限跳过；Windows junction、安全路径、真实 SQLite 关闭重开、父子图 checkpoint 传播、两类 crash window、预算跨 Architect → Developer → repair、deadline、secret canary 和全部 preflight 拒绝路径均实际通过。Python compile、11 个 prompt render、CLI help、SQLite saver 3.1.1 版本检查、非 durable 图导入、禁止范围/密钥扫描及 `git diff --check` 通过；仅有既存 tree-sitter 弃用告警。trajectory、artifact/log spool、pending-write/hash recovery 和 exactly-once 仍未实现。

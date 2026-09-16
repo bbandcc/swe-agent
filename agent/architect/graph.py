@@ -2,7 +2,7 @@
 
 import json
 from collections.abc import Sequence
-from typing import Any, TypedDict
+from typing import Any, NotRequired, TypedDict
 
 from langchain_core.messages import AIMessage, AnyMessage, HumanMessage
 from langchain_core.output_parsers import JsonOutputParser
@@ -16,14 +16,24 @@ from agent.architect.state import SoftwareArchitectState
 from agent.common.entities import ImplementationPlan
 from agent.tools.codemap import codemap_tools
 from agent.tools.search import search_tools
+from agent.runtime import BudgetSnapshot, DurableBudgetBoundary, DurableCallResult
+from agent.runtime.budget import BudgetErrorCode
 
 
 class SoftwareArchitectInput(TypedDict):
     implementation_research_scratchpad: list[AnyMessage]
+    budget: NotRequired[BudgetSnapshot | None]
+    durable_call_result: NotRequired[DurableCallResult | None]
+    runtime_error_code: NotRequired[BudgetErrorCode | None]
+    runtime_message: NotRequired[str]
 
 
 class SoftwareArchitectOutput(TypedDict):
     implementation_plan: ImplementationPlan | None
+    budget: NotRequired[BudgetSnapshot | None]
+    durable_call_result: NotRequired[DurableCallResult | None]
+    runtime_error_code: NotRequired[BudgetErrorCode | None]
+    runtime_message: NotRequired[str]
 
 
 def should_call_tool(state: SoftwareArchitectState):
@@ -73,6 +83,7 @@ def create_architect_workflow(
     runtime: ArchitectRuntime | None = None,
     *,
     research_tools: Sequence[Any] | None = None,
+    budget_boundary: DurableBudgetBoundary | None = None,
 ):
     runtime = runtime or default_architect_runtime()
     tools = list(
@@ -82,15 +93,20 @@ def create_architect_workflow(
     def come_up_with_research_next_step(
         state: SoftwareArchitectState,
     ) -> dict[str, Any]:
-        response = runtime.plan_next_step(
-            {
+        values = {
                 "implementation_research_scratchpad": (
                     state.implementation_research_scratchpad
                 ),
                 "codebase_structure": runtime.load_codebase_structure(),
             }
-        )
+        response = runtime.plan_next_step(values)
+        budget_update: dict[str, Any] = {}
+        if budget_boundary is not None:
+            response, budget_update = budget_boundary.capture_model(state, response)
+            if response is None:
+                return budget_update
         return {
+            **budget_update,
             "research_next_step": response.hypothesis,
             "implementation_research_scratchpad": [
                 AIMessage(
@@ -105,19 +121,24 @@ def create_architect_workflow(
     def check_research_step(
         state: SoftwareArchitectState,
     ) -> dict[str, Any]:
-        response = runtime.check_research_step(
-            {
+        values = {
                 "implementation_research_scratchpad": (
                     state.implementation_research_scratchpad
                 )
             }
-        )
+        response = runtime.check_research_step(values)
+        budget_update: dict[str, Any] = {}
+        if budget_boundary is not None:
+            response, budget_update = budget_boundary.capture_model(state, response)
+            if response is None:
+                return budget_update
         message = (
             "The research path is valid; start the research."
             if response.is_valid
             else f"The research path is invalid: {response.reasoning}"
         )
         return {
+            **budget_update,
             "is_valid_research_step": response.is_valid,
             "implementation_research_scratchpad": [
                 HumanMessage(content=message)
@@ -125,21 +146,27 @@ def create_architect_workflow(
         }
 
     def conduct_research(state: SoftwareArchitectState) -> dict[str, Any]:
-        response = runtime.conduct_research(
-            {
+        values = {
                 "implementation_research_scratchpad": (
                     state.implementation_research_scratchpad
                 ),
                 "codebase_structure": runtime.load_codebase_structure(),
             }
-        )
-        return {"implementation_research_scratchpad": [response]}
+        response = runtime.conduct_research(values)
+        budget_update: dict[str, Any] = {}
+        if budget_boundary is not None:
+            response, budget_update = budget_boundary.capture_model(state, response)
+            if response is None:
+                return budget_update
+        return {
+            **budget_update,
+            "implementation_research_scratchpad": [response],
+        }
 
     def extract_implementation_plan(
         state: SoftwareArchitectState,
-    ) -> dict[str, ImplementationPlan]:
-        response = runtime.extract_implementation_plan(
-            {
+    ) -> dict[str, Any]:
+        values = {
                 "research_findings": convert_tools_messages_to_ai_and_human(
                     state.implementation_research_scratchpad
                 ),
@@ -148,8 +175,51 @@ def create_architect_workflow(
                     pydantic_object=ImplementationPlan
                 ).get_format_instructions(),
             }
-        )
-        return {"implementation_plan": response}
+        response = runtime.extract_implementation_plan(values)
+        budget_update: dict[str, Any] = {}
+        if budget_boundary is not None:
+            response, budget_update = budget_boundary.capture_model(state, response)
+            if response is None:
+                return budget_update
+        return {**budget_update, "implementation_plan": response}
+
+    def request_values(state: SoftwareArchitectState, name: str) -> dict[str, Any]:
+        if name == "extract_implementation_plan":
+            return {
+                "research_findings": convert_tools_messages_to_ai_and_human(
+                    state.implementation_research_scratchpad
+                ),
+            }
+        return {
+            "scratchpad": state.implementation_research_scratchpad,
+            "research_next_step": state.research_next_step,
+            "node": name,
+        }
+
+    def reserve_model(name: str):
+        def reserve(state: SoftwareArchitectState) -> dict[str, Any]:
+            assert budget_boundary is not None
+            return budget_boundary.reserve_model(
+                state, name, request_values(state, name)
+            )
+        return reserve
+
+    def settle_call(state: SoftwareArchitectState) -> dict[str, Any]:
+        assert budget_boundary is not None
+        return budget_boundary.settle(state)
+
+    def reserve_tools(state: SoftwareArchitectState) -> dict[str, Any]:
+        assert budget_boundary is not None
+        calls = state.implementation_research_scratchpad[-1].tool_calls
+        return budget_boundary.reserve_tools(state, calls)
+
+    def record_tool_results(state: SoftwareArchitectState) -> dict[str, Any]:
+        assert budget_boundary is not None
+        return budget_boundary.record_tool_results(state)
+
+    def after_settle(state: SoftwareArchitectState, route: str) -> str:
+        assert budget_boundary is not None
+        return budget_boundary.after_settle(state, route)
 
     tool_node = ToolNode(
         tools, messages_key="implementation_research_scratchpad"
@@ -159,13 +229,75 @@ def create_architect_workflow(
         input_schema=SoftwareArchitectInput,
         output_schema=SoftwareArchitectOutput,
     )
-    workflow.add_node(
-        "come_up_with_research_next_step", come_up_with_research_next_step
-    )
-    workflow.add_node("check_research_step", check_research_step)
-    workflow.add_node("conduct_research", conduct_research)
-    workflow.add_node("extract_implementation_plan", extract_implementation_plan)
+    model_nodes = {
+        "come_up_with_research_next_step": come_up_with_research_next_step,
+        "check_research_step": check_research_step,
+        "conduct_research": conduct_research,
+        "extract_implementation_plan": extract_implementation_plan,
+    }
+    for name, node in model_nodes.items():
+        workflow.add_node(name, node)
     workflow.add_node("tools", tool_node)
+
+    if budget_boundary is not None:
+        for name in model_nodes:
+            workflow.add_node(f"reserve_{name}", reserve_model(name))
+            workflow.add_node(f"settle_{name}", settle_call)
+            workflow.add_conditional_edges(
+                f"reserve_{name}",
+                budget_boundary.may_dispatch,
+                {"dispatch": name, "end": END},
+            )
+            workflow.add_edge(name, f"settle_{name}")
+        workflow.add_node("reserve_tools", reserve_tools)
+        workflow.add_node("record_tool_results", record_tool_results)
+        workflow.add_node("settle_tools", settle_call)
+        workflow.add_conditional_edges(
+            "reserve_tools",
+            budget_boundary.may_dispatch,
+            {"dispatch": "tools", "end": END},
+        )
+        workflow.add_edge("tools", "record_tool_results")
+        workflow.add_edge("record_tool_results", "settle_tools")
+        workflow.add_edge(START, "reserve_come_up_with_research_next_step")
+        workflow.add_conditional_edges(
+            "settle_come_up_with_research_next_step",
+            lambda state: after_settle(state, "continue"),
+            {"continue": "reserve_check_research_step", "end": END},
+        )
+        workflow.add_conditional_edges(
+            "settle_check_research_step",
+            lambda state: (
+                "end"
+                if state.runtime_error_code is not None
+                else should_conduct_research(state)
+            ),
+            {
+                "plan_is_valid": "reserve_conduct_research",
+                "plan_is_not_valid": "reserve_come_up_with_research_next_step",
+                "end": END,
+            },
+        )
+        workflow.add_conditional_edges(
+            "settle_conduct_research",
+            lambda state: (
+                "end"
+                if state.runtime_error_code is not None
+                else should_call_tool(state)
+            ),
+            {
+                "should_call_tool": "reserve_tools",
+                "implement_plan": "reserve_extract_implementation_plan",
+                "end": END,
+            },
+        )
+        workflow.add_edge("settle_tools", "reserve_conduct_research")
+        workflow.add_conditional_edges(
+            "settle_extract_implementation_plan",
+            lambda state: after_settle(state, "complete"),
+            {"complete": END, "end": END},
+        )
+        return workflow.compile().with_config({"tags": ["research-agent-v4"]})
 
     workflow.add_edge(START, "come_up_with_research_next_step")
     workflow.add_edge("come_up_with_research_next_step", "check_research_step")

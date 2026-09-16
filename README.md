@@ -470,17 +470,39 @@ detectable. `build_chat_model(settings, max_output_tokens=...)` is the explicit
 model assembly seam; calling `build_chat_model()` remains compatible with the
 existing environment-backed graph.
 
-The runtime directory must be disjoint from the workspace. S3.1 defines only
-configuration, identity, and pure start/resume preflight contracts. It does not
-install SQLite, persist checkpoints, or add a durable CLI; `langgraph dev`
-continues to run the existing non-durable compatibility graph.
+The runtime directory must be disjoint from the workspace. S3.2 provides a
+local synchronous SQLite runtime with strict start and resume entry points:
+
+```powershell
+python -m agent.runtime start --run-id run-1 --thread-id thread-1 --task-id task-1 --task "Fix the failing behavior"
+python -m agent.runtime resume --run-id run-1 --thread-id thread-1 --task-id task-1
+```
+
+Both commands load the same validated environment configuration. The parent
+graph owns `SqliteSaver`; Architect and Developer inherit it as child graphs.
+Invocations use the thread id, synchronous durability, and
+`max(200, 8 * max_steps + 64)` as the graph recursion guard. The separate
+`langgraph.json:swe_agent` entry remains the existing non-durable Studio/dev
+compatibility graph and does not create or resume the local SQLite database.
 
 `WorkspaceIdentity` is deliberately path-only. `preflight_start` rejects an
 existing thread, while `preflight_resume` compares workspace, run/task/thread,
 semantic config, and known Agent revisions through an injected checkpoint
 lookup. An unknown Agent revision produces a warning. The configured step and
-cost limits are validated and bound into the digest in S3.1; production budget
-enforcement remains part of S3.2.
+cost limits are validated and bound into the digest. S3.2 reserves one durable
+step for each model invocation and for each model-requested tool call before
+dispatch, then settles captured usage afterward. A tool batch is rejected as a
+whole when the remaining step capacity is insufficient.
+
+If recovery finds an in-flight external call without a durable result, it marks
+the outcome unknown and stops instead of replaying the call. A durable result
+that has not yet been settled resumes at deterministic settlement. Missing
+model usage remains `UNKNOWN` or `PARTIAL` with `None` values. `max_cost_usd`
+can therefore block later calls but is not an absolute billing ceiling.
+
+S3.2 does not provide trajectory/EventSink, complete artifact or log spooling,
+pending-write hash reconciliation, or exactly-once external calls. Those
+remain later S3 slices; no complete security-audit claim is made here.
 
 For explicit S3 model assembly, `ModelSettings` supplies provider, model,
 endpoint, and credentials, while `max_output_tokens` is the only accepted

@@ -10,6 +10,7 @@ from agent.workspace.paths import (
     canonicalize_root_path,
     configured_workspace_root,
     default_workspace_resolver,
+    workspace_root_scope,
 )
 
 __all__ = [
@@ -22,4 +23,5 @@ __all__ = [
     "canonicalize_root_path",
     "configured_workspace_root",
     "default_workspace_resolver",
+    "workspace_root_scope",
 ]

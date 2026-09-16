@@ -1,9 +1,16 @@
 """Resolve untrusted paths against one configured workspace boundary."""
 
 import os
+from contextlib import contextmanager
+from contextvars import ContextVar
 from dataclasses import dataclass
 from enum import Enum
 from pathlib import Path, PurePosixPath, PureWindowsPath
+from collections.abc import Iterator
+
+_RUN_WORKSPACE_ROOT: ContextVar[Path | None] = ContextVar(
+    "swe_agent_run_workspace_root", default=None
+)
 
 
 class WorkspacePathErrorCode(str, Enum):
@@ -264,4 +271,17 @@ def default_workspace_resolver() -> WorkspacePathResolver:
 
 def configured_workspace_root() -> Path:
     """Return the single workspace root used by default read and write paths."""
+    runtime_root = _RUN_WORKSPACE_ROOT.get()
+    if runtime_root is not None:
+        return runtime_root
     return Path(os.environ.get("SWE_AGENT_WORKSPACE", "./workspace_repo"))
+
+
+@contextmanager
+def workspace_root_scope(root: str | Path) -> Iterator[None]:
+    """Bind default tools to one explicit run workspace without global mutation."""
+    token = _RUN_WORKSPACE_ROOT.set(Path(root))
+    try:
+        yield
+    finally:
+        _RUN_WORKSPACE_ROOT.reset(token)

@@ -1,4 +1,6 @@
-"""Public S3 runtime configuration and identity contracts."""
+"""Public S3 runtime configuration, identity, and durable-run contracts."""
+
+from typing import Any
 
 from agent.runtime.config import (
     RunConfig,
@@ -29,6 +31,29 @@ from agent.runtime.revision import (
     AgentRevisionStatus,
     detect_agent_code_revision,
 )
+from agent.runtime.budget import (
+    BudgetController,
+    BudgetDecision,
+    BudgetErrorCode,
+    BudgetSnapshot,
+    CallKind,
+    CallReservation,
+    CallStatus,
+    UsageRecord,
+    UsageStatus,
+)
+from agent.runtime.calls import (
+    ModelCallResult,
+    UsageMeasurement,
+    capture_model_result,
+    capture_model_failure,
+    measure_usage,
+)
+from agent.runtime.boundary import (
+    DurableBudgetBoundary,
+    DurableBudgetState,
+    DurableCallResult,
+)
 
 __all__ = [
     "RunConfig",
@@ -54,4 +79,45 @@ __all__ = [
     "detect_agent_code_revision",
     "preflight_resume",
     "preflight_start",
+    "BudgetController",
+    "BudgetDecision",
+    "BudgetErrorCode",
+    "BudgetSnapshot",
+    "CallKind",
+    "CallReservation",
+    "CallStatus",
+    "UsageRecord",
+    "UsageStatus",
+    "ModelCallResult",
+    "UsageMeasurement",
+    "capture_model_result",
+    "capture_model_failure",
+    "measure_usage",
+    "DurableBudgetBoundary",
+    "DurableBudgetState",
+    "DurableCallResult",
+    "DurableRunResult",
+    "DurableRunStatus",
+    "GraphCheckpointLookup",
+    "create_durable_workflow",
+    "durable_recursion_limit",
+    "resume_run",
+    "start_run",
 ]
+
+
+def __getattr__(name: str) -> Any:
+    """Load the durable runtime lazily to keep graph module imports acyclic."""
+    if name in {
+        "DurableRunResult",
+        "DurableRunStatus",
+        "GraphCheckpointLookup",
+        "create_durable_workflow",
+        "durable_recursion_limit",
+        "resume_run",
+        "start_run",
+    }:
+        from agent.runtime import durable
+
+        return getattr(durable, name)
+    raise AttributeError(name)

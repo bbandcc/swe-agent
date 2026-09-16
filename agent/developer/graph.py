@@ -30,12 +30,14 @@ from agent.developer.workflow_support import (
 from agent.editing import EditResult, EditStatus, WorkspaceSnapshot
 from agent.tools.codemap import codemap_tools
 from agent.tools.search import search_tools
+from agent.runtime import DurableBudgetBoundary
 
 
 def create_developer_workflow(
     runtime: DeveloperRuntime | None = None,
     *,
     research_tools: Sequence[Any] | None = None,
+    budget_boundary: DurableBudgetBoundary | None = None,
 ):
     runtime = runtime or default_developer_runtime()
     tools = list(
@@ -115,7 +117,15 @@ def create_developer_workflow(
                 ),
             }
         )
-        return {"atomic_implementation_research": [result]}
+        budget_update: dict[str, Any] = {}
+        if budget_boundary is not None:
+            result, budget_update = budget_boundary.capture_model(state, result)
+            if result is None:
+                return budget_update
+        return {
+            **budget_update,
+            "atomic_implementation_research": [result],
+        }
 
     def stage_diff_for_task(
         state: SoftwareDeveloperState,
@@ -144,6 +154,13 @@ def create_developer_workflow(
             model_output = runtime.propose_existing_file_edit(values)
         else:
             model_output = runtime.propose_new_file(values)
+        budget_update: dict[str, Any] = {}
+        if budget_boundary is not None:
+            model_output, budget_update = budget_boundary.capture_model(
+                state, model_output
+            )
+            if model_output is None:
+                return budget_update
         repair_prefix = (
             f"repair-{state.repair_attempts}." if state.repair_attempts else ""
         )
@@ -156,10 +173,11 @@ def create_developer_workflow(
         )
         if not staged.ok:
             assert staged.edit_result is not None
-            return failed_edit(staged.edit_result)
+            return {**budget_update, **failed_edit(staged.edit_result)}
         updated = staged.transaction
         assert updated is not None
         return {
+            **budget_update,
             "current_file_transaction": updated,
             "current_file_snapshot": WorkspaceSnapshot(
                 path=updated.path,
@@ -211,6 +229,33 @@ def create_developer_workflow(
             "developer_message": "Implementation completed.",
         }
 
+    def reserve_model(name: str):
+        def reserve(state: SoftwareDeveloperState) -> dict[str, Any]:
+            assert budget_boundary is not None
+            transaction = state.current_file_transaction
+            request = {
+                "node": name,
+                "task_index": state.current_task_idx,
+                "atomic_task_index": state.current_atomic_task_idx,
+                "file_path": transaction.path if transaction else None,
+                "file_hash": transaction.base_hash if transaction else None,
+            }
+            return budget_boundary.reserve_model(state, name, request)
+        return reserve
+
+    def settle_call(state: SoftwareDeveloperState) -> dict[str, Any]:
+        assert budget_boundary is not None
+        return budget_boundary.settle(state)
+
+    def reserve_tools(state: SoftwareDeveloperState) -> dict[str, Any]:
+        assert budget_boundary is not None
+        calls = state.atomic_implementation_research[-1].tool_calls
+        return budget_boundary.reserve_tools(state, calls)
+
+    def record_tool_results(state: SoftwareDeveloperState) -> dict[str, Any]:
+        assert budget_boundary is not None
+        return budget_boundary.record_tool_results(state)
+
     research_tool_node = ToolNode(
         tools, messages_key="atomic_implementation_research"
     )
@@ -229,6 +274,95 @@ def create_developer_workflow(
     workflow.add_node("commit_file_transaction", commit_file_transaction)
     workflow.add_node("proceed_to_next_task", proceed_to_next_task)
     workflow.add_node("finish_implementation", finish_implementation)
+
+    if budget_boundary is not None:
+        for name in (
+            "get_clear_implementation_plan_for_atomic_task",
+            "stage_diff_for_task",
+        ):
+            workflow.add_node(f"reserve_{name}", reserve_model(name))
+            workflow.add_node(f"settle_{name}", settle_call)
+            workflow.add_conditional_edges(
+                f"reserve_{name}",
+                budget_boundary.may_dispatch,
+                {"dispatch": name, "end": END},
+            )
+            workflow.add_edge(name, f"settle_{name}")
+        workflow.add_node("reserve_research_tools", reserve_tools)
+        workflow.add_node("record_research_tool_results", record_tool_results)
+        workflow.add_node("settle_research_tools", settle_call)
+        workflow.add_conditional_edges(
+            "reserve_research_tools",
+            budget_boundary.may_dispatch,
+            {"dispatch": "research_tool_node", "end": END},
+        )
+        workflow.add_edge("research_tool_node", "record_research_tool_results")
+        workflow.add_edge("record_research_tool_results", "settle_research_tools")
+
+        workflow.add_edge(START, "start_implementing")
+        workflow.add_conditional_edges(
+            "start_implementing",
+            should_start,
+            {"continue": "prepare_for_implementation", END: END},
+        )
+        workflow.add_conditional_edges(
+            "prepare_for_implementation",
+            should_continue_after_preparation,
+            {
+                "continue": "reserve_get_clear_implementation_plan_for_atomic_task",
+                END: END,
+            },
+        )
+        workflow.add_conditional_edges(
+            "settle_get_clear_implementation_plan_for_atomic_task",
+            lambda state: (
+                "end"
+                if state.runtime_error_code is not None
+                else should_continue_implementation_research(state)
+            ),
+            {
+                "should_continue_research": "reserve_research_tools",
+                "implement_plan": "reserve_stage_diff_for_task",
+                "end": END,
+            },
+        )
+        workflow.add_edge(
+            "settle_research_tools",
+            "reserve_get_clear_implementation_plan_for_atomic_task",
+        )
+        workflow.add_conditional_edges(
+            "settle_stage_diff_for_task",
+            lambda state: (
+                "end"
+                if state.runtime_error_code is not None
+                else route_after_staging(state)
+            ),
+            {
+                "next_atomic": "proceed_to_next_atomic_task",
+                "commit": "commit_file_transaction",
+                END: END,
+                "end": END,
+            },
+        )
+        workflow.add_edge(
+            "proceed_to_next_atomic_task",
+            "reserve_get_clear_implementation_plan_for_atomic_task",
+        )
+        workflow.add_conditional_edges(
+            "commit_file_transaction",
+            route_after_commit,
+            {"advance": "proceed_to_next_task", END: END},
+        )
+        workflow.add_conditional_edges(
+            "proceed_to_next_task",
+            route_after_task_advance,
+            {
+                "continue": "prepare_for_implementation",
+                "complete": "finish_implementation",
+            },
+        )
+        workflow.add_edge("finish_implementation", END)
+        return workflow.compile().with_config({"tags": ["developer-agent-v5"]})
 
     workflow.add_edge(START, "start_implementing")
     workflow.add_conditional_edges(

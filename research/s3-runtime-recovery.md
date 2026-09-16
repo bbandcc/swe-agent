@@ -559,13 +559,13 @@ stateDiagram-v2
 | 当前文件为第三 hash | `RECOVERY_CONFLICT`，intent 保留、文件 byte-identical、零 repair |
 | repair 创建写入 | 每次 repair 使用新的 `write_intent_id` 和 attempt；不复用已清除的原始 intent |
 
-## 8. 拟修改文件
+## 8. 实施文件映射
 
-下列是后续 S3 Implementation Gate 的计划，不是本次已修改内容：
+下表保留完整 S3 的文件规划。S3.1 配置/身份和 S3.2 的 budget、calls、durable CLI、父子图接线、测试与依赖已经实现；trajectory、artifact、pending-write recovery 等条目仍是后续切片，不能视为当前能力：
 
 | 文件 | 计划变化 |
 |---|---|
-| `agent/runtime/{config,budget,calls,trajectory,artifacts,recovery,wiring}.py` | 新增上述小型公开 seam、start/resume 装配和文件实现 |
+| `agent/runtime/{config,budget,calls,checkpointing,durable,trajectory,artifacts,recovery}.py` | 新增上述小型公开 seam、start/resume 装配和文件实现；S3.2 只实现到 `durable` |
 | `agent/runtime/__init__.py` | 只导出稳定 contracts |
 | `agent/runtime/__main__.py` | 最小本地 durable `start/resume` CLI；持有 saver context，不引入 RunManager |
 | `agent/config.py` | 让现有 DeepSeek/Anthropic 构造接收显式 ModelSettings；不再由 cached runnable 隐式读环境 |
@@ -585,13 +585,13 @@ stateDiagram-v2
 
 ## 9. 必要依赖变化
 
-本 Design Gate 不修改依赖。后续实现唯一必要新增生产依赖为：
+S3.2 唯一新增并锁定的生产依赖为：
 
 ```toml
-"langgraph-checkpoint-sqlite>=3.1.1,<4.0.0"
+"langgraph-checkpoint-sqlite==3.1.1"
 ```
 
-`uv.lock` 应在实现提交中固定到已验证版本 3.1.1。该版本[包声明](https://github.com/langchain-ai/langgraph/blob/b2926a0ff9589c28c7e01fe7cdbb337b86d5a4b4/libs/checkpoint-sqlite/pyproject.toml#L5-L17)要求 `langgraph-checkpoint>=4.1.0,<5.0.0`，与当前 4.2.0 兼容，并会带入 `aiosqlite`、`sqlite-vec`。当前执行路径仍使用同步 `SqliteSaver`，不同时实现 async adapter。
+`uv.lock` 已固定到验证版本 3.1.1。该版本[包声明](https://github.com/langchain-ai/langgraph/blob/b2926a0ff9589c28c7e01fe7cdbb337b86d5a4b4/libs/checkpoint-sqlite/pyproject.toml#L5-L17)要求 `langgraph-checkpoint>=4.1.0,<5.0.0`，与当前 4.2.0 兼容，并带入 `aiosqlite`、`sqlite-vec`。当前执行路径只使用同步 `SqliteSaver`，没有 async adapter。
 
 不新增配置框架、provider SDK、数据库 ORM、成本服务或 telemetry 平台。JSONL/artifact 文件实现只使用标准库。
 
@@ -601,7 +601,7 @@ stateDiagram-v2
 
 1. **S3.1 Config + Identity**：公开 RunConfig、semantic digest、Run/Workspace/Agent identity、入口请求/结果 contracts、runtime/workspace 隔离、output-token limit 和显式模型装配；只用 pure/fake checkpoint lookup 测 preflight，不启用 SQLite 或 durable runtime。
 2. **S3.2 Checkpoint + Durable Budget**：新增 SQLite 依赖、本地 `python -m agent.runtime start/resume`、父 saver、config/revision binding、子图传播、动态 recursion limit 和 `reserve → dispatch → settle` graph boundary；先证明 reservation 已持久化与崩溃后预算不回退，才允许预算进入生产调用路径。
-3. **S3.3 Usage + Trajectory + Artifacts**：raw model usage boundary、event `append_once`、代码 revision、secret-safe state 和 verification streaming spool；以 fake model/runner 验证。
+3. **S3.3 Trajectory + Artifacts**：在 S3.2 已完成的预算所需 raw model usage boundary 之上，增加 event `append_once`、secret-safe 全状态策略和 verification streaming spool；以 fake model/runner 验证。
 4. **S3.4 Write Recovery**：`pending_write` 完整生命周期、Developer commit 前 hash 状态机、repair intent 和 subprocess crash-window 测试。
 5. **S3 Final Gate**：全量 S1/S2/S3、compile、prompt render、diff check、真实 DeepSeek smoke；只声明实测结果。
 
@@ -625,6 +625,8 @@ stateDiagram-v2
 - `ALREADY_APPLIED` 证明当前 bytes 等于预期结果，不证明文件在崩溃窗口中从未被第三方改动后又改回。
 - recovery conflict 只停止并要求重读，不自动 merge、rollback、重规划或启动新 Agent。
 
-## 12. 本轮交付边界
+## 12. S3.2 实施状态
 
-本轮只提交本设计文档和 `task_plan.md`。没有修改生产代码、依赖、provider、prompt 或测试，也没有运行 S3 功能测试。文中的接口、状态和测试均为下一阶段的明确实施与验收契约；只有固定源码事实和当前基线审计属于已确认结论。
+S3.2 已按本设计接入同步 SQLite、本地 `start_run/resume_run` 与 CLI、父图 saver/默认子图传播、动态 recursion limit，以及 model/ToolNode 前后的 durable budget boundary。预算所需 usage 在 raw `AIMessage` 与 parser 之间采集；ledger 只保存 tokens、cost、status 和 digest，不保存 prompt、raw response、tool payload 或 API key。
+
+本切片没有实现 trajectory/EventSink、完整 verification artifact/log spool、`pending_write` 或文件 hash recovery。checkpoint 与外部调用仍非同一事务；无 durable result 的 `IN_FLIGHT` 恢复会保守转为 `OUTCOME_UNKNOWN` 并停止，不承诺 exactly-once。实际测试结果记录在 `task_plan.md`，不得把后续矩阵中的未实现项视为已通过。
