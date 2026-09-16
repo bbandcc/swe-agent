@@ -1,5 +1,18 @@
 # 调研证据索引
 
+## 2026-09-16 MASTER PLAN 当前基线核验
+
+- 基线 `330f20f25426ce9b0ceb26ea926a11f6a8cb9d15`；当前业务源码已包含 S1、S2、S3.1 和 S3.2，不能复用早期报告的缺失能力清单。
+- 重新运行 unittest：157 项，151 通过，6 项 Windows 普通 symlink 权限跳过；junction 用例通过。compileall 和 durable CLI help 通过。
+- 无模型探针：仅失败日志耗时从 0.01s 变成 0.02s，classification 为 regression；双 tool call 转写仅保留 first；注入运行 completed、业务 failed 的结果时 CLI 输出 completed 且返回 0；JS/TS/TSX grammar 编译 Python function_definition query 均抛 NameError；公开编辑接口依次 A→B→A 后 commit 返回 applied、前后 hash 相等、diff 为空。
+- CLI 探针初版错误使用 MagicMock 代替 AgentCodeRevision，被请求契约正确拒绝；修正为实际 revision 类型后完成上述隔离验证。该探针不代表真实 provider 端到端测试。
+- 当前安装的八项关键依赖与 uv.lock 一致：LangGraph 1.2.11、checkpoint 4.2.0、SQLite saver 3.1.1、core 1.6.2、Anthropic 1.7.1、DeepSeek 1.1.0、tree-sitter 0.21.3、languages 1.10.2。
+- 本轮重新获取 mini-swe-agent、Aider、SQLite saver、SWE-bench 的固定源码。Deep Agents 固定源码网页两次返回 cache miss，仅保留现有研究资料的固定版本历史证据，不宣称本轮重新下载或执行其测试。
+- notes.md 首次追加 patch 的标题上下文不匹配，未改动文件；核对实际标题后重新追加。
+- 独立长期方案见根目录 MASTER_PLAN.md；历史 swe-agent-architecture-review.md 保持不变。
+- 文档最终自检：12 个 D 项各含固定五字段、本地引用全部存在、Markdown 围栏成对、§8.3 五组探针合并执行通过；11 个 prompt 渲染通过。阶段审核后拆开锁/授权和隔离/真实评测，修正 mini-swe-agent 的许可证入口为历史资料确认的 LICENSE.md。
+- 首次 git add 因沙箱不允许创建 .git/index.lock 失败；经审批提升权限后暂存成功，未变更全局 Git 配置。
+
 记录日期：2026-09-08。结论以读取到的固定提交源码为准；可运行性与收益需区分静态核查和实际验证。
 
 ## 目标
