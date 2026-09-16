@@ -24,6 +24,7 @@ class ModelUsageTests(unittest.TestCase):
         self.assertEqual(result.value, {"parsed": True})
         self.assertEqual(result.usage.status, UsageStatus.KNOWN)
         self.assertEqual(result.usage.cost_microusd, 40)
+        self.assertEqual(result.usage.cost_source, "configured_estimate")
         self.assertNotIn("secret raw response", repr(result))
 
     def test_partial_and_missing_usage_are_never_coerced_to_zero(self) -> None:

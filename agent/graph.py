@@ -1,4 +1,5 @@
-from collections.abc import Sequence
+import time
+from collections.abc import Callable, Sequence
 from typing import Annotated, Any, Optional
 
 from langchain_core.messages import AnyMessage
@@ -67,12 +68,14 @@ def create_workflow_graph(
     verification_runner: VerificationRunner | None = None,
     durable_runtime: bool = False,
     workspace_root: Any = None,
+    clock: Callable[[], float] = time.time,
 ):
     """Create the parent workflow with injectable compiled child graphs."""
     verification = VerificationController(
         verification_specs,
         verification_runner,
         configured_workspace_root() if workspace_root is None else workspace_root,
+        clock=clock,
     )
 
     def run_baseline(state: AgentState) -> dict[str, Any]:

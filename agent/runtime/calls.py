@@ -116,7 +116,7 @@ def measure_usage(
         output_tokens=output_tokens,
         total_tokens=total_tokens,
         cost_microusd=int(cost.to_integral_value(rounding=ROUND_CEILING)),
-        cost_source=pricing.source,
+        cost_source="configured_estimate",
     )
 
 

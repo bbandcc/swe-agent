@@ -61,6 +61,9 @@ class EditResult:
     diff: str = ""
     task_ids: tuple[str, ...] = ()
 
+    def __post_init__(self) -> None:
+        object.__setattr__(self, "task_ids", tuple(self.task_ids))
+
 
 @dataclass(frozen=True, slots=True)
 class WorkspaceTransaction:
@@ -71,6 +74,9 @@ class WorkspaceTransaction:
     base_hash: str | None
     original_mode: int | None
     task_ids: tuple[str, ...] = ()
+
+    def __post_init__(self) -> None:
+        object.__setattr__(self, "task_ids", tuple(self.task_ids))
 
 
 @dataclass(frozen=True, slots=True)

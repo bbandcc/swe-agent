@@ -378,3 +378,30 @@ subtests 通过；Python compile、11 个 prompt render、diff whitespace 和
 ### 当前状态
 
 S3.2 实现与验收已完成。全量 157 项测试通过，6 项普通 Windows symlink 用例因当前账户缺少创建权限跳过；Windows junction、安全路径、真实 SQLite 关闭重开、父子图 checkpoint 传播、两类 crash window、预算跨 Architect → Developer → repair、deadline、secret canary 和全部 preflight 拒绝路径均实际通过。Python compile、11 个 prompt render、CLI help、SQLite saver 3.1.1 版本检查、非 durable 图导入、禁止范围/密钥扫描及 `git diff --check` 通过；仅有既存 tree-sitter 弃用告警。trajectory、artifact/log spool、pending-write/hash recovery 和 exactly-once 仍未实现。
+
+## 新增任务：S3.2 Acceptance Fix
+
+### 固定范围
+
+- 基线：`330f20f25426ce9b0ceb26ea926a11f6a8cb9d15`；保留其后的计划文档提交。
+- 只修正 cost gate、wall-clock deadline、真实生产链恢复集成和 usage 来源标签。
+- 保持现有 ToolNode、S1/S2 主链与 non-durable 图；不进入 S3.3 或 S4。
+
+### TDD 验收切片
+
+- [x] 证明 max_cost/cost_unknown 只阻止下一次 MODEL，当前已请求的 TOOL 批次仍受 step/deadline 准入。
+- [x] 在 model/tool 返回后检测 deadline overrun，完整 settle 结果并阻断 commit、verification 与后续副作用。
+- [x] baseline/post verification 按 remaining time 缩短单项 timeout，deadline 耗尽时零 subprocess。
+- [x] 用真实 SQLite 与实际 parent/Architect/Developer 图完成 post regression、repair、关闭重开 resume。
+- [x] 将配置估算统一标记为 `configured_estimate`，保留 pricing source 在配置摘要中的来源语义。
+- [x] 更新 README 的实际能力描述，运行全量 tests、compile、prompt render 与 diff check。
+- [x] 使用独立中文 Conventional Commit 提交，不 amend 既有提交。
+
+### 当前状态
+
+四项 acceptance 边界已完成。全量 162 项测试中 156 项通过、6 项因当前
+Windows 账户缺少普通 symlink 创建权限跳过；真实 junction、cost gate、
+model/tool deadline overrun、verification 零进程、真实 SQLite 生产链关闭重开
+repair 均通过。Python compile、11 个 prompt render、CLI help、SQLite saver
+3.1.1、non-durable 图导入和 `git diff --check` 通过；仅有既存 tree-sitter
+弃用告警。同步 provider/tool 调用仍只能在返回后检测越期，S3.3 能力未实现。

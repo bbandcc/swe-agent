@@ -65,6 +65,9 @@ class VerificationResult:
     failure_id: str | None = None
     message: str = ""
 
+    def __post_init__(self) -> None:
+        object.__setattr__(self, "argv", tuple(self.argv))
+
     @classmethod
     def create(
         cls,

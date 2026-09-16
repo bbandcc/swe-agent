@@ -210,6 +210,133 @@ class BudgetedGraphTests(unittest.TestCase):
         self.assertEqual(result["budget"].usage[0].input_tokens, 3)
         self.assertEqual(result["runtime_error_code"], BudgetErrorCode.MODEL_OUTPUT_INVALID)
 
+    def test_model_deadline_overrun_settles_usage_and_blocks_commit(self) -> None:
+        with tempfile.TemporaryDirectory() as directory:
+            root = Path(directory)
+            target = root / "app.py"
+            target.write_text("value = 1\n", encoding="utf-8")
+            now = [100.0]
+            executor = DeveloperEditExecutor(WorkspaceEditor(root))
+
+            def propose(_):
+                now[0] = 201.0
+                return measured(
+                    "<<<<<<< SEARCH\nvalue = 1\n=======\nvalue = 2\n>>>>>>> REPLACE"
+                )
+
+            runtime = DeveloperRuntime(
+                edit_executor=lambda: executor,
+                load_codebase_structure=lambda: "app.py",
+                research_atomic_task=lambda _: measured(AIMessage(content="ready")),
+                propose_existing_file_edit=propose,
+                propose_new_file=lambda _: self.fail("unexpected create"),
+            )
+
+            developer = create_developer_workflow(
+                runtime,
+                research_tools=[],
+                budget_boundary=DurableBudgetBoundary(
+                    "run", clock=lambda: now[0]
+                ),
+            )
+
+            class Runner:
+                def __init__(self) -> None:
+                    self.calls = 0
+
+                def run(self, spec):
+                    self.calls += 1
+                    return VerificationResult.create(
+                        name=spec.name,
+                        argv=spec.argv,
+                        cwd=spec.cwd,
+                        status=VerificationCheckStatus.PASS,
+                        exit_code=0,
+                    )
+
+            runner = Runner()
+            result = create_workflow_graph(
+                architect=lambda _: {"implementation_plan": ready_plan()},
+                developer=developer,
+                verification_specs=(VerificationSpec("unit", ("unused",)),),
+                verification_runner=runner,
+                workspace_root=root,
+                durable_runtime=True,
+                clock=lambda: now[0],
+            ).compile().invoke(
+                {
+                    "budget": BudgetSnapshot.create(
+                        max_steps=4, max_cost_usd=None, deadline_at=200.0
+                    ),
+                }
+            )
+
+            self.assertEqual(
+                result["runtime_error_code"], BudgetErrorCode.TIMEOUT_OVERRUN
+            )
+            self.assertEqual(result["budget"].steps_used, 2)
+            self.assertEqual(len(result["budget"].usage), 2)
+            self.assertEqual(runner.calls, 1)
+            self.assertEqual(target.read_text(encoding="utf-8"), "value = 1\n")
+
+    def test_tool_deadline_overrun_settles_batch_and_stops_next_model(self) -> None:
+        now = [100.0]
+        executed: list[str] = []
+
+        @tool
+        def inspect_file(path: str) -> str:
+            """Inspect one test file and cross the absolute deadline."""
+            executed.append(path)
+            now[0] = 201.0
+            return path
+
+        runtime = ArchitectRuntime(
+            plan_next_step=lambda _: measured(
+                ResearchStep(reasoning="r", hypothesis="h")
+            ),
+            check_research_step=lambda _: measured(
+                ResearchEvaluation(is_valid=True, reasoning="ok")
+            ),
+            conduct_research=lambda _: measured(
+                AIMessage(
+                    content="",
+                    tool_calls=[
+                        {
+                            "name": "inspect_file",
+                            "args": {"path": "app.py"},
+                            "id": "tool-1",
+                        }
+                    ],
+                )
+            ),
+            extract_implementation_plan=lambda _: self.fail(
+                "deadline overrun must stop the next model"
+            ),
+            load_codebase_structure=lambda: "app.py",
+        )
+
+        result = create_architect_workflow(
+            runtime,
+            research_tools=[inspect_file],
+            budget_boundary=DurableBudgetBoundary(
+                "run", clock=lambda: now[0]
+            ),
+        ).invoke(
+            {
+                "implementation_research_scratchpad": [HumanMessage(content="task")],
+                "budget": BudgetSnapshot.create(
+                    max_steps=6, max_cost_usd=None, deadline_at=200.0
+                ),
+            }
+        )
+
+        self.assertEqual(executed, ["app.py"])
+        self.assertEqual(
+            result["runtime_error_code"], BudgetErrorCode.TIMEOUT_OVERRUN
+        )
+        self.assertEqual(result["budget"].steps_used, 4)
+        self.assertEqual(len(result["budget"].usage), 4)
+
     def test_parent_seals_budget_failure_before_developer(self) -> None:
         boundary = DurableBudgetBoundary("run", clock=lambda: 100.0)
         architect = create_architect_workflow(
@@ -345,6 +472,7 @@ class BudgetedGraphTests(unittest.TestCase):
                 verification_runner=Runner(),
                 workspace_root=root,
                 durable_runtime=True,
+                clock=lambda: 100.0,
             ).compile().invoke(
                 {
                     "implementation_research_scratchpad": [HumanMessage(content="task")],

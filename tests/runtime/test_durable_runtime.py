@@ -5,9 +5,22 @@ from dataclasses import replace
 from pathlib import Path
 from pydantic import SecretStr
 
+from langchain_core.messages import AIMessage, HumanMessage
 from langgraph.constants import END, START
 from langgraph.graph import StateGraph
 
+from agent.architect.graph import (
+    ArchitectRuntime,
+    ResearchEvaluation,
+    ResearchStep,
+    create_architect_workflow,
+)
+from agent.common.entities import AtomicTask, ImplementationPlan, ImplementationTask
+from agent.developer.editing import DeveloperEditExecutor
+from agent.developer.graph import DeveloperRuntime, create_developer_workflow
+from agent.editing import WorkspaceEditor
+from agent.graph import create_workflow_graph
+from agent.outcome import WorkflowOutcome
 from agent.runtime import (
     AgentCodeRevision,
     AgentRevisionStatus,
@@ -28,6 +41,12 @@ from agent.runtime.durable import (
     durable_recursion_limit,
     resume_run,
     start_run,
+)
+from agent.verification import (
+    VerificationCheckStatus,
+    VerificationResult,
+    VerificationSpec,
+    VerificationStatus,
 )
 from tests.runtime._config_support import RunConfigTestCase
 
@@ -286,6 +305,178 @@ class DurableRuntimeTests(RunConfigTestCase):
             self.assertEqual(resumed.state["value"], 1)
             self.assertEqual(resumed.state["budget"].steps_used, 1)
             self.assertEqual(resumed.state["budget"].deadline_at, 100.0 + config.timeout_seconds)
+
+    def test_real_production_chain_repairs_after_sqlite_close_reopen(self) -> None:
+        with tempfile.TemporaryDirectory() as directory:
+            root = Path(directory)
+            workspace = root / "workspace"
+            workspace.mkdir()
+            target = workspace / "app.py"
+            target.write_text("value = 1\n", encoding="utf-8")
+            spec = VerificationSpec("unit", ("unused",))
+            config = self.make_config(
+                root,
+                verification_specs=(spec,),
+                max_cost_usd=None,
+                max_steps=8,
+            )
+            request = self.request(config)
+            plan = ImplementationPlan(
+                tasks=[
+                    ImplementationTask(
+                        file_path="app.py",
+                        logical_task="change value",
+                        atomic_tasks=[AtomicTask(atomic_task="change")],
+                    )
+                ]
+            )
+
+            def measured(value):
+                return ModelCallResult(
+                    value=value,
+                    usage=UsageMeasurement(
+                        UsageStatus.PARTIAL, 1, 1, 2, None, None
+                    ),
+                    response_digest="d" * 64,
+                )
+
+            architect_runtime = ArchitectRuntime(
+                plan_next_step=lambda _: measured(
+                    ResearchStep(reasoning="r", hypothesis="h")
+                ),
+                check_research_step=lambda _: measured(
+                    ResearchEvaluation(is_valid=True, reasoning="ok")
+                ),
+                conduct_research=lambda _: measured(AIMessage(content="enough")),
+                extract_implementation_plan=lambda _: measured(plan),
+                load_codebase_structure=lambda: "app.py",
+            )
+            executor = DeveloperEditExecutor(WorkspaceEditor(workspace))
+
+            def propose(values):
+                before = values["file_content"]
+                after = (
+                    before.replace("value = 1", "value = 'BROKEN'")
+                    if "BROKEN" not in before
+                    else before.replace("value = 'BROKEN'", "value = 2")
+                )
+                return measured(
+                    f"<<<<<<< SEARCH\n{before}=======\n{after}>>>>>>> REPLACE"
+                )
+
+            developer_runtime = DeveloperRuntime(
+                edit_executor=lambda: executor,
+                load_codebase_structure=lambda: "app.py",
+                research_atomic_task=lambda _: measured(AIMessage(content="ready")),
+                propose_existing_file_edit=propose,
+                propose_new_file=lambda _: self.fail("unexpected create"),
+            )
+
+            class Runner:
+                def __init__(self) -> None:
+                    self.statuses = iter(
+                        (
+                            VerificationCheckStatus.PASS,
+                            VerificationCheckStatus.FAIL,
+                            VerificationCheckStatus.PASS,
+                        )
+                    )
+
+                def run(self, configured: VerificationSpec) -> VerificationResult:
+                    status = next(self.statuses)
+                    return VerificationResult.create(
+                        name=configured.name,
+                        argv=configured.argv,
+                        cwd=configured.cwd,
+                        status=status,
+                        exit_code=(
+                            0 if status is VerificationCheckStatus.PASS else 1
+                        ),
+                        stderr=(
+                            "regression"
+                            if status is VerificationCheckStatus.FAIL
+                            else ""
+                        ),
+                    )
+
+            runner = Runner()
+
+            class ProductionFactory:
+                def __init__(self) -> None:
+                    self.compiles = 0
+
+                def __call__(self, current_config, run_id, saver, clock):
+                    self.compiles += 1
+                    boundary = DurableBudgetBoundary(run_id, clock=clock)
+                    architect = create_architect_workflow(
+                        architect_runtime,
+                        research_tools=[],
+                        budget_boundary=boundary,
+                    )
+                    developer = create_developer_workflow(
+                        developer_runtime,
+                        research_tools=[],
+                        budget_boundary=boundary,
+                    )
+                    builder = create_workflow_graph(
+                        architect=architect,
+                        developer=developer,
+                        verification_specs=current_config.verification_specs,
+                        verification_runner=runner,
+                        workspace_root=current_config.workspace_root,
+                        durable_runtime=True,
+                        clock=clock,
+                    )
+                    return builder.compile(
+                        checkpointer=saver,
+                        interrupt_after=(
+                            ["prepare_repair"] if self.compiles == 1 else None
+                        ),
+                    )
+
+            factory = ProductionFactory()
+            started = start_run(
+                config,
+                request,
+                {
+                    "implementation_research_scratchpad": [
+                        HumanMessage(content="task")
+                    ]
+                },
+                graph_factory=factory,
+                clock=lambda: 100.0,
+            )
+            after_start = target.read_text(encoding="utf-8")
+            resumed = resume_run(
+                config,
+                ResumeRequest(
+                    request.identity,
+                    request.run_config_digest,
+                    request.agent_revision,
+                ),
+                graph_factory=factory,
+                clock=lambda: 150.0,
+            )
+
+            self.assertEqual(started.status, DurableRunStatus.PAUSED)
+            self.assertEqual(after_start, "value = 'BROKEN'\n")
+            self.assertEqual(
+                resumed.status, DurableRunStatus.COMPLETED, resumed.message
+            )
+            self.assertEqual(target.read_text(encoding="utf-8"), "value = 2\n")
+            self.assertEqual(
+                resumed.state["outcome"], WorkflowOutcome.COMPLETED, resumed.state
+            )
+            self.assertEqual(
+                resumed.state["verification_status"], VerificationStatus.VERIFIED
+            )
+            self.assertEqual(resumed.state["repair_attempts"], 1)
+            self.assertEqual(resumed.state["budget"].steps_used, 8)
+            self.assertEqual(
+                resumed.state["budget"].deadline_at,
+                100.0 + config.timeout_seconds,
+            )
+            self.assertEqual(resumed.state["run_identity"], request.identity)
 
     def test_parent_saver_propagates_to_default_child_graphs(self) -> None:
         with tempfile.TemporaryDirectory() as directory:

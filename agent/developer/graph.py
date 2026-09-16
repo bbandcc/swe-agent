@@ -256,6 +256,12 @@ def create_developer_workflow(
         assert budget_boundary is not None
         return budget_boundary.record_tool_results(state)
 
+    def check_deadline_before_commit(
+        state: SoftwareDeveloperState,
+    ) -> dict[str, Any]:
+        assert budget_boundary is not None
+        return budget_boundary.check_deadline(state)
+
     research_tool_node = ToolNode(
         tools, messages_key="atomic_implementation_research"
     )
@@ -291,6 +297,9 @@ def create_developer_workflow(
         workflow.add_node("reserve_research_tools", reserve_tools)
         workflow.add_node("record_research_tool_results", record_tool_results)
         workflow.add_node("settle_research_tools", settle_call)
+        workflow.add_node(
+            "check_deadline_before_commit", check_deadline_before_commit
+        )
         workflow.add_conditional_edges(
             "reserve_research_tools",
             budget_boundary.may_dispatch,
@@ -326,9 +335,15 @@ def create_developer_workflow(
                 "end": END,
             },
         )
-        workflow.add_edge(
+        workflow.add_conditional_edges(
             "settle_research_tools",
-            "reserve_get_clear_implementation_plan_for_atomic_task",
+            lambda state: (
+                "end" if state.runtime_error_code is not None else "continue"
+            ),
+            {
+                "continue": "reserve_get_clear_implementation_plan_for_atomic_task",
+                "end": END,
+            },
         )
         workflow.add_conditional_edges(
             "settle_stage_diff_for_task",
@@ -339,7 +354,7 @@ def create_developer_workflow(
             ),
             {
                 "next_atomic": "proceed_to_next_atomic_task",
-                "commit": "commit_file_transaction",
+                "commit": "check_deadline_before_commit",
                 END: END,
                 "end": END,
             },
@@ -347,6 +362,13 @@ def create_developer_workflow(
         workflow.add_edge(
             "proceed_to_next_atomic_task",
             "reserve_get_clear_implementation_plan_for_atomic_task",
+        )
+        workflow.add_conditional_edges(
+            "check_deadline_before_commit",
+            lambda state: (
+                "end" if state.runtime_error_code is not None else "commit"
+            ),
+            {"commit": "commit_file_transaction", "end": END},
         )
         workflow.add_conditional_edges(
             "commit_file_transaction",

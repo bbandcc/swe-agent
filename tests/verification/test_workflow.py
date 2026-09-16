@@ -12,6 +12,7 @@ from agent.developer.graph import DeveloperRuntime, create_developer_workflow
 from agent.developer.state import DeveloperStatus
 from agent.editing import EditErrorCode, EditResult, EditStatus, WorkspaceEditor
 from agent.graph import AgentState, WorkflowOutcome, create_workflow_graph
+from agent.runtime import BudgetErrorCode, BudgetSnapshot
 from agent.verification import (
     VerificationCheckStatus,
     VerificationRunner,
@@ -100,6 +101,93 @@ class _SequenceRunner:
 
 
 class VerificationWorkflowTests(unittest.TestCase):
+    def test_baseline_clamps_each_check_to_remaining_run_deadline(self) -> None:
+        now = [100.0]
+
+        class Runner:
+            def __init__(self) -> None:
+                self.specs: list[VerificationSpec] = []
+
+            def run(self, spec: VerificationSpec) -> VerificationResult:
+                self.specs.append(spec)
+                now[0] = 106.0
+                return VerificationResult.create(
+                    name=spec.name,
+                    argv=spec.argv,
+                    cwd=spec.cwd,
+                    status=VerificationCheckStatus.PASS,
+                    exit_code=0,
+                )
+
+        runner = Runner()
+        controller = VerificationController(
+            (
+                VerificationSpec("first", ("unused",), timeout_seconds=30),
+                VerificationSpec("second", ("unused",), timeout_seconds=30),
+            ),
+            runner,
+            ".",
+            clock=lambda: now[0],
+        )
+        state = AgentState(
+            budget=BudgetSnapshot.create(
+                max_steps=1, max_cost_usd=None, deadline_at=105.0
+            )
+        )
+
+        update = controller.run_baseline(state)
+
+        self.assertEqual(len(runner.specs), 1)
+        self.assertEqual(runner.specs[0].timeout_seconds, 5.0)
+        self.assertEqual(
+            update["runtime_error_code"], BudgetErrorCode.TIMEOUT_OVERRUN
+        )
+        self.assertEqual(update["outcome"], WorkflowOutcome.FAILED)
+
+    def test_expired_deadline_starts_no_post_verification_process(self) -> None:
+        class Runner:
+            def __init__(self) -> None:
+                self.calls = 0
+
+            def run(self, spec: VerificationSpec) -> VerificationResult:
+                self.calls += 1
+                raise AssertionError("expired deadline must start no subprocess")
+
+        runner = Runner()
+        controller = VerificationController(
+            (VerificationSpec("check", ("unused",), timeout_seconds=30),),
+            runner,
+            ".",
+            clock=lambda: 105.0,
+        )
+        state = AgentState(
+            budget=BudgetSnapshot.create(
+                max_steps=1, max_cost_usd=None, deadline_at=105.0
+            ),
+            baseline_verification=(
+                VerificationResult.create(
+                    name="check",
+                    argv=("unused",),
+                    cwd=".",
+                    status=VerificationCheckStatus.PASS,
+                    exit_code=0,
+                ),
+            ),
+            developer_status=DeveloperStatus.COMPLETED,
+        )
+
+        update = controller.run_post(state)
+
+        self.assertEqual(runner.calls, 0)
+        self.assertEqual(
+            update["runtime_error_code"], BudgetErrorCode.TIMEOUT_OVERRUN
+        )
+        self.assertEqual(
+            update["post_verification"][0].status,
+            VerificationCheckStatus.TIMEOUT,
+        )
+        self.assertEqual(update["outcome"], WorkflowOutcome.FAILED)
+
     def test_repair_path_uses_s1_case_sensitive_canonicalization(self) -> None:
         plan_with_case_distinct_paths = ImplementationPlan(
             tasks=[

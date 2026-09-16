@@ -28,6 +28,11 @@ class DurableCallResult:
     response_digests: tuple[str, ...]
 
     def __post_init__(self) -> None:
+        object.__setattr__(self, "call_ids", tuple(self.call_ids))
+        object.__setattr__(self, "usage", tuple(self.usage))
+        object.__setattr__(
+            self, "response_digests", tuple(self.response_digests)
+        )
         size = len(self.call_ids)
         if size == 0 or len(self.usage) != size or len(self.response_digests) != size:
             raise ValueError("Durable call result fields must have equal non-zero size.")
@@ -92,7 +97,8 @@ class DurableBudgetBoundary:
     def capture_model(
         self, state: DurableBudgetState, response: Any
     ) -> tuple[Any, dict[str, Any]]:
-        active = self._snapshot(state).active
+        snapshot = self._snapshot(state)
+        active = snapshot.active
         if len(active) != 1:
             raise ValueError("A model result requires one active reservation.")
         if isinstance(response, ModelCallResult):
@@ -116,7 +122,8 @@ class DurableBudgetBoundary:
             **error_update,
             "durable_call_result": DurableCallResult(
                 (active[0].call_id,), (usage,), (digest,)
-            )
+            ),
+            **self._deadline_overrun_update(snapshot),
         }
 
     def record_tool_results(self, state: DurableBudgetState) -> dict[str, Any]:
@@ -145,8 +152,13 @@ class DurableBudgetBoundary:
         return {
             "durable_call_result": DurableCallResult(
                 tuple(item.call_id for item in active), usage, digests
-            )
+            ),
+            **self._deadline_overrun_update(self._snapshot(state)),
         }
+
+    def check_deadline(self, state: DurableBudgetState) -> dict[str, Any]:
+        """Guard deterministic side effects without consuming a budget step."""
+        return self._deadline_overrun_update(self._snapshot(state))
 
     def settle(self, state: DurableBudgetState) -> dict[str, Any]:
         result = state.durable_call_result
@@ -179,6 +191,19 @@ class DurableBudgetBoundary:
             "durable_call_result": None,
             "runtime_error_code": decision.error_code,
             "runtime_message": decision.message,
+        }
+
+    def _deadline_overrun_update(
+        self, snapshot: BudgetSnapshot
+    ) -> dict[str, Any]:
+        if self.clock() < snapshot.deadline_at:
+            return {}
+        return {
+            "runtime_error_code": BudgetErrorCode.TIMEOUT_OVERRUN,
+            "runtime_message": (
+                "The external call crossed the absolute run deadline; "
+                "its result was recorded but later side effects were blocked."
+            ),
         }
 
 

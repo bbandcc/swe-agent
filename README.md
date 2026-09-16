@@ -492,13 +492,26 @@ lookup. An unknown Agent revision produces a warning. The configured step and
 cost limits are validated and bound into the digest. S3.2 reserves one durable
 step for each model invocation and for each model-requested tool call before
 dispatch, then settles captured usage afterward. A tool batch is rejected as a
-whole when the remaining step capacity is insufficient.
+whole when the remaining step capacity is insufficient. Step and absolute
+deadline gates apply to both model and tool calls. Cost exhaustion or unknown
+model cost blocks only the next model call: tool calls already returned by the
+current model may still run when step capacity and deadline permit.
 
 If recovery finds an in-flight external call without a durable result, it marks
 the outcome unknown and stops instead of replaying the call. A durable result
 that has not yet been settled resumes at deterministic settlement. Missing
 model usage remains `UNKNOWN` or `PARTIAL` with `None` values. `max_cost_usd`
-can therefore block later calls but is not an absolute billing ceiling.
+can therefore block later model calls but is not an absolute billing ceiling.
+Configured token-price calculations use `cost_source="configured_estimate"`;
+the pricing snapshot source remains bound by the semantic config digest.
+
+The runtime checks the absolute deadline before dispatch and again after each
+synchronous model or tool return. An overrun still settles the returned usage
+or tool result, then reports `TIMEOUT_OVERRUN` and blocks commit, verification,
+and later side effects. Baseline and post-edit checks receive
+`min(check_timeout, remaining_run_time)`; when no time remains, no verification
+process is started. Synchronous provider or tool calls are not forcibly
+cancelled mid-call, so the overrun is detected when control returns.
 
 S3.2 does not provide trajectory/EventSink, complete artifact or log spooling,
 pending-write hash reconciliation, or exactly-once external calls. Those

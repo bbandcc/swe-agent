@@ -246,6 +246,7 @@ def create_durable_workflow(
         verification_specs=config.verification_specs,
         workspace_root=config.workspace_root,
         durable_runtime=True,
+        clock=clock,
     ).compile(checkpointer=saver).with_config({"tags": ["agent-durable-v1"]})
 
 

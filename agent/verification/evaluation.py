@@ -50,4 +50,4 @@ def classify_verification(
 
 
 def _check_key(result: VerificationResult) -> tuple[object, ...]:
-    return result.name, result.argv, result.cwd
+    return result.name, tuple(result.argv), result.cwd

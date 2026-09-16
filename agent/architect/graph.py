@@ -291,7 +291,11 @@ def create_architect_workflow(
                 "end": END,
             },
         )
-        workflow.add_edge("settle_tools", "reserve_conduct_research")
+        workflow.add_conditional_edges(
+            "settle_tools",
+            lambda state: after_settle(state, "continue"),
+            {"continue": "reserve_conduct_research", "end": END},
+        )
         workflow.add_conditional_edges(
             "settle_extract_implementation_plan",
             lambda state: after_settle(state, "complete"),

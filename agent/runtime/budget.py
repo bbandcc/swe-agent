@@ -35,6 +35,7 @@ class BudgetErrorCode(str, Enum):
     MAX_COST_EXCEEDED = "max_cost_exceeded"
     USAGE_UNKNOWN = "budget_usage_unknown"
     DEADLINE_EXCEEDED = "deadline_exceeded"
+    TIMEOUT_OVERRUN = "timeout_overrun"
     CALL_IN_FLIGHT = "call_in_flight"
     OUTCOME_UNKNOWN = "outcome_unknown"
     MODEL_OUTPUT_INVALID = "model_output_invalid"
@@ -127,6 +128,8 @@ class BudgetSnapshot:
     cost_unknown: bool = False
 
     def __post_init__(self) -> None:
+        object.__setattr__(self, "reservations", tuple(self.reservations))
+        object.__setattr__(self, "usage", tuple(self.usage))
         if (
             isinstance(self.max_steps, bool)
             or not isinstance(self.max_steps, int)
@@ -259,7 +262,12 @@ class BudgetController:
         requests: tuple[tuple[CallKind, str | None, str], ...],
         now: float,
     ) -> BudgetDecision:
-        denial = self._preflight(snapshot, len(requests), now)
+        denial = self._preflight(
+            snapshot,
+            len(requests),
+            now,
+            enforce_cost=requests[0][0] is CallKind.MODEL,
+        )
         if denial is not None:
             return denial
         if not run_id:
@@ -280,11 +288,19 @@ class BudgetController:
             )
             for offset, (kind, tool_call_id, digest) in enumerate(requests)
         )
-        updated = replace(snapshot, reservations=snapshot.reservations + reservations)
+        updated = replace(
+            snapshot,
+            reservations=tuple(snapshot.reservations) + reservations,
+        )
         return BudgetDecision(True, updated, reservations)
 
     def _preflight(
-        self, snapshot: BudgetSnapshot, count: int, now: float
+        self,
+        snapshot: BudgetSnapshot,
+        count: int,
+        now: float,
+        *,
+        enforce_cost: bool,
     ) -> BudgetDecision | None:
         if not isinstance(now, (int, float)) or not math.isfinite(now):
             raise ValueError("now must be finite.")
@@ -296,7 +312,7 @@ class BudgetController:
             return self._denied(snapshot, BudgetErrorCode.DEADLINE_EXCEEDED)
         if snapshot.steps_used + count > snapshot.max_steps:
             return self._denied(snapshot, BudgetErrorCode.MAX_STEPS_EXCEEDED)
-        if snapshot.max_cost_microusd is not None:
+        if enforce_cost and snapshot.max_cost_microusd is not None:
             if snapshot.cost_unknown:
                 return self._denied(snapshot, BudgetErrorCode.USAGE_UNKNOWN)
             if snapshot.cost_microusd >= snapshot.max_cost_microusd:
@@ -337,7 +353,7 @@ class BudgetController:
         return replace(
             snapshot,
             reservations=reservations,
-            usage=snapshot.usage + usage,
+            usage=tuple(snapshot.usage) + usage,
             cost_microusd=snapshot.cost_microusd + known_cost,
             cost_unknown=cost_unknown,
         )

@@ -137,11 +137,22 @@ class BudgetControllerTests(unittest.TestCase):
             ),
         )
 
+        tools = self.controller.reserve_tools(
+            settled,
+            run_id="run",
+            tool_calls=(("tool-1", "c" * 64),),
+            now=100.0,
+        )
+        after_tool = self.controller.settle(
+            tools.snapshot,
+            (UsageRecord.unknown(tools.reservations[0].call_id),),
+        )
         denied = self.controller.reserve_model(
-            settled, run_id="run", request_digest="b" * 64, now=100.0
+            after_tool, run_id="run", request_digest="b" * 64, now=100.0
         )
 
         self.assertEqual(settled.cost_microusd, 11)
+        self.assertTrue(tools.allowed)
         self.assertEqual(denied.error_code, BudgetErrorCode.MAX_COST_EXCEEDED)
 
     def test_unknown_cost_with_cost_limit_blocks_next_call(self) -> None:
@@ -156,10 +167,21 @@ class BudgetControllerTests(unittest.TestCase):
             (UsageRecord.unknown(reserved.reservations[0].call_id),),
         )
 
+        tools = self.controller.reserve_tools(
+            settled,
+            run_id="run",
+            tool_calls=(("tool-1", "c" * 64),),
+            now=100.0,
+        )
+        after_tool = self.controller.settle(
+            tools.snapshot,
+            (UsageRecord.unknown(tools.reservations[0].call_id),),
+        )
         denied = self.controller.reserve_model(
-            settled, run_id="run", request_digest="b" * 64, now=100.0
+            after_tool, run_id="run", request_digest="b" * 64, now=100.0
         )
 
+        self.assertTrue(tools.allowed)
         self.assertEqual(denied.error_code, BudgetErrorCode.USAGE_UNKNOWN)
 
     def test_deadline_is_absolute_and_finite(self) -> None:
