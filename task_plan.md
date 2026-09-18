@@ -10,13 +10,13 @@
 
 ### 当前状态文件基线
 
-- 当前阶段：S3.2 Checkpoint + Durable Budget 已完成；不自动推进下一阶段。
-- 已完成项：S3.1/S3.2 的配置、身份、SQLite checkpoint、预算边界、start/resume 和现有图接入均已有源码与测试证据。
-- 未完成项：trajectory、artifact/log spool、pending-write/hash recovery、exactly-once，以及 MASTER_PLAN 中后续 D 项仍未实现。
-- 实际验证：157 项测试通过；Python compile、11 个 prompt render、CLI help、SQLite saver 版本检查、禁止范围/密钥扫描和 `git diff --check` 通过；仅 6 项普通 Windows symlink 用例因权限跳过，存在 tree-sitter 弃用告警。
-- 已知限制：尚未完成 S3.3/S3.4 及后续验收，未运行真实 benchmark，不能据此声明效果提升。
-- 下一阶段：等待 ChatGPT 审核并按 MASTER_PLAN §5.2 的依赖顺序决定；本次仅建立状态文件治理，不推进阶段。
-- MASTER_PLAN 对应：当前基线为 S3.2；重点映射 D4/D5，未完成能力涉及 D5/D6；下一默认切片为 S1a（MASTER_PLAN §5.2），但不在本次自动启动。
+- S3.2 production 技术冻结点：`5850b8370c49f868e90aeffe9e6042f85eaa522c`；当前治理 HEAD：`54d18ca2a2192170e408c7448822861acad23828`。
+- S3.2 的配置、身份、SQLite checkpoint、预算边界、start/resume 和现有图接入均已有源码与测试证据；S3 尚未全部完成，当前不能进入 S4。
+- 最新 Codex 本地验证：unittest 169 tests OK / 6 skipped；pytest 163 passed / 6 skipped / 129 subtests passed；Python compile、11 个 prompt render、CLI help、`git diff --check` 均通过。6 个 skip 仅为当前 Windows 普通 symlink 权限限制。
+- 没有 GitHub CI 或独立外部测试证据，不作相应声明。
+- 剩余能力：provider timeout/retry/attempt、secret-safe persistence、EventSink/RunRecord/artifact、workspace locking/policy、write/verification recovery，以及 exactly-once 等仍未实现。
+- 下一技术切片按 MASTER_PLAN §5.2 的 S1a/D1 执行“编辑最终净零结果”，作为 S3 continuation prerequisite；保留现有 S1/S2/S3 历史编号，不重新开启或重命名 S1。
+- MASTER_PLAN 对应：当前实现事实冻结在 S3.2，后续运行控制、轨迹和恢复要求继续按 §5.2 映射执行；本次不推进下一阶段。
 
 ## 当前文档任务：独立 MASTER PLAN（2026-09-16）
 
