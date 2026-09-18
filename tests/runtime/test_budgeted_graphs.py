@@ -443,16 +443,30 @@ class BudgetedGraphTests(unittest.TestCase):
             target = root / "app.py"
             original = "value = 1\n"
             target.write_text(original, encoding="utf-8")
-            ticks = iter((100.0,) * 7 + (201.0,))
-            clock_calls = 0
-            observed: list[float] = []
 
-            def clock() -> float:
-                nonlocal clock_calls
-                clock_calls += 1
-                value = next(ticks)
-                observed.append(value)
-                return value
+            class PhaseClock:
+                phase = "before_commit_gate"
+                pre_commit_gate_passed = False
+
+                def __call__(self) -> float:
+                    return 100.0 if self.phase == "before_commit_gate" else 201.0
+
+            class PhaseBoundary(DurableBudgetBoundary):
+                def __init__(self, clock: PhaseClock) -> None:
+                    self.phase_clock = clock
+                    super().__init__("run", clock=clock)
+
+                def check_deadline(self, state, *, message=None):
+                    result = super().check_deadline(state, message=message)
+                    if (
+                        not result
+                        and self.phase_clock.phase == "before_commit_gate"
+                    ):
+                        self.phase_clock.pre_commit_gate_passed = True
+                        self.phase_clock.phase = "commit_boundary"
+                    return result
+
+            clock = PhaseClock()
 
             delegate = DeveloperEditExecutor(WorkspaceEditor(root))
 
@@ -477,15 +491,32 @@ class BudgetedGraphTests(unittest.TestCase):
                 ),
                 propose_new_file=lambda _: self.fail("unexpected create"),
             )
-            boundary = DurableBudgetBoundary("run", clock=clock)
+            boundary = PhaseBoundary(clock)
             developer = create_developer_workflow(
                 runtime, research_tools=[], budget_boundary=boundary
             )
 
+            class Runner:
+                def __init__(self) -> None:
+                    self.calls = 0
+
+                def run(self, spec):
+                    self.calls += 1
+                    return VerificationResult.create(
+                        name=spec.name,
+                        argv=spec.argv,
+                        cwd=spec.cwd,
+                        status=VerificationCheckStatus.PASS,
+                        exit_code=0,
+                    )
+
+            runner = Runner()
+
             result = create_workflow_graph(
                 architect=lambda _: {"implementation_plan": ready_plan()},
                 developer=developer,
-                verification_specs=(),
+                verification_specs=(VerificationSpec("unit", ("unused",)),),
+                verification_runner=runner,
                 workspace_root=root,
                 durable_runtime=True,
                 clock=clock,
@@ -497,11 +528,13 @@ class BudgetedGraphTests(unittest.TestCase):
                 }
             )
 
-            self.assertEqual(clock_calls, 8)
-            self.assertEqual(observed[-2:], [100.0, 201.0])
+            self.assertTrue(clock.pre_commit_gate_passed)
+            self.assertEqual(clock.phase, "commit_boundary")
             self.assertEqual(executor.commit_calls, 0)
             self.assertEqual(target.read_text(encoding="utf-8"), original)
             self.assertIsNone(result["last_edit_result"])
+            self.assertEqual(runner.calls, 1)
+            self.assertEqual(result["repair_attempts"], 0)
             self.assertEqual(
                 result["runtime_error_code"], BudgetErrorCode.TIMEOUT_OVERRUN
             )

@@ -432,3 +432,19 @@ Windows 账户缺少普通 symlink 创建权限跳过；junction 用例通过。
 40 个业务 step 的单工具循环正常到达 `MAX_STEPS_EXCEEDED`，证明现有
 `max(200, 8*max_steps+64)` 公式充足，无需调整。Python compile、11 个
 prompt render、CLI help 和 `git diff --check` 通过。
+
+## S3 治理/测试封口（当前状态同步）
+
+S3.2 技术验收已完成并冻结，当前冻结 commit 为
+`5850b8370c49f868e90aeffe9e6042f85eaa522c`。最新 Codex 本地验证为
+169 total / 163 passed / 6 skipped，129 个 unittest subtests 通过；Python
+compile、11 个 prompt render、CLI help 和 `git diff --check` 均通过。6 个
+skip 仅来自当前 Windows 账户缺少创建普通 symlink 的权限；没有执行 GitHub
+CI 或独立外部测试，未作相应声明。
+
+当前仍未实现：model provider 显式 timeout/retry/attempt 语义、secret-safe
+full-state persistence、EventSink / RunRecord、完整 verification artifact
+spool、workspace/thread 独占、read/write authorization policy、pending-
+write/hash recovery、verification execution recovery 和 exactly-once。
+当前不进入 S4；后续继续完成 `MASTER_PLAN` §5.2 中属于运行控制、轨迹和恢复
+的剩余要求，并保留现有 S1/S2/S3.1/S3.2 阶段编号体系。
