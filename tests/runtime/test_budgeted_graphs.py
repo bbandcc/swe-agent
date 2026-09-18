@@ -437,6 +437,76 @@ class BudgetedGraphTests(unittest.TestCase):
             self.assertIn("file commit completed", result["runtime_message"])
             self.assertEqual(result["outcome"], WorkflowOutcome.FAILED)
 
+    def test_commit_node_rechecks_deadline_before_executor_call(self) -> None:
+        with tempfile.TemporaryDirectory() as directory:
+            root = Path(directory)
+            target = root / "app.py"
+            original = "value = 1\n"
+            target.write_text(original, encoding="utf-8")
+            ticks = iter((100.0,) * 7 + (201.0,))
+            clock_calls = 0
+            observed: list[float] = []
+
+            def clock() -> float:
+                nonlocal clock_calls
+                clock_calls += 1
+                value = next(ticks)
+                observed.append(value)
+                return value
+
+            delegate = DeveloperEditExecutor(WorkspaceEditor(root))
+
+            class Executor:
+                def __init__(self) -> None:
+                    self.commit_calls = 0
+
+                def __getattr__(self, name):
+                    return getattr(delegate, name)
+
+                def commit(self, transaction):
+                    self.commit_calls += 1
+                    return delegate.commit(transaction)
+
+            executor = Executor()
+            runtime = DeveloperRuntime(
+                edit_executor=lambda: executor,
+                load_codebase_structure=lambda: "app.py",
+                research_atomic_task=lambda _: measured(AIMessage(content="ready")),
+                propose_existing_file_edit=lambda _: measured(
+                    "<<<<<<< SEARCH\nvalue = 1\n=======\nvalue = 2\n>>>>>>> REPLACE"
+                ),
+                propose_new_file=lambda _: self.fail("unexpected create"),
+            )
+            boundary = DurableBudgetBoundary("run", clock=clock)
+            developer = create_developer_workflow(
+                runtime, research_tools=[], budget_boundary=boundary
+            )
+
+            result = create_workflow_graph(
+                architect=lambda _: {"implementation_plan": ready_plan()},
+                developer=developer,
+                verification_specs=(),
+                workspace_root=root,
+                durable_runtime=True,
+                clock=clock,
+            ).compile().invoke(
+                {
+                    "budget": BudgetSnapshot.create(
+                        max_steps=4, max_cost_usd=None, deadline_at=200.0
+                    )
+                }
+            )
+
+            self.assertEqual(clock_calls, 8)
+            self.assertEqual(observed[-2:], [100.0, 201.0])
+            self.assertEqual(executor.commit_calls, 0)
+            self.assertEqual(target.read_text(encoding="utf-8"), original)
+            self.assertIsNone(result["last_edit_result"])
+            self.assertEqual(
+                result["runtime_error_code"], BudgetErrorCode.TIMEOUT_OVERRUN
+            )
+            self.assertEqual(result["outcome"], WorkflowOutcome.FAILED)
+
     def test_recursion_limit_outlasts_worst_one_tool_call_cycles(self) -> None:
         max_steps = 40
         executed: list[int] = []

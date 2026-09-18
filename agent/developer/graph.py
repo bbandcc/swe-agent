@@ -211,6 +211,16 @@ def create_developer_workflow(
         transaction = state.current_file_transaction
         if transaction is None:
             return invalid_state("The Developer has no transaction to commit.")
+        if budget_boundary is not None:
+            deadline_update = budget_boundary.check_deadline(
+                state,
+                message=(
+                    "The absolute run deadline expired before file commit; "
+                    "no write was attempted."
+                ),
+            )
+            if deadline_update:
+                return deadline_update
         result = runtime.edit_executor().commit(transaction)
         deadline_update = (
             budget_boundary.check_deadline(
