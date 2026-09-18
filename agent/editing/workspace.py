@@ -155,6 +155,7 @@ class WorkspaceEditor:
         target = resolution.path
         assert target is not None
 
+        current_bytes: bytes | None = None
         if transaction.existed:
             if not target.is_file():
                 return _transaction_error(
@@ -192,6 +193,15 @@ class WorkspaceEditor:
                 transaction,
                 EditErrorCode.ENCODING_ERROR,
                 "New file content must be valid UTF-8 text.",
+            )
+        if transaction.existed and current_bytes == updated_bytes:
+            return EditResult(
+                status=EditStatus.NOOP,
+                path=transaction.path,
+                before_hash=transaction.base_hash,
+                after_hash=sha256(updated_bytes),
+                diff="",
+                task_ids=transaction.task_ids,
             )
         write_failure = (
             replace_existing(target, updated_bytes, transaction)

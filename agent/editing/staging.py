@@ -87,7 +87,9 @@ def stage_transaction(
             EditErrorCode.ENCODING_ERROR,
             "New file content must be valid UTF-8 text.",
         )
-    if updated == transaction.working_content:
+    if updated == transaction.working_content and not (
+        is_first_create and proposal.operation is EditOperation.CREATE
+    ):
         return TransactionResult(
             edit_result=EditResult(
                 status=EditStatus.NOOP,

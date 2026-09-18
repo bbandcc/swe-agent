@@ -246,6 +246,206 @@ class WorkspaceEditorTests(unittest.TestCase):
             self.assertEqual(result.diff, "")
             self.assertEqual(target.stat().st_ino, original_stat.st_ino)
 
+    def test_returns_noop_for_two_stage_edit_that_returns_to_original_bytes(self) -> None:
+        with tempfile.TemporaryDirectory() as directory:
+            root = Path(directory)
+            target = root / "app.py"
+            original = "value = 1\n"
+            target.write_bytes(original.encode("utf-8"))
+            original_stat = target.stat()
+            editor = WorkspaceEditor(root)
+
+            started = editor.begin("app.py")
+            self.assertTrue(started.ok)
+            transaction = started.transaction
+            assert transaction is not None
+            for task_id, old_text, new_text in (
+                ("task-1", "value = 1", "value = 2"),
+                ("task-2", "value = 2", "value = 1"),
+            ):
+                staged = editor.stage(
+                    transaction,
+                    EditProposal(
+                        task_id=task_id,
+                        path="app.py",
+                        operation=EditOperation.EDIT,
+                        base_hash=sha256(original),
+                        old_text=old_text,
+                        new_text=new_text,
+                    ),
+                )
+                self.assertTrue(staged.ok)
+                transaction = staged.transaction
+                assert transaction is not None
+
+            result = editor.commit(transaction)
+
+            self.assertEqual(result.status, EditStatus.NOOP)
+            self.assertEqual(result.before_hash, sha256(original))
+            self.assertEqual(result.after_hash, sha256(original))
+            self.assertEqual(result.diff, "")
+            self.assertEqual(result.task_ids, ("task-1", "task-2"))
+            self.assertEqual(target.read_bytes(), original.encode("utf-8"))
+            self.assertEqual(target.stat().st_mtime_ns, original_stat.st_mtime_ns)
+
+    def test_three_stage_cancellation_preserves_all_task_ids(self) -> None:
+        with tempfile.TemporaryDirectory() as directory:
+            root = Path(directory)
+            target = root / "app.py"
+            original = "value = 1\n"
+            target.write_bytes(original.encode("utf-8"))
+            editor = WorkspaceEditor(root)
+            started = editor.begin("app.py")
+            self.assertTrue(started.ok)
+            transaction = started.transaction
+            assert transaction is not None
+
+            for task_id, old_text, new_text in (
+                ("task-1", "value = 1", "value = 2"),
+                ("task-2", "value = 2", "value = 3"),
+                ("task-3", "value = 3", "value = 1"),
+            ):
+                staged = editor.stage(
+                    transaction,
+                    EditProposal(
+                        task_id=task_id,
+                        path="app.py",
+                        operation=EditOperation.EDIT,
+                        base_hash=sha256(original),
+                        old_text=old_text,
+                        new_text=new_text,
+                    ),
+                )
+                self.assertTrue(staged.ok)
+                transaction = staged.transaction
+                assert transaction is not None
+
+            result = editor.commit(transaction)
+
+            self.assertEqual(result.status, EditStatus.NOOP)
+            self.assertEqual(result.before_hash, result.after_hash)
+            self.assertEqual(result.diff, "")
+            self.assertEqual(
+                result.task_ids, ("task-1", "task-2", "task-3")
+            )
+            self.assertEqual(target.read_bytes(), original.encode("utf-8"))
+
+    def test_external_change_wins_over_net_zero_working_copy(self) -> None:
+        with tempfile.TemporaryDirectory() as directory:
+            root = Path(directory)
+            target = root / "app.py"
+            original = "value = 1\n"
+            target.write_bytes(original.encode("utf-8"))
+            editor = WorkspaceEditor(root)
+            started = editor.begin("app.py")
+            self.assertTrue(started.ok)
+            transaction = started.transaction
+            assert transaction is not None
+
+            for task_id, old_text, new_text in (
+                ("task-1", "value = 1", "value = 2"),
+                ("task-2", "value = 2", "value = 1"),
+            ):
+                staged = editor.stage(
+                    transaction,
+                    EditProposal(
+                        task_id=task_id,
+                        path="app.py",
+                        operation=EditOperation.EDIT,
+                        base_hash=sha256(original),
+                        old_text=old_text,
+                        new_text=new_text,
+                    ),
+                )
+                self.assertTrue(staged.ok)
+                transaction = staged.transaction
+                assert transaction is not None
+
+            external = "value = 99\n"
+            target.write_bytes(external.encode("utf-8"))
+            result = editor.commit(transaction)
+
+            self.assertEqual(result.status, EditStatus.REJECTED)
+            self.assertEqual(result.error_code, EditErrorCode.HASH_MISMATCH)
+            self.assertEqual(result.before_hash, sha256(external))
+            self.assertIsNone(result.after_hash)
+            self.assertEqual(target.read_bytes(), external.encode("utf-8"))
+
+    def test_net_zero_preserves_crlf_and_missing_eof_newline(self) -> None:
+        cases = (
+            "one\r\ntwo",
+            "one\ntwo",
+        )
+        for original in cases:
+            with self.subTest(repr(original)), tempfile.TemporaryDirectory() as directory:
+                root = Path(directory)
+                target = root / "message.txt"
+                target.write_bytes(original.encode("utf-8"))
+                original_stat = target.stat()
+                editor = WorkspaceEditor(root)
+                started = editor.begin("message.txt")
+                self.assertTrue(started.ok)
+                transaction = started.transaction
+                assert transaction is not None
+
+                for task_id, old_text, new_text in (
+                    ("task-1", "one", "ONE"),
+                    ("task-2", "ONE", "one"),
+                ):
+                    staged = editor.stage(
+                        transaction,
+                        EditProposal(
+                            task_id=task_id,
+                            path="message.txt",
+                            operation=EditOperation.EDIT,
+                            base_hash=sha256(original),
+                            old_text=old_text,
+                            new_text=new_text,
+                        ),
+                    )
+                    self.assertTrue(staged.ok)
+                    transaction = staged.transaction
+                    assert transaction is not None
+
+                result = editor.commit(transaction)
+
+                self.assertEqual(result.status, EditStatus.NOOP)
+                self.assertEqual(result.diff, "")
+                self.assertEqual(target.read_bytes(), original.encode("utf-8"))
+                self.assertEqual(
+                    target.stat().st_mtime_ns, original_stat.st_mtime_ns
+                )
+
+    def test_creates_empty_file_as_applied_existence_change(self) -> None:
+        with tempfile.TemporaryDirectory() as directory:
+            root = Path(directory)
+            editor = WorkspaceEditor(root)
+
+            started = editor.begin("empty.txt")
+            self.assertTrue(started.ok)
+            transaction = started.transaction
+            assert transaction is not None
+            staged = editor.stage(
+                transaction,
+                EditProposal(
+                    task_id="task-1",
+                    path="empty.txt",
+                    operation=EditOperation.CREATE,
+                    new_text="",
+                ),
+            )
+            self.assertTrue(staged.ok)
+            transaction = staged.transaction
+            assert transaction is not None
+
+            result = editor.commit(transaction)
+
+            self.assertEqual(result.status, EditStatus.APPLIED)
+            self.assertIsNone(result.before_hash)
+            self.assertEqual(result.after_hash, sha256(""))
+            self.assertTrue((root / "empty.txt").exists())
+            self.assertEqual((root / "empty.txt").read_bytes(), b"")
+
     def test_creates_new_file_in_nested_workspace_directory(self) -> None:
         with tempfile.TemporaryDirectory() as directory:
             root = Path(directory)

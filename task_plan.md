@@ -10,13 +10,13 @@
 
 ### 当前状态文件基线
 
-- S3.2 production 技术冻结点：`5850b8370c49f868e90aeffe9e6042f85eaa522c`；当前治理 HEAD：`54d18ca2a2192170e408c7448822861acad23828`。
-- S3.2 的配置、身份、SQLite checkpoint、预算边界、start/resume 和现有图接入均已有源码与测试证据；S3 尚未全部完成，当前不能进入 S4。
-- 最新 Codex 本地验证：unittest 169 tests OK / 6 skipped；pytest 163 passed / 6 skipped / 129 subtests passed；Python compile、11 个 prompt render、CLI help、`git diff --check` 均通过。6 个 skip 仅为当前 Windows 普通 symlink 权限限制。
+- S3.2 production 技术冻结点：`5850b8370c49f868e90aeffe9e6042f85eaa522c`；上一治理状态提交：`54d18ca2a2192170e408c7448822861acad23828`。
+- S3.2 的配置、身份、SQLite checkpoint、预算边界、start/resume 和现有图接入均已有源码与测试证据；本轮已实现 MASTER_PLAN §5.2 S1a/D1“编辑最终净零结果”作为 S3 continuation prerequisite；S3 尚未全部完成，当前不能进入 S4。
+- 最新 Codex 本地验证：unittest 175 tests OK / 6 skipped；pytest 169 passed / 6 skipped / 131 subtests passed；Python compile、11 个 prompt render、CLI help、`git diff --check` 均通过。6 个 skip 仅为当前 Windows 普通 symlink 权限限制。
 - 没有 GitHub CI 或独立外部测试证据，不作相应声明。
-- 剩余能力：provider timeout/retry/attempt、secret-safe persistence、EventSink/RunRecord/artifact、workspace locking/policy、write/verification recovery，以及 exactly-once 等仍未实现。
-- 下一技术切片按 MASTER_PLAN §5.2 的 S1a/D1 执行“编辑最终净零结果”，作为 S3 continuation prerequisite；保留现有 S1/S2/S3 历史编号，不重新开启或重命名 S1。
-- MASTER_PLAN 对应：当前实现事实冻结在 S3.2，后续运行控制、轨迹和恢复要求继续按 §5.2 映射执行；本次不推进下一阶段。
+- 剩余能力：provider timeout/retry/attempt、secret-safe persistence、EventSink/RunRecord/artifact、workspace locking/policy、write/verification recovery 等仍未实现；exactly-once 不承诺。
+- 后续技术切片继续按 MASTER_PLAN §5.2 执行；保留现有 S1/S2/S3 历史编号，不重新开启或重命名 S1。
+- MASTER_PLAN 对应：当前实现事实冻结在 S3.2 及本轮 S1a/D1 prerequisite，后续运行控制、轨迹和恢复要求继续按 §5.2 映射执行；本次不推进下一阶段。
 
 ## 当前文档任务：独立 MASTER PLAN（2026-09-16）
 
@@ -445,6 +445,6 @@ CI 或独立外部测试，未作相应声明。
 当前仍未实现：model provider 显式 timeout/retry/attempt 语义、secret-safe
 full-state persistence、EventSink / RunRecord、完整 verification artifact
 spool、workspace/thread 独占、read/write authorization policy、pending-
-write/hash recovery、verification execution recovery 和 exactly-once。
+write/hash recovery、verification execution recovery；exactly-once 不承诺。
 当前不进入 S4；后续继续完成 `MASTER_PLAN` §5.2 中属于运行控制、轨迹和恢复
 的剩余要求，并保留现有 S1/S2/S3.1/S3.2 阶段编号体系。

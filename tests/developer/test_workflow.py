@@ -293,6 +293,57 @@ class DeveloperWorkflowTests(unittest.TestCase):
                 ("task-1.step-1", "task-1.step-2"),
             )
 
+    def test_does_not_advance_when_final_transaction_is_noop(self) -> None:
+        with tempfile.TemporaryDirectory() as directory:
+            root = Path(directory)
+            target = root / "app.py"
+            original = "value = 1\n"
+            target.write_text(original, encoding="utf-8", newline="")
+            executor = DeveloperEditExecutor(WorkspaceEditor(root))
+            plan = ImplementationPlan(
+                tasks=[
+                    ImplementationTask(
+                        file_path="workspace_repo/app.py",
+                        logical_task="抵消连续更新",
+                        atomic_tasks=[
+                            AtomicTask(atomic_task="第一次更新"),
+                            AtomicTask(atomic_task="第二次更新"),
+                            AtomicTask(atomic_task="抵消更新"),
+                        ],
+                    )
+                ]
+            )
+
+            def propose(values):
+                replacements = {
+                    "第一次更新": ("value = 1", "value = 2"),
+                    "第二次更新": ("value = 2", "value = 3"),
+                    "抵消更新": ("value = 3", "value = 1"),
+                }
+                old_text, new_text = replacements[values["task"]]
+                return search_replace_block(old_text, new_text)
+
+            runtime = DeveloperRuntime(
+                edit_executor=lambda: executor,
+                load_codebase_structure=lambda: "app.py",
+                research_atomic_task=lambda _: AIMessage(content="ready"),
+                propose_existing_file_edit=propose,
+                propose_new_file=lambda _: self.fail("new-file model was called"),
+            )
+
+            result = create_developer_workflow(runtime, research_tools=[]).invoke(
+                {"implementation_plan": plan}
+            )
+
+            self.assertEqual(result["current_task_idx"], 0)
+            self.assertEqual(result["last_edit_result"].status, EditStatus.NOOP)
+            self.assertEqual(result["developer_status"], DeveloperStatus.FAILED)
+            self.assertEqual(
+                result["last_edit_result"].task_ids,
+                ("task-1.step-1", "task-1.step-2", "task-1.step-3"),
+            )
+            self.assertEqual(target.read_text(encoding="utf-8"), original)
+
     def test_rejects_entire_same_file_transaction_when_later_edit_fails(self) -> None:
         with tempfile.TemporaryDirectory() as directory:
             root = Path(directory)
