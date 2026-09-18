@@ -98,6 +98,8 @@ __all__ = [
     "DurableCallResult",
     "DurableRunResult",
     "DurableRunStatus",
+    "RunSummary",
+    "run_exit_code",
     "GraphCheckpointLookup",
     "create_durable_workflow",
     "durable_recursion_limit",
@@ -111,6 +113,8 @@ def __getattr__(name: str) -> Any:
     if name in {
         "DurableRunResult",
         "DurableRunStatus",
+        "RunSummary",
+        "run_exit_code",
         "GraphCheckpointLookup",
         "create_durable_workflow",
         "durable_recursion_limit",

@@ -32,7 +32,7 @@ from agent.runtime.identity import (
     preflight_start,
 )
 from agent.runtime.semantics import semantic_config_digest
-from agent.workspace import workspace_root_scope
+from agent.workspace import WorkspaceRootError, workspace_root_scope
 
 GraphFactory = Callable[[RunConfig, str, SqliteSaver, Callable[[], float]], Any]
 
@@ -45,12 +45,64 @@ class DurableRunStatus(str, Enum):
 
 
 @dataclass(frozen=True, slots=True)
+class RunSummary:
+    """Small versioned boundary between a run and external callers."""
+
+    schema_version: int
+    runtime_status: DurableRunStatus
+    workflow_outcome: str | None
+    verification_status: str | None
+    error_code: str | None
+    run_id: str
+    record_ref: str | None = None
+
+    def __post_init__(self) -> None:
+        if self.schema_version != 1:
+            raise ValueError("Unsupported run summary schema version.")
+        if not isinstance(self.runtime_status, DurableRunStatus):
+            raise ValueError("runtime_status must be DurableRunStatus.")
+        if not isinstance(self.run_id, str) or not self.run_id.strip():
+            raise ValueError("run_id must be a non-empty string.")
+        object.__setattr__(self, "run_id", self.run_id.strip())
+        if self.record_ref is not None and not isinstance(self.record_ref, str):
+            raise ValueError("record_ref must be a string or None.")
+
+    def to_dict(self) -> dict[str, object | None]:
+        return {
+            "schema_version": self.schema_version,
+            "runtime_status": self.runtime_status.value,
+            "workflow_outcome": self.workflow_outcome,
+            "verification_status": self.verification_status,
+            "error_code": self.error_code,
+            "run_id": self.run_id,
+            "record_ref": self.record_ref,
+        }
+
+
+@dataclass(frozen=True, slots=True)
 class DurableRunResult:
     status: DurableRunStatus
     state: Mapping[str, Any] | None = None
     error_code: str | None = None
     message: str = ""
     preflight: PreflightResult | None = None
+    run_id: str | None = None
+
+    @property
+    def summary(self) -> RunSummary:
+        state = self.state or {}
+        identity = state.get("run_identity")
+        run_id = self.run_id or getattr(identity, "run_id", None) or "unknown"
+        return RunSummary(
+            schema_version=1,
+            runtime_status=self.status,
+            workflow_outcome=_summary_value(state.get("outcome")),
+            verification_status=_summary_value(
+                state.get("verification_status")
+            ),
+            error_code=_summary_value(self.error_code),
+            run_id=run_id,
+        )
 
     @property
     def accepted(self) -> bool:
@@ -58,6 +110,35 @@ class DurableRunResult:
             DurableRunStatus.REJECTED,
             DurableRunStatus.FAILED,
         }
+
+
+def run_exit_code(summary: RunSummary) -> int:
+    """Map a public summary to the conservative local CLI exit contract."""
+    if summary.runtime_status is DurableRunStatus.PAUSED:
+        return 3
+    if (
+        summary.runtime_status is DurableRunStatus.REJECTED
+        or summary.error_code is not None
+    ):
+        return 2
+    if (
+        summary.runtime_status is DurableRunStatus.FAILED
+        and summary.workflow_outcome is None
+    ):
+        return 2
+    if (
+        summary.runtime_status is DurableRunStatus.COMPLETED
+        and summary.workflow_outcome == "completed"
+        and summary.verification_status == "verified"
+    ):
+        return 0
+    return 1
+
+
+def _summary_value(value: object) -> str | None:
+    if value is None:
+        return None
+    return value.value if isinstance(value, Enum) else str(value)
 
 
 def durable_recursion_limit(max_steps: int) -> int:
@@ -121,98 +202,172 @@ def _run(
             DurableRunStatus.REJECTED,
             error_code="run_config_mismatch",
             message="The request digest does not match the supplied RunConfig.",
+            run_id=request.identity.run_id,
         )
-    if request.identity.workspace != WorkspaceIdentity.from_root(config.workspace_root):
+    try:
+        live_workspace = WorkspaceIdentity.from_root(config.workspace_root)
+    except WorkspaceRootError as error:
+        return DurableRunResult(
+            DurableRunStatus.REJECTED,
+            error_code="workspace_error",
+            message=str(error),
+            run_id=request.identity.run_id,
+        )
+    if request.identity.workspace != live_workspace:
         return DurableRunResult(
             DurableRunStatus.REJECTED,
             error_code="workspace_mismatch",
             message="The request workspace does not match the supplied RunConfig.",
+            run_id=request.identity.run_id,
         )
-    config.runtime_root.mkdir(parents=True, exist_ok=True)
-    database = config.runtime_root / "checkpoints.sqlite"
-    connection = sqlite3.connect(database, check_same_thread=False)
     try:
-        saver = SqliteSaver(connection, serde=checkpoint_serializer())
-        saver.setup()
-        factory = graph_factory or create_durable_workflow
-        graph = factory(config, request.identity.run_id, saver, clock)
-        thread_config = _thread_config(request.identity.thread_id, config.max_steps)
-        lookup = GraphCheckpointLookup(graph, thread_config)
-        preflight = (
-            preflight_resume(request, lookup)
-            if resume
-            else preflight_start(request, lookup)
-        )
-        if not preflight.accepted:
-            return DurableRunResult(
-                DurableRunStatus.REJECTED,
-                error_code=(
-                    preflight.error_code.value if preflight.error_code else None
-                ),
-                message=preflight.message,
-                preflight=preflight,
-            )
-
-        if resume:
-            uncertain = mark_uncertain_dispatch(graph, thread_config)
-            if uncertain is not None:
-                return DurableRunResult(
-                    DurableRunStatus.REJECTED,
-                    state=uncertain,
-                    error_code=BudgetErrorCode.OUTCOME_UNKNOWN.value,
-                    message=(
-                        "An in-flight external call has no durable result; "
-                        "it will not be replayed."
-                    ),
-                    preflight=preflight,
-                )
-            graph_input = None
-        else:
-            assert initial_state is not None
-            graph_input = {
-                **initial_state,
-                "run_identity": request.identity,
-                "run_config_digest": request.run_config_digest,
-                "agent_revision": request.agent_revision,
-                "budget": BudgetSnapshot.create(
-                    max_steps=config.max_steps,
-                    max_cost_usd=config.max_cost_usd,
-                    deadline_at=clock() + config.timeout_seconds,
-                ),
-            }
-        with workspace_root_scope(config.workspace_root):
-            result = graph.invoke(
-                graph_input,
-                thread_config,
-                durability="sync",
-            )
-        snapshot = graph.get_state(thread_config)
-        runtime_error = (
-            result.get("runtime_error_code")
-            if isinstance(result, Mapping)
-            else None
-        )
-        if runtime_error is not None:
-            code = (
-                runtime_error.value
-                if hasattr(runtime_error, "value")
-                else str(runtime_error)
-            )
-            return DurableRunResult(
-                DurableRunStatus.FAILED,
-                state=result,
-                error_code=code,
-                message=str(result.get("runtime_message", "")),
-                preflight=preflight,
-            )
-        status = DurableRunStatus.PAUSED if snapshot.next else DurableRunStatus.COMPLETED
-        return DurableRunResult(status, state=result, preflight=preflight)
-    except Exception as error:
+        config.runtime_root.mkdir(parents=True, exist_ok=True)
+    except OSError as error:
         return DurableRunResult(
             DurableRunStatus.FAILED,
-            error_code="graph_execution_failed",
+            error_code="runtime_root_error",
             message=str(error),
+            run_id=request.identity.run_id,
         )
+    database = config.runtime_root / "checkpoints.sqlite"
+    try:
+        connection = sqlite3.connect(database, check_same_thread=False)
+    except (OSError, sqlite3.Error) as error:
+        return DurableRunResult(
+            DurableRunStatus.FAILED,
+            error_code="sqlite_error",
+            message=str(error),
+            run_id=request.identity.run_id,
+        )
+    try:
+        try:
+            saver = SqliteSaver(connection, serde=checkpoint_serializer())
+            saver.setup()
+        except (OSError, sqlite3.Error) as error:
+            return DurableRunResult(
+                DurableRunStatus.FAILED,
+                error_code="sqlite_error",
+                message=str(error),
+                run_id=request.identity.run_id,
+            )
+        try:
+            factory = graph_factory or create_durable_workflow
+            graph = factory(config, request.identity.run_id, saver, clock)
+            thread_config = _thread_config(
+                request.identity.thread_id, config.max_steps
+            )
+            lookup = GraphCheckpointLookup(graph, thread_config)
+            preflight = (
+                preflight_resume(request, lookup)
+                if resume
+                else preflight_start(request, lookup)
+            )
+            if not preflight.accepted:
+                return DurableRunResult(
+                    DurableRunStatus.REJECTED,
+                    error_code=(
+                        preflight.error_code.value
+                        if preflight.error_code
+                        else None
+                    ),
+                    message=preflight.message,
+                    preflight=preflight,
+                    run_id=request.identity.run_id,
+                )
+
+            if resume:
+                uncertain = mark_uncertain_dispatch(graph, thread_config)
+                if uncertain is not None:
+                    return DurableRunResult(
+                        DurableRunStatus.REJECTED,
+                        state=uncertain,
+                        error_code=BudgetErrorCode.OUTCOME_UNKNOWN.value,
+                        message=(
+                            "An in-flight external call has no durable result; "
+                            "it will not be replayed."
+                        ),
+                        preflight=preflight,
+                        run_id=request.identity.run_id,
+                    )
+                graph_input = None
+            else:
+                assert initial_state is not None
+                graph_input = {
+                    **initial_state,
+                    "run_identity": request.identity,
+                    "run_config_digest": request.run_config_digest,
+                    "agent_revision": request.agent_revision,
+                    "budget": BudgetSnapshot.create(
+                        max_steps=config.max_steps,
+                        max_cost_usd=config.max_cost_usd,
+                        deadline_at=clock() + config.timeout_seconds,
+                    ),
+                }
+            with workspace_root_scope(config.workspace_root):
+                result = graph.invoke(
+                    graph_input,
+                    thread_config,
+                    durability="sync",
+                )
+            snapshot = graph.get_state(thread_config)
+            runtime_error = (
+                result.get("runtime_error_code")
+                if isinstance(result, Mapping)
+                else None
+            )
+            if runtime_error is not None:
+                code = (
+                    runtime_error.value
+                    if hasattr(runtime_error, "value")
+                    else str(runtime_error)
+                )
+                return DurableRunResult(
+                    DurableRunStatus.FAILED,
+                    state=result,
+                    error_code=code,
+                    message=str(result.get("runtime_message", "")),
+                    preflight=preflight,
+                    run_id=request.identity.run_id,
+                )
+            status = (
+                DurableRunStatus.PAUSED
+                if snapshot.next
+                else DurableRunStatus.COMPLETED
+            )
+            return DurableRunResult(
+                status,
+                state=result,
+                preflight=preflight,
+                run_id=request.identity.run_id,
+            )
+        except sqlite3.Error as error:
+            return DurableRunResult(
+                DurableRunStatus.FAILED,
+                error_code="sqlite_error",
+                message=str(error),
+                run_id=request.identity.run_id,
+            )
+        except OSError as error:
+            return DurableRunResult(
+                DurableRunStatus.FAILED,
+                error_code="runtime_io_error",
+                message=str(error),
+                run_id=request.identity.run_id,
+            )
+        except WorkspaceRootError as error:
+            return DurableRunResult(
+                DurableRunStatus.REJECTED,
+                error_code="workspace_error",
+                message=str(error),
+                run_id=request.identity.run_id,
+            )
+        except RuntimeError as error:
+            return DurableRunResult(
+                DurableRunStatus.FAILED,
+                error_code="runtime_error",
+                message=str(error),
+                run_id=request.identity.run_id,
+            )
     finally:
         connection.close()
 
