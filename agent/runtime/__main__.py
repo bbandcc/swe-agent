@@ -95,10 +95,6 @@ def main(argv: list[str] | None = None) -> int:
         return _emit_summary(
             _entry_error(args.run_id, DurableRunStatus.FAILED, "sqlite_error")
         )
-    except RuntimeError:
-        return _emit_summary(
-            _entry_error(args.run_id, DurableRunStatus.FAILED, "runtime_error")
-        )
     except OSError:
         return _emit_summary(
             _entry_error(

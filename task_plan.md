@@ -11,8 +11,9 @@
 ### 当前状态文件基线
 
 - S3.2 production 技术冻结点：`5850b8370c49f868e90aeffe9e6042f85eaa522c`；本轮继续完成 S3 continuation 的 D1/S1a 与 D2/S2b prerequisite。
-- S3.2 的配置、身份、SQLite checkpoint、预算边界、start/resume 和现有图接入均已有源码与测试证据；D1/S1a“编辑最终净零结果”和 D2/S2b“对外结果契约”已有源码与测试证据；S3 尚未全部完成，当前不能进入 S4。
-- 最新 Codex 本地验证：unittest 184 tests OK / 6 skipped；pytest 178 passed / 6 skipped / 147 subtests passed；Python compile、11 个 prompt render、CLI help、`git diff --check` 均通过。6 个 skip 仅为当前 Windows 普通 symlink 权限限制。
+- S3.2 的配置、身份、SQLite checkpoint、预算边界、start/resume 和现有图接入均已有源码与测试证据；D1/S1a“编辑最终净零结果”和 D2/S2b“对外结果契约”及本轮 Final Seal 已有源码与测试证据；S3 尚未全部完成，当前不能进入 S4。
+- D2/S2b Final Seal 已收窄 library/CLI 的异常边界；`RunSummary.warnings` 只输出 preflight warning code，unexpected `RuntimeError`、`KeyboardInterrupt` 和 `SystemExit` 不被入口吞掉。
+- 最新 Codex 本地验证：unittest 187 tests OK / 6 skipped；pytest 181 passed / 6 skipped / 147 subtests passed；Python compile、11 个 prompt render、CLI help、`git diff --check` 均通过。6 个 skip 仅为当前 Windows 普通 symlink 权限限制。
 - 没有 GitHub CI 或独立外部测试证据，不作相应声明。
 - 剩余能力：provider timeout/retry/attempt、secret-safe persistence、EventSink/RunRecord/artifact、workspace locking/policy、write/verification recovery 等仍未实现；exactly-once 不承诺。
 - 后续技术切片继续按 MASTER_PLAN §5.2 执行；保留现有 S1/S2/S3 历史编号，不重新开启或重命名 S1。

@@ -55,6 +55,7 @@ class RunSummary:
     error_code: str | None
     run_id: str
     record_ref: str | None = None
+    warnings: tuple[str, ...] = ()
 
     def __post_init__(self) -> None:
         if self.schema_version != 1:
@@ -66,6 +67,19 @@ class RunSummary:
         object.__setattr__(self, "run_id", self.run_id.strip())
         if self.record_ref is not None and not isinstance(self.record_ref, str):
             raise ValueError("record_ref must be a string or None.")
+        if isinstance(self.warnings, (str, bytes)):
+            raise ValueError("warnings must contain warning codes.")
+        try:
+            warning_codes = tuple(self.warnings)
+        except TypeError as error:
+            raise ValueError("warnings must contain warning codes.") from error
+        normalized_warnings: list[str] = []
+        for warning in warning_codes:
+            code = _warning_code(warning)
+            if code is None:
+                raise ValueError("warnings must contain non-empty codes.")
+            normalized_warnings.append(code)
+        object.__setattr__(self, "warnings", tuple(normalized_warnings))
 
     def to_dict(self) -> dict[str, object | None]:
         return {
@@ -76,6 +90,7 @@ class RunSummary:
             "error_code": self.error_code,
             "run_id": self.run_id,
             "record_ref": self.record_ref,
+            "warnings": list(self.warnings),
         }
 
 
@@ -102,6 +117,7 @@ class DurableRunResult:
             ),
             error_code=_summary_value(self.error_code),
             run_id=run_id,
+            warnings=_preflight_warning_codes(self.preflight),
         )
 
     @property
@@ -139,6 +155,27 @@ def _summary_value(value: object) -> str | None:
     if value is None:
         return None
     return value.value if isinstance(value, Enum) else str(value)
+
+
+def _preflight_warning_codes(
+    preflight: PreflightResult | None,
+) -> tuple[str, ...]:
+    if preflight is None:
+        return ()
+    codes: list[str] = []
+    for warning in preflight.warnings:
+        code = _warning_code(warning.code)
+        if code is not None:
+            codes.append(code)
+    return tuple(codes)
+
+
+def _warning_code(value: object) -> str | None:
+    if isinstance(value, Enum):
+        value = value.value
+    if not isinstance(value, str) or not value.strip():
+        return None
+    return value.strip()
 
 
 def durable_recursion_limit(max_steps: int) -> int:
@@ -358,13 +395,6 @@ def _run(
             return DurableRunResult(
                 DurableRunStatus.REJECTED,
                 error_code="workspace_error",
-                message=str(error),
-                run_id=request.identity.run_id,
-            )
-        except RuntimeError as error:
-            return DurableRunResult(
-                DurableRunStatus.FAILED,
-                error_code="runtime_error",
                 message=str(error),
                 run_id=request.identity.run_id,
             )

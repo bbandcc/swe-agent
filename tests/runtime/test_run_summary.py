@@ -13,12 +13,17 @@ from unittest.mock import patch
 from agent.outcome import WorkflowOutcome
 from agent.runtime import (
     AgentCodeRevision,
+    AgentRevisionReason,
     AgentRevisionStatus,
     DurableRunResult,
     DurableRunStatus,
     RunConfigError,
     RunConfigErrorCode,
     RunIdentity,
+    PreflightResult,
+    PreflightStatus,
+    PreflightWarning,
+    PreflightWarningCode,
     StartRequest,
     RunSummary,
     WorkspaceIdentity,
@@ -39,6 +44,7 @@ def durable_result(
     verification: VerificationStatus | None = None,
     error_code: str | None = None,
     run_id: str = "run-1",
+    preflight: PreflightResult | None = None,
 ) -> DurableRunResult:
     return DurableRunResult(
         status=status,
@@ -47,6 +53,7 @@ def durable_result(
             "verification_status": verification,
         },
         error_code=error_code,
+        preflight=preflight,
         run_id=run_id,
     )
 
@@ -72,9 +79,34 @@ class RunSummaryTests(RunConfigTestCase):
                 "error_code": None,
                 "run_id": "run-1",
                 "record_ref": None,
+                "warnings": [],
             },
         )
         self.assertEqual(run_exit_code(summary), 0)
+
+    def test_summary_exposes_preflight_warning_codes_only(self) -> None:
+        result = durable_result(
+            DurableRunStatus.COMPLETED,
+            outcome=WorkflowOutcome.COMPLETED,
+            verification=VerificationStatus.VERIFIED,
+            preflight=PreflightResult(
+                status=PreflightStatus.ACCEPTED,
+                warnings=(
+                    PreflightWarning(
+                        code=PreflightWarningCode.AGENT_REVISION_UNVERIFIED,
+                        message="secret-bearing diagnostic text must not escape",
+                    ),
+                ),
+            ),
+        )
+
+        summary = result.summary
+
+        self.assertEqual(summary.warnings, ("agent_revision_unverified",))
+        self.assertEqual(
+            summary.to_dict()["warnings"], ["agent_revision_unverified"]
+        )
+        self.assertNotIn("secret-bearing", json.dumps(summary.to_dict()))
 
     def test_exit_code_mapping_is_conservative(self) -> None:
         cases = (
@@ -312,6 +344,66 @@ class RunSummaryTests(RunConfigTestCase):
             self.assertEqual(payload["error_code"], "sqlite_error")
             self.assertEqual(payload["runtime_status"], "failed")
 
+    def test_cli_exposes_unknown_revision_warning_code(self) -> None:
+        with tempfile.TemporaryDirectory() as directory:
+            config = self.make_config(Path(directory), verification_specs=())
+            result = durable_result(
+                DurableRunStatus.COMPLETED,
+                outcome=WorkflowOutcome.COMPLETED,
+                verification=VerificationStatus.VERIFIED,
+                preflight=PreflightResult(
+                    status=PreflightStatus.ACCEPTED,
+                    warnings=(
+                        PreflightWarning(
+                            code=PreflightWarningCode.AGENT_REVISION_UNVERIFIED,
+                            message="do not expose this message",
+                        ),
+                    ),
+                ),
+            )
+            with (
+                patch(
+                    "agent.runtime.__main__.load_run_config",
+                    return_value=config,
+                ),
+                patch(
+                    "agent.runtime.__main__.semantic_config_digest",
+                    return_value="b" * 64,
+                ),
+                patch(
+                    "agent.runtime.__main__.detect_agent_code_revision",
+                    return_value=AgentCodeRevision(
+                        None,
+                        AgentRevisionStatus.UNKNOWN,
+                        AgentRevisionReason.DIRTY,
+                    ),
+                ),
+                patch(
+                    "agent.runtime.__main__.start_run",
+                    return_value=result,
+                ),
+            ):
+                output = io.StringIO()
+                with redirect_stdout(output):
+                    code = main(
+                        [
+                            "start",
+                            "--run-id",
+                            "run-1",
+                            "--thread-id",
+                            "thread-1",
+                            "--task-id",
+                            "task-1",
+                            "--task",
+                            "inspect",
+                        ]
+                    )
+
+            payload = json.loads(output.getvalue())
+            self.assertEqual(code, 0)
+            self.assertEqual(payload["warnings"], ["agent_revision_unverified"])
+            self.assertNotIn("do not expose", output.getvalue())
+
     def test_cli_workspace_exception_is_structured(self) -> None:
         with tempfile.TemporaryDirectory() as directory:
             config = self.make_config(Path(directory), verification_specs=())
@@ -401,6 +493,55 @@ class RunSummaryTests(RunConfigTestCase):
                     {"value": 0},
                     graph_factory=exits,
                 )
+
+            def fails(*_args):
+                raise RuntimeError("unexpected graph programming failure")
+
+            with self.assertRaises(RuntimeError):
+                start_run(
+                    config,
+                    request,
+                    {"value": 0},
+                    graph_factory=fails,
+                )
+
+    def test_cli_does_not_swallow_unexpected_runtime_error(self) -> None:
+        with tempfile.TemporaryDirectory() as directory:
+            config = self.make_config(Path(directory), verification_specs=())
+            with (
+                patch(
+                    "agent.runtime.__main__.load_run_config",
+                    return_value=config,
+                ),
+                patch(
+                    "agent.runtime.__main__.semantic_config_digest",
+                    return_value="b" * 64,
+                ),
+                patch(
+                    "agent.runtime.__main__.detect_agent_code_revision",
+                    return_value=AgentCodeRevision(
+                        "a" * 40, AgentRevisionStatus.KNOWN
+                    ),
+                ),
+                patch(
+                    "agent.runtime.__main__.start_run",
+                    side_effect=RuntimeError("unexpected graph programming failure"),
+                ),
+            ):
+                with self.assertRaises(RuntimeError):
+                    main(
+                        [
+                            "start",
+                            "--run-id",
+                            "run-1",
+                            "--thread-id",
+                            "thread-1",
+                            "--task-id",
+                            "task-1",
+                            "--task",
+                            "inspect",
+                        ]
+                    )
 
     def test_subprocess_cli_invalid_config_emits_json_and_exit_two(self) -> None:
         environment = os.environ.copy()

@@ -619,7 +619,11 @@ class DurableRuntimeTests(RunConfigTestCase):
             request = self.request(config)
             factory = NestedCrashFactory(interrupt_after="reserve_model")
             started = start_run(
-                config, request, {"value": 0}, graph_factory=factory, clock=lambda: 100.0
+                config,
+                request,
+                {"value": 0},
+                graph_factory=factory,
+                clock=lambda: 100.0,
             )
             resumed = resume_run(
                 config,
@@ -689,9 +693,14 @@ class DurableRuntimeTests(RunConfigTestCase):
             request = self.request(config)
             factory = CrashingFactory()
 
-            started = start_run(
-                config, request, {"value": 0}, graph_factory=factory, clock=lambda: 100.0
-            )
+            with self.assertRaises(RuntimeError):
+                start_run(
+                    config,
+                    request,
+                    {"value": 0},
+                    graph_factory=factory,
+                    clock=lambda: 100.0,
+                )
             resumed = resume_run(
                 config,
                 ResumeRequest(request.identity, request.run_config_digest, request.agent_revision),
@@ -699,7 +708,6 @@ class DurableRuntimeTests(RunConfigTestCase):
                 clock=lambda: 110.0,
             )
 
-            self.assertEqual(started.status, DurableRunStatus.FAILED)
             self.assertEqual(resumed.error_code, "outcome_unknown")
             self.assertEqual(factory.dispatches, 1)
 
