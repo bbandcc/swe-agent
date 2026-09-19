@@ -124,6 +124,23 @@ class SemanticConfigDigestTests(RunConfigTestCase):
                         second_spec,
                     ),
                 ),
+                "verification_report_path": replace(
+                    config,
+                    verification_specs=(
+                        replace(first_spec, report_path="report.xml"),
+                        second_spec,
+                    ),
+                ),
+                "verification_allowed_failures": replace(
+                    config,
+                    verification_specs=(
+                        replace(
+                            first_spec,
+                            allowed_failure_case_ids=("legacy",),
+                        ),
+                        second_spec,
+                    ),
+                ),
                 "run_timeout": replace(config, timeout_seconds=901),
                 "max_steps": replace(config, max_steps=41),
                 "max_cost": replace(

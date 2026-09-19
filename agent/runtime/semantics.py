@@ -50,6 +50,8 @@ def _semantic_config_payload(config: RunConfig) -> dict[str, Any]:
                 "cwd": spec.cwd,
                 "timeout_seconds": _number_text(spec.timeout_seconds),
                 "max_output_bytes": spec.max_output_bytes,
+                "report_path": spec.report_path,
+                "allowed_failure_case_ids": list(spec.allowed_failure_case_ids),
             }
             for spec in config.verification_specs
         ],

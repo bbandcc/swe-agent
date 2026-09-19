@@ -51,12 +51,47 @@ from agent.runtime.durable import (
     start_run,
 )
 from agent.verification import (
+    REPORT_SCHEMA,
+    VerificationCase,
+    VerificationCaseStatus,
     VerificationCheckStatus,
+    VerificationReport,
     VerificationResult,
     VerificationSpec,
     VerificationStatus,
 )
 from tests.runtime._config_support import RunConfigTestCase
+
+
+def structured_result(
+    spec: VerificationSpec,
+    status: VerificationCheckStatus,
+    *,
+    stderr: str = "",
+) -> VerificationResult:
+    return VerificationResult.create(
+        name=spec.name,
+        argv=spec.argv,
+        cwd=spec.cwd,
+        status=status,
+        exit_code=0 if status is VerificationCheckStatus.PASS else 1,
+        stderr=stderr,
+        report=VerificationReport(
+            check_id=spec.name,
+            report_schema=REPORT_SCHEMA,
+            cases=(
+                VerificationCase(
+                    check_id=spec.name,
+                    case_id="case",
+                    status=(
+                        VerificationCaseStatus.PASS
+                        if status is VerificationCheckStatus.PASS
+                        else VerificationCaseStatus.FAIL
+                    ),
+                ),
+            ),
+        ),
+    )
 
 
 class TinyState(DurableBudgetState):
@@ -488,14 +523,9 @@ class DurableRuntimeTests(RunConfigTestCase):
 
                 def run(self, configured: VerificationSpec) -> VerificationResult:
                     status = next(self.statuses)
-                    return VerificationResult.create(
-                        name=configured.name,
-                        argv=configured.argv,
-                        cwd=configured.cwd,
-                        status=status,
-                        exit_code=(
-                            0 if status is VerificationCheckStatus.PASS else 1
-                        ),
+                    return structured_result(
+                        configured,
+                        status,
                         stderr=(
                             "regression"
                             if status is VerificationCheckStatus.FAIL

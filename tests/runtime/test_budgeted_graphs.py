@@ -28,7 +28,11 @@ from agent.runtime import (
 from agent.graph import create_workflow_graph
 from agent.outcome import WorkflowOutcome
 from agent.verification import (
+    REPORT_SCHEMA,
+    VerificationCase,
+    VerificationCaseStatus,
     VerificationCheckStatus,
+    VerificationReport,
     VerificationResult,
     VerificationSpec,
 )
@@ -51,6 +55,37 @@ def ready_plan() -> ImplementationPlan:
                 atomic_tasks=[AtomicTask(atomic_task="change", additional_context="")],
             )
         ]
+    )
+
+
+def structured_result(
+    spec: VerificationSpec,
+    status: VerificationCheckStatus,
+    *,
+    stderr: str = "",
+) -> VerificationResult:
+    return VerificationResult.create(
+        name=spec.name,
+        argv=spec.argv,
+        cwd=spec.cwd,
+        status=status,
+        exit_code=0 if status is VerificationCheckStatus.PASS else 1,
+        stderr=stderr,
+        report=VerificationReport(
+            check_id=spec.name,
+            report_schema=REPORT_SCHEMA,
+            cases=(
+                VerificationCase(
+                    check_id=spec.name,
+                    case_id="case",
+                    status=(
+                        VerificationCaseStatus.PASS
+                        if status is VerificationCheckStatus.PASS
+                        else VerificationCaseStatus.FAIL
+                    ),
+                ),
+            ),
+        ),
     )
 
 
@@ -348,13 +383,7 @@ class BudgetedGraphTests(unittest.TestCase):
 
                 def run(self, spec):
                     self.calls += 1
-                    return VerificationResult.create(
-                        name=spec.name,
-                        argv=spec.argv,
-                        cwd=spec.cwd,
-                        status=VerificationCheckStatus.PASS,
-                        exit_code=0,
-                    )
+                    return structured_result(spec, VerificationCheckStatus.PASS)
 
             runner = Runner()
             result = create_workflow_graph(
@@ -502,13 +531,7 @@ class BudgetedGraphTests(unittest.TestCase):
 
                 def run(self, spec):
                     self.calls += 1
-                    return VerificationResult.create(
-                        name=spec.name,
-                        argv=spec.argv,
-                        cwd=spec.cwd,
-                        status=VerificationCheckStatus.PASS,
-                        exit_code=0,
-                    )
+                    return structured_result(spec, VerificationCheckStatus.PASS)
 
             runner = Runner()
 
@@ -780,13 +803,12 @@ class BudgetedGraphTests(unittest.TestCase):
 
                 def run(self, spec):
                     status = next(self.statuses)
-                    return VerificationResult.create(
-                        name=spec.name,
-                        argv=spec.argv,
-                        cwd=spec.cwd,
-                        status=status,
-                        exit_code=0 if status is VerificationCheckStatus.PASS else 1,
-                        stderr="regression" if status is VerificationCheckStatus.FAIL else "",
+                    return structured_result(
+                        spec,
+                        status,
+                        stderr="regression"
+                        if status is VerificationCheckStatus.FAIL
+                        else "",
                     )
 
             architect = create_architect_workflow(

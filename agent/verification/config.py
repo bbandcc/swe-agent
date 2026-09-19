@@ -15,6 +15,8 @@ _ALLOWED_KEYS = {
     "cwd",
     "timeout_seconds",
     "max_output_bytes",
+    "report_path",
+    "allowed_failure_case_ids",
 }
 
 
@@ -50,6 +52,8 @@ def _parse_spec(value: Any, index: int) -> VerificationSpec:
     cwd = value.get("cwd", ".")
     timeout = value.get("timeout_seconds", 60.0)
     output_limit = value.get("max_output_bytes", 20_000)
+    report_path = value.get("report_path")
+    allowed_failure_case_ids = value.get("allowed_failure_case_ids", [])
     if not isinstance(name, str) or not name.strip():
         raise ValueError(f"{label}.name must be a non-empty string.")
     if (
@@ -68,10 +72,27 @@ def _parse_spec(value: Any, index: int) -> VerificationSpec:
         )
     if isinstance(output_limit, bool) or not isinstance(output_limit, int):
         raise ValueError(f"{label}.max_output_bytes must be an integer.")
+    if report_path is not None and (
+        not isinstance(report_path, str) or not report_path.strip()
+    ):
+        raise ValueError(f"{label}.report_path must be a non-empty string or null.")
+    if (
+        not isinstance(allowed_failure_case_ids, list)
+        or any(
+            not isinstance(item, str) or not item.strip()
+            for item in allowed_failure_case_ids
+        )
+        or len(set(allowed_failure_case_ids)) != len(allowed_failure_case_ids)
+    ):
+        raise ValueError(
+            f"{label}.allowed_failure_case_ids must be a unique string array."
+        )
     return VerificationSpec(
         name=name,
         argv=tuple(argv),
         cwd=cwd,
         timeout_seconds=float(timeout),
         max_output_bytes=output_limit,
+        report_path=report_path,
+        allowed_failure_case_ids=tuple(allowed_failure_case_ids),
     )

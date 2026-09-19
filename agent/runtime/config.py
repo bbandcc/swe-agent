@@ -301,6 +301,25 @@ def _validate_verification_spec(spec: VerificationSpec) -> None:
         "verification timeout_seconds",
     )
     _require_positive_integer(spec.max_output_bytes, "max_output_bytes")
+    if spec.report_path is not None and (
+        not isinstance(spec.report_path, str)
+        or not spec.report_path.strip()
+        or "\x00" in spec.report_path
+    ):
+        raise RunConfigError(
+            RunConfigErrorCode.INVALID_VALUE,
+            "Verification report_path must be a valid path.",
+        )
+    if any(
+        not isinstance(item, str) or not item.strip()
+        for item in spec.allowed_failure_case_ids
+    ) or len(set(spec.allowed_failure_case_ids)) != len(
+        spec.allowed_failure_case_ids
+    ):
+        raise RunConfigError(
+            RunConfigErrorCode.INVALID_VALUE,
+            "Verification allowed failure case IDs must be unique strings.",
+        )
 
 
 def _load_pricing(environ: Mapping[str, str]) -> TokenPricing | None:

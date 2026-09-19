@@ -14,9 +14,13 @@ from agent.editing import EditErrorCode, EditResult, EditStatus, WorkspaceEditor
 from agent.graph import AgentState, WorkflowOutcome, create_workflow_graph
 from agent.runtime import BudgetErrorCode, BudgetSnapshot
 from agent.verification import (
+    REPORT_SCHEMA,
+    VerificationCase,
+    VerificationCaseStatus,
     VerificationCheckStatus,
     VerificationRunner,
     VerificationResult,
+    VerificationReport,
     VerificationSpec,
     VerificationStatus,
 )
@@ -52,10 +56,16 @@ def file_check(*, timeout_seconds: float = 2) -> VerificationSpec:
             (
                 "from pathlib import Path; import sys; "
                 "text=Path('app.py').read_text(encoding='utf-8'); "
-                "sys.exit(1 if 'BROKEN' in text else 0)"
+                "failed='BROKEN' in text; "
+                "Path('report.xml').write_text("
+                "'<testsuite><testcase classname=\"app\" name=\"file\"'"
+                "+ ('><failure/></testcase></testsuite>' if failed else ' /></testsuite>'), "
+                "encoding='utf-8'); "
+                "sys.exit(1 if failed else 0)"
             ),
         ),
         timeout_seconds=timeout_seconds,
+        report_path="report.xml",
     )
 
 
@@ -96,6 +106,21 @@ class _SequenceRunner:
                 "failure"
                 if status is not VerificationCheckStatus.PASS
                 else ""
+            ),
+            report=VerificationReport(
+                check_id=spec.name,
+                report_schema=REPORT_SCHEMA,
+                cases=(
+                    VerificationCase(
+                        check_id=spec.name,
+                        case_id="case",
+                        status=(
+                            VerificationCaseStatus.PASS
+                            if status is VerificationCheckStatus.PASS
+                            else VerificationCaseStatus.FAIL
+                        ),
+                    ),
+                ),
             ),
         )
 
@@ -447,10 +472,14 @@ class VerificationWorkflowTests(unittest.TestCase):
                     "-c",
                     (
                         "from pathlib import Path; import sys; "
-                        "sys.exit(1 if 'BROKEN' in "
-                        "Path('b.py').read_text(encoding='utf-8') else 0)"
+                        "failed='BROKEN' in Path('b.py').read_text(encoding='utf-8'); "
+                        "Path('report.xml').write_text("
+                        "'<testsuite><testcase classname=\"app\" name=\"file\"'"
+                        "+ ('><failure/></testcase></testsuite>' if failed else ' /></testsuite>'), "
+                        "encoding='utf-8'); sys.exit(1 if failed else 0)"
                     ),
                 ),
+                report_path="report.xml",
             )
             result = create_workflow_graph(
                 architect=lambda _: {"implementation_plan": initial_plan},
@@ -497,10 +526,15 @@ class VerificationWorkflowTests(unittest.TestCase):
                         "from pathlib import Path; import sys; "
                         "text=Path('app.py').read_text(); "
                         "print('x' * 500); print('y' * 500, file=sys.stderr); "
-                        "sys.exit(1 if 'BROKEN' in text else 0)"
+                        "failed='BROKEN' in text; "
+                        "Path('report.xml').write_text("
+                        "'<testsuite><testcase classname=\"app\" name=\"file\"'"
+                        "+ ('><failure/></testcase></testsuite>' if failed else ' /></testsuite>'), "
+                        "encoding='utf-8'); sys.exit(1 if failed else 0)"
                     ),
                 ),
                 max_output_bytes=96,
+                report_path="report.xml",
             )
 
             result = run_parent(

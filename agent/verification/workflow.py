@@ -91,6 +91,16 @@ class VerificationController:
                 ),
                 "outcome": WorkflowOutcome.FAILED,
             }
+        if _has_evidence_problem(results):
+            return {
+                **initial,
+                "baseline_verification": results,
+                "verification_status": VerificationStatus.EVIDENCE_INSUFFICIENT,
+                "verification_message": (
+                    "Baseline verification did not produce a valid structured report."
+                ),
+                "outcome": WorkflowOutcome.FAILED,
+            }
         return {
             **initial,
             "baseline_verification": results,
@@ -159,7 +169,10 @@ class VerificationController:
         }
 
     def route_after_baseline(self, state: _VerificationState) -> str:
-        if state.verification_status is VerificationStatus.VERIFICATION_ERROR:
+        if state.verification_status in {
+            VerificationStatus.VERIFICATION_ERROR,
+            VerificationStatus.EVIDENCE_INSUFFICIENT,
+        }:
             return "end"
         return "develop"
 
@@ -241,6 +254,10 @@ def _has_execution_problem(results: Sequence[VerificationResult]) -> bool:
     )
 
 
+def _has_evidence_problem(results: Sequence[VerificationResult]) -> bool:
+    return any(result.report is None for result in results)
+
+
 def _result_feedback(result: VerificationResult) -> dict[str, object]:
     return {
         "name": result.name,
@@ -254,6 +271,15 @@ def _result_feedback(result: VerificationResult) -> dict[str, object]:
         "stderr_truncated": result.stderr_truncated,
         "failure_id": result.failure_id,
         "message": result.message,
+        "report_schema": result.report.report_schema if result.report else None,
+        "cases": (
+            [
+                {"case_id": case.case_id, "status": case.status.value}
+                for case in result.report.cases
+            ]
+            if result.report
+            else None
+        ),
     }
 
 
@@ -275,6 +301,9 @@ def _verification_message(status: VerificationStatus) -> str:
         VerificationStatus.VERIFICATION_ERROR: (
             "Verification could not execute reliably."
         ),
+        VerificationStatus.EVIDENCE_INSUFFICIENT: (
+            "Verification did not provide sufficient structured evidence."
+        ),
     }
     return messages.get(status, status.value)
 
@@ -285,6 +314,7 @@ def _workflow_outcome(
 ) -> WorkflowOutcome:
     if verification_status in {
         VerificationStatus.VERIFICATION_ERROR,
+        VerificationStatus.EVIDENCE_INSUFFICIENT,
         VerificationStatus.REPAIR_EXHAUSTED,
     }:
         return WorkflowOutcome.FAILED

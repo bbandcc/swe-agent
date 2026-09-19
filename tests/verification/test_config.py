@@ -46,6 +46,23 @@ class VerificationConfigurationTests(unittest.TestCase):
         self.assertEqual(specs[0].argv, ("python", "-m", "unittest"))
         self.assertEqual(specs[0].timeout_seconds, 30)
 
+    def test_loads_structured_report_and_allowed_failures(self) -> None:
+        value = json.dumps(
+            [
+                {
+                    "name": "unit",
+                    "argv": ["pytest", "--junitxml=report.xml"],
+                    "report_path": "report.xml",
+                    "allowed_failure_case_ids": ["legacy"],
+                }
+            ]
+        )
+        with patch.dict(os.environ, {VERIFICATION_CHECKS_ENV: value}):
+            spec = configured_verification_specs()[0]
+
+        self.assertEqual(spec.report_path, "report.xml")
+        self.assertEqual(spec.allowed_failure_case_ids, ("legacy",))
+
     def test_rejects_shell_command_string_configuration(self) -> None:
         value = json.dumps(
             [{"name": "unsafe", "argv": "pytest && remove-everything"}]
@@ -97,8 +114,12 @@ class VerificationConfigurationTests(unittest.TestCase):
                         "argv": [
                             os.fspath(Path(sys.executable)),
                             "-c",
-                            "print('configured')",
+                            "from pathlib import Path; "
+                            "Path('report.xml').write_text("
+                            "'<testsuite><testcase classname=\"cfg\" name=\"configured\" />'"
+                            "+ '</testsuite>', encoding='utf-8'); print('configured')",
                         ],
+                        "report_path": "report.xml",
                     }
                 ]
             )

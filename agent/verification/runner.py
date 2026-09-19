@@ -11,13 +11,16 @@ from typing import BinaryIO
 
 from agent.verification.contracts import (
     VerificationCheckStatus,
+    VerificationReport,
     VerificationResult,
     VerificationSpec,
 )
 from agent.verification.process_tree import ProcessTree
+from agent.verification.report import VerificationReportError, parse_junit_xml
 from agent.workspace import WorkspacePathResolver
 
 _TRUNCATION_MARKER = b"\n... output truncated ...\n"
+_MAX_REPORT_BYTES = 4 * 1024 * 1024
 
 
 class VerificationRunner:
@@ -39,6 +42,22 @@ class VerificationRunner:
                 resolution.message or "The verification cwd is outside the workspace.",
                 started_at,
             )
+
+        report_path: Path | None = None
+        report_before: tuple[object, ...] | None = None
+        if spec.report_path is not None:
+            report_resolution = self._resolver.resolve_file(
+                spec.report_path, must_exist=False
+            )
+            if not report_resolution.ok or report_resolution.path is None:
+                return _execution_error(
+                    spec,
+                    report_resolution.message
+                    or "The verification report path is outside the workspace.",
+                    started_at,
+                )
+            report_path = report_resolution.path
+            report_before = _report_signature(report_path)
 
         try:
             process = subprocess.Popen(
@@ -109,6 +128,19 @@ class VerificationRunner:
 
         process_tree.close()
 
+        report = None
+        if report_path is not None and status not in {
+            VerificationCheckStatus.TIMEOUT,
+            VerificationCheckStatus.EXECUTION_ERROR,
+        }:
+            report, report_message = _load_report(
+                report_path,
+                before=report_before,
+                check_id=spec.name,
+            )
+            if report_message:
+                message = _append_message(message, report_message)
+
         return VerificationResult.create(
             name=spec.name,
             argv=spec.argv,
@@ -123,6 +155,8 @@ class VerificationRunner:
             stdout_digest=stdout_digest,
             stderr_digest=stderr_digest,
             message=message,
+            report=report,
+            allowed_failure_case_ids=spec.allowed_failure_case_ids,
         )
 
 
@@ -202,4 +236,52 @@ def _execution_error(
         exit_code=None,
         duration_seconds=time.monotonic() - started_at,
         message=message,
+        allowed_failure_case_ids=spec.allowed_failure_case_ids,
     )
+
+
+def _report_signature(path: Path) -> tuple[object, ...] | None:
+    try:
+        stat = path.stat()
+    except FileNotFoundError:
+        return None
+    except OSError as error:
+        return ("error", type(error).__name__, str(error))
+    if stat.st_size > _MAX_REPORT_BYTES:
+        return ("oversize", stat.st_size, stat.st_mtime_ns)
+    try:
+        digest = hashlib.sha256(path.read_bytes()).hexdigest()
+    except OSError as error:
+        return ("error", type(error).__name__, str(error))
+    return (stat.st_size, stat.st_mtime_ns, digest)
+
+
+def _load_report(
+    path: Path,
+    *,
+    before: tuple[object, ...] | None,
+    check_id: str,
+) -> tuple[VerificationReport | None, str | None]:
+    after = _report_signature(path)
+    if after is None:
+        return None, "Structured verification report is missing."
+    if after == before:
+        return None, "Structured verification report was not refreshed."
+    if after and after[0] == "oversize":
+        return None, "Structured verification report exceeds the bounded size."
+    try:
+        data = path.read_bytes()
+    except OSError as error:
+        return None, f"Structured verification report could not be read: {error}"
+    if len(data) > _MAX_REPORT_BYTES:
+        return None, "Structured verification report exceeds the bounded size."
+    try:
+        return parse_junit_xml(data, check_id=check_id), None
+    except VerificationReportError as error:
+        return None, f"Structured verification report is invalid: {error}"
+
+
+def _append_message(current: str, addition: str) -> str:
+    if not current:
+        return addition
+    return f"{current} {addition}"

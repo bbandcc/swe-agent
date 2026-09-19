@@ -1,7 +1,11 @@
 import unittest
 
 from agent.verification import (
+    REPORT_SCHEMA,
+    VerificationCase,
+    VerificationCaseStatus,
     VerificationCheckStatus,
+    VerificationReport,
     VerificationResult,
     VerificationStatus,
     classify_verification,
@@ -13,7 +17,14 @@ def result(
     *,
     output: str = "",
     name: str = "tests",
+    case_status: VerificationCaseStatus | None = None,
 ) -> VerificationResult:
+    if case_status is None:
+        case_status = (
+            VerificationCaseStatus.PASS
+            if status is VerificationCheckStatus.PASS
+            else VerificationCaseStatus.FAIL
+        )
     return VerificationResult.create(
         name=name,
         argv=("python", "-m", "unittest"),
@@ -21,6 +32,17 @@ def result(
         status=status,
         exit_code=0 if status is VerificationCheckStatus.PASS else 1,
         stdout=output,
+        report=VerificationReport(
+            check_id=name,
+            report_schema=REPORT_SCHEMA,
+            cases=(
+                VerificationCase(
+                    check_id=name,
+                    case_id="case",
+                    status=case_status,
+                ),
+            ),
+        ),
     )
 
 
@@ -57,7 +79,7 @@ class VerificationEvaluationTests(unittest.TestCase):
         self.assertNotEqual(baseline.failure_id, post.failure_id)
         self.assertEqual(
             classify_verification((baseline,), (post,)),
-            VerificationStatus.REGRESSION,
+            VerificationStatus.PRE_EXISTING_FAILURE,
         )
 
     def test_empty_checks_are_unverified(self) -> None:
