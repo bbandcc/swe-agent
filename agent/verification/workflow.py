@@ -25,6 +25,7 @@ from agent.verification.evaluation import (
     evaluate_acceptance,
 )
 from agent.verification.runner import VerificationRunner
+from agent.runtime.secrets import KnownSecretFilter
 
 MAX_REPAIR_ATTEMPTS = 2
 
@@ -52,12 +53,14 @@ class VerificationController:
         workspace_root: str | Path,
         *,
         clock: Callable[[], float] = time.time,
+        secret_filter: KnownSecretFilter | None = None,
     ) -> None:
         self._specs = tuple(specs)
         self._runner = runner
         if self._specs and self._runner is None:
             self._runner = VerificationRunner(workspace_root)
         self._clock = clock
+        self._secret_filter = secret_filter
 
     def run_baseline(self, state: _VerificationState) -> dict[str, Any]:
         initial = {
@@ -228,7 +231,10 @@ class VerificationController:
                     spec,
                     timeout_seconds=min(spec.timeout_seconds, remaining),
                 )
-            results.append(self._runner.run(effective))
+            result = self._runner.run(effective)
+            if self._secret_filter is not None:
+                result = self._secret_filter.sanitize(result).value
+            results.append(result)
             if deadline is not None and self._clock() >= deadline:
                 results.extend(
                     _deadline_result(pending)

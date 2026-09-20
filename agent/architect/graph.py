@@ -19,6 +19,7 @@ from agent.tools.codemap import codemap_tools
 from agent.tools.search import search_tools
 from agent.runtime import BudgetSnapshot, DurableBudgetBoundary, DurableCallResult
 from agent.runtime.budget import BudgetErrorCode
+from agent.runtime.secrets import KnownSecretFilter
 
 
 class SoftwareArchitectInput(TypedDict):
@@ -85,6 +86,7 @@ def create_architect_workflow(
     *,
     research_tools: Sequence[Any] | None = None,
     budget_boundary: DurableBudgetBoundary | None = None,
+    secret_filter: KnownSecretFilter | None = None,
 ):
     runtime = runtime or default_architect_runtime()
     tools = list(
@@ -265,6 +267,10 @@ def create_architect_workflow(
 
     def route_after_tool_dispatch(state: SoftwareArchitectState) -> str:
         return "settle" if state.durable_call_result is not None else "record"
+
+    def persist_node(node):
+        return secret_filter.wrap_node(node) if secret_filter is not None else node
+
     workflow = StateGraph(
         SoftwareArchitectState,
         input_schema=SoftwareArchitectInput,
@@ -277,24 +283,31 @@ def create_architect_workflow(
         "extract_implementation_plan": extract_implementation_plan,
     }
     for name, node in model_nodes.items():
-        workflow.add_node(name, node)
+        workflow.add_node(name, persist_node(node))
     workflow.add_node(
-        "tools", dispatch_tools if budget_boundary is not None else tool_node
+        "tools",
+        persist_node(
+            dispatch_tools if budget_boundary is not None else tool_node
+        ),
     )
 
     if budget_boundary is not None:
         for name in model_nodes:
-            workflow.add_node(f"reserve_{name}", reserve_model(name))
-            workflow.add_node(f"settle_{name}", settle_call)
+            workflow.add_node(
+                f"reserve_{name}", persist_node(reserve_model(name))
+            )
+            workflow.add_node(f"settle_{name}", persist_node(settle_call))
             workflow.add_conditional_edges(
                 f"reserve_{name}",
                 budget_boundary.may_dispatch,
                 {"dispatch": name, "end": END},
             )
             workflow.add_edge(name, f"settle_{name}")
-        workflow.add_node("reserve_tools", reserve_tools)
-        workflow.add_node("record_tool_results", record_tool_results)
-        workflow.add_node("settle_tools", settle_call)
+        workflow.add_node("reserve_tools", persist_node(reserve_tools))
+        workflow.add_node(
+            "record_tool_results", persist_node(record_tool_results)
+        )
+        workflow.add_node("settle_tools", persist_node(settle_call))
         workflow.add_conditional_edges(
             "reserve_tools",
             budget_boundary.may_dispatch,

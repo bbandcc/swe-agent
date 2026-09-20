@@ -11,13 +11,13 @@
 ### 当前状态文件基线
 
 - S3.2 production 技术冻结点：`5850b8370c49f868e90aeffe9e6042f85eaa522c`；D1/S1a、D2/S2b 已冻结，D3/S2c Seal blocker 已在本轮完成修复并通过本地验收。
-- S3.2 的配置、身份、SQLite checkpoint、预算边界、start/resume 和现有图接入均保持冻结；D3/S2c 现已将单一 JUnit XML 可信报告、稳定 case identity、保守 acceptance policy 和隔离到 owned temporary output 的 evidence 生命周期接入生产验收链路。D4/S3.2a 已补齐模型请求时限、单次外部尝试边界、普通模型响应结算和部分请求身份范围；workspace report_path 不再被 snapshot、覆盖或 restore；S3 尚未全部完成，当前不能进入 S4。
+- S3.2 的配置、身份、SQLite checkpoint、预算边界、start/resume 和现有图接入均保持冻结；D3/S2c 现已将单一 JUnit XML 可信报告、稳定 case identity、保守 acceptance policy 和隔离到 owned temporary output 的 evidence 生命周期接入生产验收链路。D4/S3.2a 已补齐模型请求时限、单次外部尝试边界、普通模型响应结算和部分请求身份范围；本轮 D6/S3.3a 已将已知配置凭据在持久化前的过滤、诊断脱敏和代码承载拒绝接入 durable 图与编辑边界；S3 尚未全部完成，当前不能进入 S4。
 - D2/S2b Final Seal 已收窄 library/CLI 的异常边界；`RunSummary.warnings` 只输出 preflight warning code，unexpected `RuntimeError`、`KeyboardInterrupt` 和 `SystemExit` 不被入口吞掉。
-- 最新 Codex 本地验证：unittest 233 tests OK / 6 skipped；pytest 227 passed / 6 skipped / 163 subtests passed；Python compile、11 个 prompt render、两套 CLI help、`git diff --check` 均通过。6 个 skip 仅为当前 Windows 普通 symlink 权限限制。
+- 最新 Codex 本地验证：unittest 239 tests OK / 6 skipped；pytest 233 passed / 6 skipped / 163 subtests passed；Python compile、11 个 prompt render、两套 CLI help、`git diff --check` 均通过。6 个 skip 仅为当前 Windows 普通 symlink 权限限制。
 - 没有 GitHub CI 或独立外部测试证据，不作相应声明。
-- 剩余能力：secret-safe persistence、EventSink/RunRecord/artifact、workspace locking/policy、write/verification recovery 等仍未实现；provider 正向 retry/独立 attempt 语义未实现，当前 durable 只允许单次外部尝试；当前模型 `request_digest` 只代表有界语义输入，身份范围明确为 `PARTIAL`，不能据此安全重放最终 rendered request；exactly-once 不承诺。JUnit XML 是当前唯一可信报告格式，未配置或报告缺失/畸形时保守返回证据不足；多框架 parser registry、扩展 repair 和 S4 均未实现。runner 只改写精确匹配的 `--junitxml/--junit-xml` destination 到 owned temporary output，workspace report_path 保持原 bytes/mtime；owned temp cleanup 失败返回结构化 `EXECUTION_ERROR`。pytest 对其它 workspace 文件的副作用留给 D5，本轮未实现 artifact spool/recovery。
+- 剩余能力：完整 secret-safe state persistence（当前只覆盖 RunConfig 中已知凭据）、EventSink/RunRecord/artifact、workspace locking/policy、write/verification recovery 等仍未实现；provider 正向 retry/独立 attempt 语义未实现，当前 durable 只允许单次外部尝试；当前模型 `request_digest` 只代表有界语义输入，身份范围明确为 `PARTIAL`，不能据此安全重放最终 rendered request；exactly-once 不承诺。JUnit XML 是当前唯一可信报告格式，未配置或报告缺失/畸形时保守返回证据不足；多框架 parser registry、扩展 repair 和 S4 均未实现。runner 只改写精确匹配的 `--junitxml/--junit-xml` destination 到 owned temporary output，workspace report_path 保持原 bytes/mtime；owned temp cleanup 失败返回结构化 `EXECUTION_ERROR`。pytest 对其它 workspace 文件的副作用留给 D5，本轮未实现 artifact spool/recovery。
 - 后续技术切片继续按 MASTER_PLAN §5.2 执行；保留现有 S1/S2/S3 历史编号，不重新开启或重命名 S1。
-- MASTER_PLAN 对应：当前实现事实冻结在 S3.2、D1/S1a、D2/S2b 和已验收的 D3/S2c Seal，后续运行控制、轨迹和恢复要求继续按 §5.2 映射执行；本次不推进下一阶段。
+- MASTER_PLAN 对应：当前实现事实冻结在 S3.2、D1/S1a、D2/S2b、已验收的 D3/S2c Seal 和本轮 D6/S3.3a；后续运行控制、轨迹和恢复要求继续按 §5.2 映射执行，本轮不推进下一阶段。
 
 ## 当前文档任务：独立 MASTER PLAN（2026-09-16）
 
@@ -528,3 +528,40 @@ pytest 227 passed、6 skipped、163 subtests passed。6 个 skip 仅来自当前
 `PARTIAL`，尚无 prompt/rendered request replay 或独立 attempt recovery。后续
 secret-safe persistence、EventSink/RunRecord/artifact、workspace locking/policy、
 pending-write/verification recovery 仍未实现，本轮不进入 S3.3/D6 或 S4。
+
+## D6/S3.3a：持久化前秘密处理
+
+### 固定范围
+
+- 基线：`8985bda668622c7dcfc3d9ac66a692677d315eae`。
+- 只增加 process-local `KnownSecretFilter`，来源限定为 `RunConfig` 中的已知
+  API key；使用固定 redaction marker，过滤器和原始凭据不进入 graph state 或
+  SQLite checkpoint。
+- 在 durable start 初始任务、Architect/Developer 节点输出、公开 ToolNode
+  adapter 输出、verification result 以及 runtime message 写入持久化 state 前
+  过滤。代码承载内容（源码、working copy、edit proposal/patch）发现已知凭据时
+  返回 `SENSITIVE_DATA_DETECTED` 并拒绝写入；诊断文本只做确定性脱敏。
+- 不实现 EventSink、RunRecord、artifact/spool、recovery、locking/policy、S4
+  或依赖变更，不改 D1-D4 已冻结语义。
+
+### TDD 验收切片
+
+- [x] 通过公开 filter seam 覆盖普通消息、结构化模型结果、ToolNode 输出、
+  verification stdout/stderr/message 和 runtime exception message 的固定 marker
+  脱敏。
+- [x] 通过 WorkspaceEditor/WorkspaceTransaction seam 覆盖已有源码、working
+  copy 与 edit proposal 中的 canary 拒绝，确认 bytes/mtime 不变且返回结构化
+  `SENSITIVE_DATA_DETECTED`。
+- [x] 以真实 SQLite checkpoint 运行编译 parent/Architect/ToolNode/Developer
+  链路，扫描 database、WAL/SHM、最终 state 与 CLI JSON，确认已知 canary 不出现。
+- [x] 完成全量 unittest/pytest、compile、11 个 prompt render、两套 CLI help 和
+  `git diff --check`。
+
+### 当前状态
+
+D6/S3.3a 本轮实现与本地验收已完成。最新验证为 unittest 239 tests OK、6 skipped；
+pytest 233 passed、6 skipped、163 subtests passed。6 个 skip 仅来自当前 Windows
+账户缺少普通 symlink 创建权限；没有 GitHub CI 或独立外部测试证据。覆盖范围只承诺
+`RunConfig` 中已知凭据，不能识别未配置的隐私或任意秘密；完整 secret-safe
+state persistence、EventSink/RunRecord、artifact/spool、recovery、workspace
+locking/policy 和 exactly-once 仍未实现。本轮不进入 S3.3b 或 S4。

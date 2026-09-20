@@ -21,13 +21,20 @@ from agent.workspace import (
     WorkspacePathErrorCode,
     WorkspacePathResolver,
 )
+from agent.runtime.secrets import KnownSecretFilter, SENSITIVE_DATA_MESSAGE
 
 
 class WorkspaceEditor:
     """Validate edits in memory and commit one final version of each file."""
 
-    def __init__(self, root: str | Path) -> None:
+    def __init__(
+        self,
+        root: str | Path,
+        *,
+        secret_filter: KnownSecretFilter | None = None,
+    ) -> None:
         self._resolver = WorkspacePathResolver(root)
+        self._secret_filter = secret_filter
 
     def snapshot(self, path: str) -> WorkspaceSnapshot:
         """Read one UTF-8 file through the same boundary used for writes."""
@@ -63,6 +70,13 @@ class WorkspaceEditor:
                 exists=True,
                 error_code=EditErrorCode.ENCODING_ERROR,
                 message="Only UTF-8 text files can be read.",
+            )
+        if self._has_sensitive_code(content):
+            return WorkspaceSnapshot(
+                path=relative_path,
+                exists=True,
+                error_code=EditErrorCode.SENSITIVE_DATA_DETECTED,
+                message=SENSITIVE_DATA_MESSAGE,
             )
         return WorkspaceSnapshot(
             path=relative_path,
@@ -119,6 +133,16 @@ class WorkspaceEditor:
                     before_hash=before_hash,
                 )
             )
+        if self._has_sensitive_code(original):
+            return TransactionResult(
+                edit_result=EditResult(
+                    status=EditStatus.REJECTED,
+                    path=relative_path,
+                    error_code=EditErrorCode.SENSITIVE_DATA_DETECTED,
+                    message=SENSITIVE_DATA_MESSAGE,
+                    before_hash=before_hash,
+                )
+            )
         return TransactionResult(
             transaction=WorkspaceTransaction(
                 path=relative_path,
@@ -134,10 +158,32 @@ class WorkspaceEditor:
         self, transaction: WorkspaceTransaction, proposal: EditProposal
     ) -> TransactionResult:
         """Apply one proposal to a working copy without touching the file."""
+        if self._secret_filter is not None and (
+            self._has_sensitive_code(transaction.original_content)
+            or self._has_sensitive_code(transaction.working_content)
+            or self._has_sensitive_code(proposal.old_text)
+            or self._has_sensitive_code(proposal.new_text)
+        ):
+            return TransactionResult(
+                edit_result=_transaction_error(
+                    transaction,
+                    EditErrorCode.SENSITIVE_DATA_DETECTED,
+                    SENSITIVE_DATA_MESSAGE,
+                    task_id=proposal.task_id,
+                )
+            )
         return stage_transaction(transaction, proposal)
 
     def commit(self, transaction: WorkspaceTransaction) -> EditResult:
         """Recheck the baseline and replace or create the target exactly once."""
+        if self._has_sensitive_code(transaction.original_content) or self._has_sensitive_code(
+            transaction.working_content
+        ):
+            return _transaction_error(
+                transaction,
+                EditErrorCode.SENSITIVE_DATA_DETECTED,
+                SENSITIVE_DATA_MESSAGE,
+            )
         if not transaction.task_ids:
             return EditResult(
                 status=EditStatus.NOOP,
@@ -229,6 +275,15 @@ class WorkspaceEditor:
             task_ids=transaction.task_ids,
         )
 
+    def _has_sensitive_code(self, value: str | None) -> bool:
+        return bool(
+            self._secret_filter is not None
+            and isinstance(value, str)
+            and self._secret_filter.sanitize(
+                value, code_bearing=True
+            ).code_bearing
+        )
+
     def apply(self, proposal: EditProposal) -> EditResult:
         """Convenience interface for a one-proposal file transaction."""
         started = self.begin(proposal.path)
@@ -271,7 +326,11 @@ def _transaction_error(
     message: str,
     *,
     before_hash: str | None = None,
+    task_id: str | None = None,
 ) -> EditResult:
+    task_ids = transaction.task_ids
+    if task_id is not None:
+        task_ids = (*task_ids, task_id)
     return EditResult(
         status=EditStatus.REJECTED,
         path=transaction.path,
@@ -280,5 +339,5 @@ def _transaction_error(
         before_hash=(
             transaction.base_hash if before_hash is None else before_hash
         ),
-        task_ids=transaction.task_ids,
+        task_ids=task_ids,
     )

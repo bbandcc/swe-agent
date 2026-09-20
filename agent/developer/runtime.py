@@ -28,6 +28,7 @@ from agent.runtime.config import (
     ModelRetryPolicy,
     TokenPricing,
 )
+from agent.runtime.secrets import KnownSecretFilter
 
 RunnableInput = dict[str, Any]
 
@@ -95,6 +96,7 @@ def durable_developer_runtime(
     workspace_root,
     model_request_timeout_seconds: float = DEFAULT_MODEL_REQUEST_TIMEOUT_SECONDS,
     model_retry_policy: ModelRetryPolicy | None = None,
+    secret_filter: KnownSecretFilter | None = None,
 ) -> DeveloperRuntime:
     """Build explicit Developer calls with raw usage accounting."""
     research_prompt = markdown_to_prompt_template(
@@ -150,7 +152,9 @@ def durable_developer_runtime(
         return capture_model_result(parsed, raw, pricing)
 
     return DeveloperRuntime(
-        edit_executor=lambda: DeveloperEditExecutor(WorkspaceEditor(workspace_root)),
+        edit_executor=lambda: DeveloperEditExecutor(
+            WorkspaceEditor(workspace_root, secret_filter=secret_filter)
+        ),
         load_codebase_structure=_load_codebase_structure,
         research_atomic_task=lambda values: invoke_message(
             research_prompt, values, tools=True

@@ -25,6 +25,7 @@ from agent.workspace import configured_workspace_root
 from agent.runtime.boundary import DurableBudgetState
 from agent.runtime.identity import RunIdentity
 from agent.runtime.revision import AgentCodeRevision
+from agent.runtime.secrets import KnownSecretFilter
 
 
 class AgentState(DurableBudgetState):
@@ -71,6 +72,7 @@ def create_workflow_graph(
     durable_runtime: bool = False,
     workspace_root: Any = None,
     clock: Callable[[], float] = time.time,
+    secret_filter: KnownSecretFilter | None = None,
 ):
     """Create the parent workflow with injectable compiled child graphs."""
     verification = VerificationController(
@@ -78,6 +80,7 @@ def create_workflow_graph(
         verification_runner,
         configured_workspace_root() if workspace_root is None else workspace_root,
         clock=clock,
+        secret_filter=secret_filter,
     )
 
     def run_baseline(state: AgentState) -> dict[str, Any]:
@@ -108,20 +111,29 @@ def create_workflow_graph(
             "developer_message": state.runtime_message,
         }
 
+    def persist_node(node):
+        return secret_filter.wrap_node(node) if secret_filter is not None else node
+
     graph_builder = StateGraph(AgentState)
 
     graph_builder.add_node(
-        "swe_architect", swe_architect if architect is None else architect
+        "swe_architect",
+        persist_node(swe_architect if architect is None else architect),
     )
     graph_builder.add_node(
-        "swe_developer", swe_developer if developer is None else developer
+        "swe_developer",
+        persist_node(swe_developer if developer is None else developer),
     )
-    graph_builder.add_node("run_baseline_verification", run_baseline)
-    graph_builder.add_node("run_post_verification", run_post)
-    graph_builder.add_node("prepare_repair", prepare_repair)
-    graph_builder.add_node("finalize_outcome", finalize_outcome)
+    graph_builder.add_node(
+        "run_baseline_verification", persist_node(run_baseline)
+    )
+    graph_builder.add_node("run_post_verification", persist_node(run_post))
+    graph_builder.add_node("prepare_repair", persist_node(prepare_repair))
+    graph_builder.add_node("finalize_outcome", persist_node(finalize_outcome))
     if durable_runtime:
-        graph_builder.add_node("finalize_runtime_failure", finalize_runtime_failure)
+        graph_builder.add_node(
+            "finalize_runtime_failure", persist_node(finalize_runtime_failure)
+        )
     graph_builder.add_edge(START, "swe_architect")
     if durable_runtime:
         graph_builder.add_conditional_edges(

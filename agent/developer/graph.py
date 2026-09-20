@@ -32,6 +32,7 @@ from agent.editing import EditResult, EditStatus, WorkspaceSnapshot
 from agent.tools.codemap import codemap_tools
 from agent.tools.search import search_tools
 from agent.runtime import DurableBudgetBoundary
+from agent.runtime.secrets import KnownSecretFilter
 
 
 def create_developer_workflow(
@@ -39,6 +40,7 @@ def create_developer_workflow(
     *,
     research_tools: Sequence[Any] | None = None,
     budget_boundary: DurableBudgetBoundary | None = None,
+    secret_filter: KnownSecretFilter | None = None,
 ):
     runtime = runtime or default_developer_runtime()
     tools = list(
@@ -326,47 +328,62 @@ def create_developer_workflow(
 
     def route_after_tool_dispatch(state: SoftwareDeveloperState) -> str:
         return "settle" if state.durable_call_result is not None else "record"
+
+    def persist_node(node):
+        return secret_filter.wrap_node(node) if secret_filter is not None else node
+
     workflow = StateGraph(SoftwareDeveloperState)
-    workflow.add_node("start_implementing", validate_and_start)
-    workflow.add_node("prepare_for_implementation", prepare_for_implementation)
+    workflow.add_node("start_implementing", persist_node(validate_and_start))
+    workflow.add_node(
+        "prepare_for_implementation", persist_node(prepare_for_implementation)
+    )
     workflow.add_node(
         "get_clear_implementation_plan_for_atomic_task",
-        get_clear_implementation_plan_for_atomic_task,
+        persist_node(get_clear_implementation_plan_for_atomic_task),
     )
     workflow.add_node(
         "research_tool_node",
-        (
+        persist_node(
             dispatch_research_tools
             if budget_boundary is not None
             else research_tool_node
         ),
     )
-    workflow.add_node("stage_diff_for_task", stage_diff_for_task)
+    workflow.add_node("stage_diff_for_task", persist_node(stage_diff_for_task))
     workflow.add_node(
-        "proceed_to_next_atomic_task", proceed_to_next_atomic_task
+        "proceed_to_next_atomic_task", persist_node(proceed_to_next_atomic_task)
     )
-    workflow.add_node("commit_file_transaction", commit_file_transaction)
-    workflow.add_node("proceed_to_next_task", proceed_to_next_task)
-    workflow.add_node("finish_implementation", finish_implementation)
+    workflow.add_node(
+        "commit_file_transaction", persist_node(commit_file_transaction)
+    )
+    workflow.add_node(
+        "proceed_to_next_task", persist_node(proceed_to_next_task)
+    )
+    workflow.add_node("finish_implementation", persist_node(finish_implementation))
 
     if budget_boundary is not None:
         for name in (
             "get_clear_implementation_plan_for_atomic_task",
             "stage_diff_for_task",
         ):
-            workflow.add_node(f"reserve_{name}", reserve_model(name))
-            workflow.add_node(f"settle_{name}", settle_call)
+            workflow.add_node(
+                f"reserve_{name}", persist_node(reserve_model(name))
+            )
+            workflow.add_node(f"settle_{name}", persist_node(settle_call))
             workflow.add_conditional_edges(
                 f"reserve_{name}",
                 budget_boundary.may_dispatch,
                 {"dispatch": name, "end": END},
             )
             workflow.add_edge(name, f"settle_{name}")
-        workflow.add_node("reserve_research_tools", reserve_tools)
-        workflow.add_node("record_research_tool_results", record_tool_results)
-        workflow.add_node("settle_research_tools", settle_call)
+        workflow.add_node("reserve_research_tools", persist_node(reserve_tools))
         workflow.add_node(
-            "check_deadline_before_commit", check_deadline_before_commit
+            "record_research_tool_results", persist_node(record_tool_results)
+        )
+        workflow.add_node("settle_research_tools", persist_node(settle_call))
+        workflow.add_node(
+            "check_deadline_before_commit",
+            persist_node(check_deadline_before_commit),
         )
         workflow.add_conditional_edges(
             "reserve_research_tools",

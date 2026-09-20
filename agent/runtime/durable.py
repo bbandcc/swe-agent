@@ -32,6 +32,7 @@ from agent.runtime.identity import (
     preflight_start,
 )
 from agent.runtime.semantics import semantic_config_digest
+from agent.runtime.secrets import KnownSecretFilter, SENSITIVE_DATA_MESSAGE
 from agent.verification import AcceptanceResult
 from agent.workspace import WorkspaceRootError, workspace_root_scope
 
@@ -275,6 +276,7 @@ def _run(
     graph_factory: GraphFactory | None,
     clock: Callable[[], float],
 ) -> DurableRunResult:
+    secret_filter = KnownSecretFilter.from_run_config(config)
     if request.run_config_digest != semantic_config_digest(config):
         return DurableRunResult(
             DurableRunStatus.REJECTED,
@@ -288,7 +290,7 @@ def _run(
         return DurableRunResult(
             DurableRunStatus.REJECTED,
             error_code="workspace_error",
-            message=str(error),
+            message=secret_filter.redact_text(str(error)),
             run_id=request.identity.run_id,
         )
     if request.identity.workspace != live_workspace:
@@ -304,7 +306,7 @@ def _run(
         return DurableRunResult(
             DurableRunStatus.FAILED,
             error_code="runtime_root_error",
-            message=str(error),
+            message=secret_filter.redact_text(str(error)),
             run_id=request.identity.run_id,
         )
     database = config.runtime_root / "checkpoints.sqlite"
@@ -314,7 +316,7 @@ def _run(
         return DurableRunResult(
             DurableRunStatus.FAILED,
             error_code="sqlite_error",
-            message=str(error),
+            message=secret_filter.redact_text(str(error)),
             run_id=request.identity.run_id,
         )
     try:
@@ -325,7 +327,7 @@ def _run(
             return DurableRunResult(
                 DurableRunStatus.FAILED,
                 error_code="sqlite_error",
-                message=str(error),
+                message=secret_filter.redact_text(str(error)),
                 run_id=request.identity.run_id,
             )
         try:
@@ -370,8 +372,21 @@ def _run(
                 graph_input = None
             else:
                 assert initial_state is not None
+                safe_initial = secret_filter.sanitize_node_update(initial_state)
+                if (
+                    safe_initial.get("runtime_error_code")
+                    is BudgetErrorCode.SENSITIVE_DATA_DETECTED
+                ):
+                    return DurableRunResult(
+                        DurableRunStatus.FAILED,
+                        state=safe_initial,
+                        error_code=BudgetErrorCode.SENSITIVE_DATA_DETECTED.value,
+                        message=SENSITIVE_DATA_MESSAGE,
+                        preflight=preflight,
+                        run_id=request.identity.run_id,
+                    )
                 graph_input = {
-                    **initial_state,
+                    **safe_initial,
                     "run_identity": request.identity,
                     "run_config_digest": request.run_config_digest,
                     "agent_revision": request.agent_revision,
@@ -403,7 +418,9 @@ def _run(
                     DurableRunStatus.FAILED,
                     state=result,
                     error_code=code,
-                    message=str(result.get("runtime_message", "")),
+                    message=secret_filter.redact_text(
+                        str(result.get("runtime_message", ""))
+                    ),
                     preflight=preflight,
                     run_id=request.identity.run_id,
                 )
@@ -422,21 +439,21 @@ def _run(
             return DurableRunResult(
                 DurableRunStatus.FAILED,
                 error_code="sqlite_error",
-                message=str(error),
+                message=secret_filter.redact_text(str(error)),
                 run_id=request.identity.run_id,
             )
         except OSError as error:
             return DurableRunResult(
                 DurableRunStatus.FAILED,
                 error_code="runtime_io_error",
-                message=str(error),
+                message=secret_filter.redact_text(str(error)),
                 run_id=request.identity.run_id,
             )
         except WorkspaceRootError as error:
             return DurableRunResult(
                 DurableRunStatus.REJECTED,
                 error_code="workspace_error",
-                message=str(error),
+                message=secret_filter.redact_text(str(error)),
                 run_id=request.identity.run_id,
             )
     finally:
@@ -455,6 +472,7 @@ def create_durable_workflow(
         clock=clock,
         model_request_timeout_seconds=config.model_request_timeout_seconds,
     )
+    secret_filter = KnownSecretFilter.from_run_config(config)
     architect = create_architect_workflow(
         durable_architect_runtime(
             config.model,
@@ -464,6 +482,7 @@ def create_durable_workflow(
             model_retry_policy=config.model_retry_policy,
         ),
         budget_boundary=boundary,
+        secret_filter=secret_filter,
     )
     developer = create_developer_workflow(
         durable_developer_runtime(
@@ -473,8 +492,10 @@ def create_durable_workflow(
             workspace_root=config.workspace_root,
             model_request_timeout_seconds=config.model_request_timeout_seconds,
             model_retry_policy=config.model_retry_policy,
+            secret_filter=secret_filter,
         ),
         budget_boundary=boundary,
+        secret_filter=secret_filter,
     )
     return create_workflow_graph(
         architect=architect,
@@ -483,6 +504,7 @@ def create_durable_workflow(
         workspace_root=config.workspace_root,
         durable_runtime=True,
         clock=clock,
+        secret_filter=secret_filter,
     ).compile(checkpointer=saver).with_config({"tags": ["agent-durable-v1"]})
 
 

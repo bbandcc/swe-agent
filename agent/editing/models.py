@@ -29,6 +29,7 @@ class EditErrorCode(str, Enum):
     INVALID_MODEL_RESPONSE = "invalid_model_response"
     ENCODING_ERROR = "encoding_error"
     WRITE_FAILED = "write_failed"
+    SENSITIVE_DATA_DETECTED = "sensitive_data_detected"
 
 
 @dataclass(frozen=True, slots=True)

@@ -59,6 +59,12 @@ from agent.runtime.boundary import (
     DurableBudgetState,
     DurableCallResult,
 )
+from agent.runtime.secrets import (
+    KnownSecretFilter,
+    REDACTION_MARKER,
+    SENSITIVE_DATA_MESSAGE,
+    SecretFilterResult,
+)
 
 __all__ = [
     "RunConfig",
@@ -106,6 +112,10 @@ __all__ = [
     "DurableBudgetBoundary",
     "DurableBudgetState",
     "DurableCallResult",
+    "KnownSecretFilter",
+    "REDACTION_MARKER",
+    "SENSITIVE_DATA_MESSAGE",
+    "SecretFilterResult",
     "DurableRunResult",
     "DurableRunStatus",
     "RunSummary",
