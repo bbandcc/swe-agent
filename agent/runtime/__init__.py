@@ -41,6 +41,7 @@ from agent.runtime.budget import (
     CallKind,
     CallReservation,
     CallStatus,
+    RequestIdentityScope,
     UsageRecord,
     UsageStatus,
 )
@@ -92,6 +93,7 @@ __all__ = [
     "CallKind",
     "CallReservation",
     "CallStatus",
+    "RequestIdentityScope",
     "UsageRecord",
     "UsageStatus",
     "ModelCallResult",

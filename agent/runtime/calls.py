@@ -126,7 +126,6 @@ def classify_model_exception(error: BaseException) -> BudgetErrorCode | None:
     if isinstance(
         error,
         (
-            OSError,
             httpx.TransportError,
             openai.APIConnectionError,
             anthropic.APIConnectionError,

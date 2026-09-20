@@ -34,6 +34,7 @@ from agent.runtime import (
     DurableBudgetState,
     DurableCallResult,
     ModelCallResult,
+    RequestIdentityScope,
     ResumeRequest,
     RunIdentity,
     StartRequest,
@@ -714,6 +715,14 @@ class DurableRuntimeTests(RunConfigTestCase):
             self.assertEqual(resumed.error_code, "outcome_unknown")
             self.assertEqual(resumed.state["value"], 0)
             self.assertEqual(resumed.state["budget"].steps_used, 1)
+            self.assertEqual(
+                started.state["budget"].reservations[0].request_identity_scope,
+                RequestIdentityScope.PARTIAL,
+            )
+            self.assertEqual(
+                resumed.state["budget"].reservations[0].request_identity_scope,
+                RequestIdentityScope.PARTIAL,
+            )
 
     def test_dispatch_crash_is_not_replayed_on_resume(self) -> None:
         with tempfile.TemporaryDirectory() as directory:

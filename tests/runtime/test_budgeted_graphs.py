@@ -22,6 +22,7 @@ from agent.runtime import (
     DurableBudgetBoundary,
     DurableBudgetState,
     ModelCallResult,
+    RequestIdentityScope,
     capture_model_exception,
     UsageMeasurement,
     UsageStatus,
@@ -92,6 +93,47 @@ def structured_result(
 
 
 class BudgetedGraphTests(unittest.TestCase):
+    def test_plain_model_response_settles_with_unknown_usage(self) -> None:
+        boundary = DurableBudgetBoundary("run", clock=lambda: 100.0)
+        initial = DurableBudgetState(
+            budget=BudgetSnapshot.create(
+                max_steps=1, max_cost_usd=None, deadline_at=200.0
+            )
+        )
+        reserved = boundary.reserve_model(initial, "model", {"task": "plain"})
+        state = initial.model_copy(update=reserved)
+
+        value, update = boundary.capture_model(state, AIMessage(content="plain"))
+        settled = boundary.settle(state.model_copy(update=update))
+
+        self.assertEqual(value.content, "plain")
+        self.assertFalse(update["durable_call_result"].failed)
+        self.assertEqual(
+            update["durable_call_result"].usage[0].status,
+            UsageStatus.UNKNOWN,
+        )
+        self.assertEqual(
+            settled["budget"].reservations[0].status,
+            CallStatus.COMPLETED,
+        )
+
+    def test_model_reservation_declares_partial_request_identity(self) -> None:
+        boundary = DurableBudgetBoundary("run", clock=lambda: 100.0)
+        initial = DurableBudgetState(
+            budget=BudgetSnapshot.create(
+                max_steps=1, max_cost_usd=None, deadline_at=200.0
+            )
+        )
+
+        state = initial.model_copy(
+            update=boundary.reserve_model(initial, "model", {"task": "identity"})
+        )
+
+        self.assertEqual(
+            state.budget.reservations[0].request_identity_scope,
+            RequestIdentityScope.PARTIAL,
+        )
+
     def test_model_request_timeout_uses_remaining_deadline_and_settles_unknown(self) -> None:
         now = [107.0]
         boundary = DurableBudgetBoundary(

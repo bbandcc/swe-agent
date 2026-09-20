@@ -25,6 +25,13 @@ class CallStatus(str, Enum):
     OUTCOME_UNKNOWN = "outcome_unknown"
 
 
+class RequestIdentityScope(str, Enum):
+    """How much of an external request is represented by its digest."""
+
+    PARTIAL = "partial"
+    COMPLETE = "complete"
+
+
 class UsageStatus(str, Enum):
     KNOWN = "known"
     PARTIAL = "partial"
@@ -104,6 +111,7 @@ class CallReservation:
     status: CallStatus
     request_digest: str
     tool_call_id: str | None = None
+    request_identity_scope: RequestIdentityScope = RequestIdentityScope.PARTIAL
 
     def __post_init__(self) -> None:
         if not self.step_id or not self.call_id:
@@ -112,6 +120,8 @@ class CallReservation:
             self.status, CallStatus
         ):
             raise ValueError("Invalid call reservation enum value.")
+        if not isinstance(self.request_identity_scope, RequestIdentityScope):
+            raise ValueError("Invalid request identity scope.")
         if not _DIGEST.fullmatch(self.request_digest):
             raise ValueError("request_digest must be a SHA-256 hex digest.")
         if self.kind is CallKind.TOOL and not self.tool_call_id:
@@ -232,7 +242,14 @@ class BudgetController:
         return self._reserve(
             snapshot,
             run_id=run_id,
-            requests=((CallKind.MODEL, None, request_digest),),
+            requests=(
+                (
+                    CallKind.MODEL,
+                    None,
+                    request_digest,
+                    RequestIdentityScope.PARTIAL,
+                ),
+            ),
             now=now,
         )
 
@@ -255,7 +272,7 @@ class BudgetController:
             snapshot,
             run_id=run_id,
             requests=tuple(
-                (CallKind.TOOL, call_id, digest)
+                (CallKind.TOOL, call_id, digest, RequestIdentityScope.COMPLETE)
                 for call_id, digest in tool_calls
             ),
             now=now,
@@ -266,7 +283,9 @@ class BudgetController:
         snapshot: BudgetSnapshot,
         *,
         run_id: str,
-        requests: tuple[tuple[CallKind, str | None, str], ...],
+        requests: tuple[
+            tuple[CallKind, str | None, str, RequestIdentityScope], ...
+        ],
         now: float,
     ) -> BudgetDecision:
         denial = self._preflight(
@@ -292,8 +311,11 @@ class BudgetController:
                 status=CallStatus.IN_FLIGHT,
                 request_digest=digest,
                 tool_call_id=tool_call_id,
+                request_identity_scope=identity_scope,
             )
-            for offset, (kind, tool_call_id, digest) in enumerate(requests)
+            for offset, (kind, tool_call_id, digest, identity_scope) in enumerate(
+                requests
+            )
         )
         updated = replace(
             snapshot,

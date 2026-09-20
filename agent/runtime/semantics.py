@@ -9,7 +9,10 @@ from typing import Any
 
 from agent.runtime.config import RunConfig
 
-SEMANTIC_CONFIG_SCHEMA_VERSION = 1
+# Version 2 records the model request timeout and single-attempt retry policy
+# in the canonical payload. Future semantic field or encoding changes must
+# increment this version so old checkpoints fail closed at preflight.
+SEMANTIC_CONFIG_SCHEMA_VERSION = 2
 
 
 def semantic_config_digest(config: RunConfig) -> str:

@@ -1,4 +1,5 @@
 import json
+import socket
 import threading
 import time
 import unittest
@@ -8,7 +9,12 @@ from langchain_core.messages import HumanMessage
 from pydantic import SecretStr
 
 from agent.config import ModelSettings, build_chat_model
-from agent.runtime import BudgetErrorCode, classify_model_exception
+from agent.runtime import (
+    BudgetErrorCode,
+    UsageStatus,
+    capture_model_exception,
+    classify_model_exception,
+)
 
 
 class _SlowCompletionHandler(BaseHTTPRequestHandler):
@@ -49,7 +55,68 @@ class _SlowCompletionHandler(BaseHTTPRequestHandler):
         return
 
 
+class _ActiveDisconnectHandler(BaseHTTPRequestHandler):
+    requests = 0
+    request_seen = threading.Event()
+
+    def do_POST(self) -> None:  # noqa: N802 - stdlib handler API
+        type(self).requests += 1
+        type(self).request_seen.set()
+        self.close_connection = True
+        try:
+            self.connection.shutdown(socket.SHUT_RDWR)
+        except OSError:
+            pass
+        self.connection.close()
+
+    def log_message(self, *_args: object) -> None:
+        return
+
+
 class ModelRequestTimeoutTests(unittest.TestCase):
+    def test_active_disconnect_is_one_attempt_with_unknown_usage(self) -> None:
+        _ActiveDisconnectHandler.requests = 0
+        _ActiveDisconnectHandler.request_seen = threading.Event()
+        server = ThreadingHTTPServer(("127.0.0.1", 0), _ActiveDisconnectHandler)
+        thread = threading.Thread(target=server.serve_forever, daemon=True)
+        thread.start()
+        try:
+            model = build_chat_model(
+                ModelSettings(
+                    provider="deepseek",
+                    model="deepseek-chat",
+                    base_url=f"http://127.0.0.1:{server.server_port}/v1",
+                    api_key=SecretStr("test-key"),
+                ),
+                max_output_tokens=16,
+                request_timeout_seconds=1.0,
+                max_retries=0,
+            )
+            with self.assertRaises(Exception) as raised:
+                model.invoke([HumanMessage(content="disconnect probe")])
+
+            self.assertTrue(_ActiveDisconnectHandler.request_seen.wait(1.0))
+            time.sleep(0.05)
+            self.assertEqual(_ActiveDisconnectHandler.requests, 1)
+            self.assertEqual(
+                classify_model_exception(raised.exception),
+                BudgetErrorCode.MODEL_TRANSPORT_ERROR,
+            )
+            failure = capture_model_exception(BudgetErrorCode.MODEL_TRANSPORT_ERROR)
+            self.assertEqual(failure.usage.status, UsageStatus.UNKNOWN)
+            self.assertIsNone(failure.usage.input_tokens)
+            self.assertIsNone(failure.usage.output_tokens)
+            self.assertIsNone(failure.usage.total_tokens)
+            self.assertIsNone(failure.usage.cost_microusd)
+        finally:
+            server.shutdown()
+            server.server_close()
+            thread.join(timeout=1.0)
+
+    def test_unexpected_local_errors_are_not_transport_classified(self) -> None:
+        self.assertIsNone(classify_model_exception(OSError("local filesystem failure")))
+        self.assertIsNone(classify_model_exception(RuntimeError("programming failure")))
+
     def test_deepseek_timeout_is_one_attempt_and_late_response_does_not_continue(self) -> None:
         _SlowCompletionHandler.requests = []
         _SlowCompletionHandler.request_seen = threading.Event()

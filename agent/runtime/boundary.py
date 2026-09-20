@@ -121,10 +121,12 @@ class DurableBudgetBoundary:
         active = snapshot.active
         if len(active) != 1:
             raise ValueError("A model result requires one active reservation.")
+        failed = False
         if isinstance(response, ModelCallResult):
             value = response.value
             usage = response.usage.for_call(active[0].call_id)
             digest = response.response_digest
+            failed = response.error_code is not None or response.error is not None
             error_update = (
                 {
                     "runtime_error_code": (
@@ -147,7 +149,7 @@ class DurableBudgetBoundary:
                 (active[0].call_id,),
                 (usage,),
                 (digest,),
-                failed=response.error_code is not None or response.error is not None,
+                failed=failed,
             ),
             **self._deadline_overrun_update(snapshot),
         }

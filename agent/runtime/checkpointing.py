@@ -31,6 +31,7 @@ from agent.runtime.budget import (
     CallKind,
     CallReservation,
     CallStatus,
+    RequestIdentityScope,
     UsageRecord,
     UsageStatus,
 )
@@ -125,6 +126,7 @@ def checkpoint_serializer() -> JsonPlusSerializer:
             CallReservation,
             CallKind,
             CallStatus,
+            RequestIdentityScope,
             BudgetErrorCode,
             UsageRecord,
             UsageStatus,

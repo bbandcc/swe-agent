@@ -7,6 +7,7 @@ from pathlib import Path
 
 from agent.config import ModelSettings
 from agent.runtime import semantic_config_digest
+from agent.runtime.semantics import SEMANTIC_CONFIG_SCHEMA_VERSION
 from tests.runtime._config_support import (
     RunConfigTestCase,
     model_settings,
@@ -14,6 +15,9 @@ from tests.runtime._config_support import (
 
 
 class SemanticConfigDigestTests(RunConfigTestCase):
+    def test_digest_schema_version_is_bumped_for_timeout_retry_semantics(self) -> None:
+        self.assertEqual(SEMANTIC_CONFIG_SCHEMA_VERSION, 2)
+
     def test_digest_excludes_paths_and_api_key(self) -> None:
         with (
             tempfile.TemporaryDirectory() as first_directory,
