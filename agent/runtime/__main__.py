@@ -13,6 +13,7 @@ from langchain_core.messages import HumanMessage
 from agent.runtime.config import RunConfigError, load_run_config
 from agent.runtime.durable import (
     DurableRunStatus,
+    RUN_SUMMARY_SCHEMA_VERSION,
     RunSummary,
     resume_run,
     run_exit_code,
@@ -43,7 +44,7 @@ def main(argv: list[str] | None = None) -> int:
     except RunConfigError as error:
         return _emit_summary(
             RunSummary(
-                schema_version=1,
+                schema_version=RUN_SUMMARY_SCHEMA_VERSION,
                 runtime_status=DurableRunStatus.REJECTED,
                 workflow_outcome=None,
                 verification_status=None,
@@ -141,7 +142,7 @@ def main(argv: list[str] | None = None) -> int:
     except RunConfigError as error:
         return _emit_summary(
             RunSummary(
-                schema_version=1,
+                schema_version=RUN_SUMMARY_SCHEMA_VERSION,
                 runtime_status=DurableRunStatus.REJECTED,
                 workflow_outcome=None,
                 verification_status=None,
@@ -166,7 +167,7 @@ def _entry_error(
         else run_id
     )
     return RunSummary(
-        schema_version=1,
+        schema_version=RUN_SUMMARY_SCHEMA_VERSION,
         runtime_status=status,
         workflow_outcome=None,
         verification_status=None,

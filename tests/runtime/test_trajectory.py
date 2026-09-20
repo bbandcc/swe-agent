@@ -19,6 +19,7 @@ from agent.runtime import (
     CallStatus,
     BudgetSnapshot,
     DurableBudgetBoundary,
+    DurableCallResult,
     DurableBudgetState,
     DurableRunStatus,
     RunIdentity,
@@ -40,6 +41,8 @@ from agent.runtime import (
     KnownSecretFilter,
     RunEvent,
     RunRecord,
+    UsageRecord,
+    UsageStatus,
     write_run_record,
 )
 from agent.architect.graph import (
@@ -49,17 +52,25 @@ from agent.architect.graph import (
     create_architect_workflow,
 )
 from agent.common.entities import ImplementationPlan
+from agent.editing import EditResult, EditStatus
+from agent.verification import VerificationCheckStatus, VerificationResult
 from tests.runtime._config_support import RunConfigTestCase
 
 
-def event(*, status: str = "succeeded", summary: dict | None = None) -> RunEvent:
+def event(
+    *,
+    status: str = "succeeded",
+    summary: dict | None = None,
+    subject_id: str = "call-1",
+    phase: str = "result",
+) -> RunEvent:
     return RunEvent.create(
         run_id="run-1",
         thread_id="thread-1",
         task_id="task-1",
-        subject_id="call-1",
+        subject_id=subject_id,
         event_type="model",
-        phase="result",
+        phase=phase,
         status=status,
         timestamp=100.0,
         step_id="step-1",
@@ -96,6 +107,22 @@ class TrajectoryContractTests(unittest.TestCase):
                 EventSinkErrorCode.CONFLICTING_KEY.value,
             )
             self.assertEqual(len(sink.events), 1)
+
+    def test_stale_sink_instances_refresh_sequence_before_append(self) -> None:
+        with tempfile.TemporaryDirectory() as directory:
+            first = JsonlEventSink(directory)
+            second = JsonlEventSink(directory)
+
+            first_result = first.append_once(event(subject_id="call-1"))
+            second_result = second.append_once(
+                event(subject_id="call-2")
+            )
+            reopened = JsonlEventSink(directory)
+
+            self.assertEqual(first_result.sequence, 1)
+            self.assertEqual(second_result.sequence, 2)
+            self.assertEqual(reopened.last_sequence, 2)
+            self.assertEqual(len(reopened.events), 2)
 
     def test_truncated_tail_and_corrupt_json_are_not_ignored(self) -> None:
         with tempfile.TemporaryDirectory() as directory:
@@ -211,7 +238,10 @@ class TrajectoryContractTests(unittest.TestCase):
                 audit_status=AuditStatus.COMPLETE,
                 agent_revision={"status": "unknown"},
             )
-            with patch("agent.runtime.trajectory.os.replace", side_effect=OSError("disk full")):
+            with patch(
+                "agent.runtime.trajectory_record.os.replace",
+                side_effect=OSError("disk full"),
+            ):
                 result = write_run_record(directory, record)
 
             self.assertFalse(result.success)
@@ -526,6 +556,19 @@ class DurableAuditIntegrationTests(RunConfigTestCase):
                 {item.event_type for item in sink.events}, {"model"}
             )
             self.assertTrue(all(item.call_id for item in sink.events))
+            model_results = [
+                item
+                for item in sink.events
+                if item.phase == "result"
+            ]
+            self.assertTrue(model_results)
+            self.assertTrue(
+                all(
+                    item.summary.get("request_digest")
+                    and item.summary.get("response_digest")
+                    for item in model_results
+                )
+            )
             raw = Path(directory, "events.jsonl").read_text(encoding="utf-8")
             self.assertNotIn('"content":"task"', raw)
 
@@ -556,6 +599,11 @@ class DurableAuditIntegrationTests(RunConfigTestCase):
                     {"tool_call_id": "tc-1", "name": "search_directory"},
                 )()
             ]
+            durable_call_result = DurableCallResult(
+                call_ids=("run-shape:call:1:tool:tc-1",),
+                usage=(UsageRecord.unknown("run-shape:call:1:tool:tc-1"),),
+                response_digests=("b" * 64,),
+            )
 
         with tempfile.TemporaryDirectory() as directory:
             sink = JsonlEventSink(directory)
@@ -566,17 +614,37 @@ class DurableAuditIntegrationTests(RunConfigTestCase):
                 task_id="task-shape",
             )
             recorder.wrap_node(
-                lambda state: {"durable_call_result": "bounded"},
+                lambda state: {"durable_call_result": state.durable_call_result},
                 event_type="tool",
                 node_name="research_tools",
             )(State())
             recorder.wrap_node(
-                lambda state: {"last_edit_result": "applied"},
+                lambda state: {
+                    "last_edit_result": EditResult(
+                        status=EditStatus.APPLIED,
+                        path="app.py",
+                        before_hash="c" * 64,
+                        after_hash="d" * 64,
+                        diff="secret source must not be persisted",
+                    )
+                },
                 event_type="edit",
                 node_name="commit_file_transaction",
             )(State())
             recorder.wrap_node(
-                lambda state: {"verification_status": "pass", "stdout": "ignored"},
+                lambda state: {
+                    "verification_status": "pass",
+                    "post_verification": (
+                        VerificationResult.create(
+                            name="pytest",
+                            argv=("pytest",),
+                            cwd=".",
+                            status=VerificationCheckStatus.PASS,
+                            exit_code=0,
+                        ),
+                    ),
+                    "stdout": "ignored",
+                },
                 event_type="verification",
                 node_name="run_post_verification",
             )(State())
@@ -599,6 +667,29 @@ class DurableAuditIntegrationTests(RunConfigTestCase):
             )
             self.assertEqual(tool_result.summary["tool_name"], "search_directory")
             self.assertEqual(tool_result.call_id, "run-shape:call:1:tool:tc-1")
+            self.assertEqual(tool_result.summary["request_digest"], "a" * 64)
+            self.assertEqual(tool_result.summary["response_digest"], "b" * 64)
+            self.assertEqual(tool_result.usage["status"], "unknown")
+            edit_result = next(
+                item
+                for item in sink.events
+                if item.event_type == "edit" and item.phase == "result"
+            )
+            self.assertEqual(edit_result.summary["status"], "applied")
+            self.assertEqual(edit_result.summary["before_hash"], "c" * 64)
+            self.assertEqual(edit_result.summary["after_hash"], "d" * 64)
+            self.assertNotIn("secret source", json.dumps(edit_result.to_dict()))
+            verification_result = next(
+                item
+                for item in sink.events
+                if item.event_type == "verification" and item.phase == "result"
+            )
+            self.assertEqual(
+                verification_result.summary["checks"][0]["check_id"], "pytest"
+            )
+            self.assertEqual(
+                verification_result.summary["checks"][0]["status"], "pass"
+            )
             raw = Path(directory, "events.jsonl").read_text(encoding="utf-8")
             self.assertNotIn("ignored", raw)
 

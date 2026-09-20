@@ -11,13 +11,15 @@
 ### 当前状态文件基线
 
 - S3.2 production 技术冻结点：`5850b8370c49f868e90aeffe9e6042f85eaa522c`；D1/S1a、D2/S2b 已冻结，D3/S2c Seal blocker 已通过本地验收。
-- S3.2 的配置、身份、SQLite checkpoint、预算边界、start/resume 和现有图接入均保持冻结；D3/S2c 已将单一 JUnit XML 可信报告、稳定 case identity、保守 acceptance policy 和 owned temporary evidence 生命周期接入生产验收链路。D4/S3.2a 已补齐模型请求时限、单次外部尝试边界、普通模型响应结算和部分请求身份范围；D6/S3.3a Final Seal 保持已验收事实，本轮 D6/S3.3b 增加本地幂等事件文件和版本化 RunRecord，当前仅完成本地验证，尚未标记为冻结；S3 尚未全部完成，当前不能进入 S4。
+- S3.2 的配置、身份、SQLite checkpoint、预算边界、start/resume 和现有图接入均保持冻结；D3/S2c 已将单一 JUnit XML 可信报告、稳定 case identity、保守 acceptance policy 和 owned temporary evidence 生命周期接入生产验收链路。D4/S3.2a 已补齐模型请求时限、单次外部尝试边界、普通模型响应结算和部分请求身份范围；D6/S3.3a Final Seal 保持已验收事实，本轮 D6/S3.3b Final Seal 已完成公开审计契约、单进程 stale-index 协调、有界证据、checkpoint/event 独立性和模块拆分的本地验收；S3 尚未全部完成，当前不能进入 S4。
 - D2/S2b Final Seal 已收窄 library/CLI 的异常边界；`RunSummary.warnings` 只输出 preflight warning code，unexpected `RuntimeError`、`KeyboardInterrupt` 和 `SystemExit` 不被入口吞掉。
-- 最新 Codex 本地验证：unittest 261 tests OK / 6 skipped；pytest 255 passed / 6 skipped / 169 subtests passed；Python compile、11 个 prompt render、start/resume 两套 CLI help、`git diff --check` 均通过。6 个 skip 仅为当前 Windows 普通 symlink 权限限制。
+- 最新 Codex 本地验证：unittest 264 tests OK / 6 skipped；pytest 258 passed / 6 skipped /
+  169 subtests passed；Python compile、11 个 prompt render、start/resume 两套 CLI help、
+  `git diff --check` 均通过。6 个 skip 仅为当前 Windows 普通 symlink 权限限制。
 - 没有 GitHub CI 或独立外部测试证据，不作相应声明。
 - 剩余能力：完整 secret-safe state persistence（当前只覆盖 RunConfig 中已知凭据）、verification artifact/spool、workspace locking/policy、write/verification recovery 等仍未实现；本轮 EventSink/RunRecord 只提供单进程本地 JSONL 与有界审计清单，不是完整日志或恢复系统。provider 正向 retry/独立 attempt 语义未实现，当前 durable 只允许单次外部尝试；当前模型 `request_digest` 只代表有界语义输入，身份范围明确为 `PARTIAL`，不能据此安全重放最终 rendered request；exactly-once 不承诺。JUnit XML 是当前唯一可信报告格式，未配置或报告缺失/畸形时保守返回证据不足；多框架 parser registry、扩展 repair 和 S4 均未实现。runner 只改写精确匹配的 `--junitxml/--junit-xml` destination 到 owned temporary output，workspace report_path 保持原 bytes/mtime；owned temp cleanup 失败返回结构化 `EXECUTION_ERROR`。pytest 对其它 workspace 文件的副作用留给 D5，本轮未实现 artifact spool/recovery。
 - 后续技术切片继续按 MASTER_PLAN §5.2 执行；保留现有 S1/S2/S3 历史编号，不重新开启或重命名 S1。
-- MASTER_PLAN 对应：当前实现事实冻结在 S3.2、D1/S1a、D2/S2b 和已验收的 D3/S2c Seal；D6/S3.3a 保持已验收事实，本轮 D6/S3.3b 仅完成本地 EventSink/RunRecord 实现与验证，待外部审核后再决定冻结；后续运行控制、轨迹和恢复要求继续按 §5.2 映射执行，本轮不推进下一阶段。
+- MASTER_PLAN 对应：当前实现事实冻结在 S3.2、D1/S1a、D2/S2b、D3/S2c、D4/S3.2a、D6/S3.3a 和本轮 D6/S3.3b Final Seal；没有 GitHub CI 或独立外部测试证据。后续运行控制、轨迹和恢复要求继续按 §5.2 映射执行，本轮不推进 S3.3c 或 S4。
 
 ## 当前文档任务：独立 MASTER PLAN（2026-09-16）
 
@@ -582,12 +584,13 @@ Python compile、11 个 prompt render、start/resume 两套 CLI help 和 `git di
 artifact/spool、recovery、workspace locking/policy 和 exactly-once 当时仍未实现。本轮随后进入
 S3.3b，不改变 D6a 的已验收边界。
 
-## D6/S3.3b：幂等运行审计记录
+## D6/S3.3b Final Seal：幂等运行审计记录
 
 ### 范围与公开契约
 
-- 新增 `agent.runtime.trajectory`：版本化 `RunEvent`、`AppendResult`、
-  `EventSink` Protocol、`JsonlEventSink`、`RunRecord` 和记录写入结果。
+- `agent.runtime.trajectory` 保留稳定 facade；内部拆为 contracts、sink、record、recorder
+  四个小模块，继续导出版本化 `RunEvent`、`AppendResult`、`EventSink` Protocol、
+  `JsonlEventSink`、`RunRecord` 和记录写入结果。
 - 幂等键只由 `schema_version + run_id + subject_id + event_type + phase` 的
   canonical JSON 摘要确定；sink `sequence` 只表示该文件的写入顺序。重放返回
   `DUPLICATE`，同键不同内容返回 `CONFLICT`；启动时发现尾部残缺、非法 JSON、序列损坏、
@@ -596,21 +599,30 @@ S3.3b，不改变 D6a 的已验收边界。
   不把用户的 run/thread/task id 拼进文件名。事件仅保存有界的模型/tool/edit/verification
   摘要、usage、错误码和稳定身份，不进入 graph state/checkpoint，也不参与恢复决策。
 - durable runtime 默认注入该 sink；图结束后写入 versioned `RunRecord`，成功后通过
-  `RunSummary.record_ref` 暴露引用。事件或记录写入失败/损坏将 `audit_incomplete=true`，
-  CLI 默认不会返回 0；checkpoint 仍是恢复唯一依据。
+  `RunSummary.record_ref` 暴露引用。新增 `audit_incomplete` 后，公开 `RunSummary` schema
+  已升级为 v2；既有 lifecycle 与 CLI 0/1/2/3 语义保持不变。事件或记录写入失败/损坏将
+  `audit_incomplete=true`，CLI 默认不会返回 0；checkpoint 仍是恢复唯一依据。
 
 ### TDD 与验证事实
 
 - [x] 覆盖关闭重开后的事件重放幂等、同键冲突、尾部截断/非法 JSON、事件和记录写失败，
-  以及既有损坏记录的保守拒绝。
-- [x] 覆盖默认 durable runtime 的 lifecycle start/result、暂停后 resume 的终态事件、
-  model/tool/edit/verification 审计事件、调用身份和有界摘要；不保存 raw prompt、response、
-  tool payload 或 stdout。
+  以及既有损坏记录的保守拒绝；两个同进程 sink 交错 append 会先刷新磁盘索引并产生
+  sequence 1、2，明确不提供多进程锁。
+- [x] 通过公开 Architect graph seam 验证 model 事件；通过 durable start/resume seams 验证
+  lifecycle 与 checkpoint/event 独立性；另以有界 recorder contract test 锁定 tool/edit/
+  verification 摘要形状。model/tool 记录 request/response digest 与 usage，edit 只记录
+  status/error/hash/diff digest，verification 只记录 check identity/status/failure_id/attempt。
+  审计文件不保存 raw prompt、response、源码、tool payload 或 stdout/stderr。
+- [x] 通过真实 SQLite durable seams 验证“事件领先但 checkpoint 仍 IN_FLIGHT”恢复为
+  `OUTCOME_UNKNOWN` 且不 redispatch，以及“checkpoint 已有 durable result、事件缺失”只 settle
+  且不 redispatch；事件不参与恢复决策。
+- [x] durable runtime 的审计时间统一取注入 clock；内部实现拆分后，旧
+  `agent.runtime.trajectory` 公共 import 保持兼容。
 - [x] 覆盖 KnownSecretFilter 对事件/记录的确定性脱敏、哈希记录路径和 runtime 文件扫描；
   当前仍只承诺配置中已知 secret，不是通用隐私检测。
-- [x] 最新本地验证：unittest 261 tests OK / 6 skipped；pytest 255 passed / 6 skipped /
+- [x] 最新本地验证：unittest 264 tests OK / 6 skipped；pytest 258 passed / 6 skipped /
   169 subtests passed；Python compile、11 个 prompt render、两套 CLI help 和
-  `git diff --check` 在提交前重新执行。
+  `git diff --check` 通过。没有 GitHub CI 或独立外部测试证据，不将本地结果外推为外部验收。
 
 ### 边界与未实现项
 

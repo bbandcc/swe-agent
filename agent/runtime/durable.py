@@ -2,6 +2,7 @@
 
 from __future__ import annotations
 
+import hashlib
 import sqlite3
 import time
 from collections.abc import Callable, Mapping
@@ -50,6 +51,35 @@ from agent.workspace import WorkspaceRootError, workspace_root_scope
 
 GraphFactory = Callable[[RunConfig, str, SqliteSaver, Callable[[], float]], Any]
 
+# Public JSON summary contract.  Increment when the externally serialized
+# RunSummary shape changes; the durable lifecycle and exit-code semantics stay
+# independent of this version marker.
+RUN_SUMMARY_SCHEMA_VERSION = 2
+
+
+class _ObservedClock:
+    """Share one injected clock and retain the latest observed instant."""
+
+    def __init__(self, source: Callable[[], float]) -> None:
+        self._source = source
+        self.last: float | None = None
+
+    def __call__(self) -> float:
+        value = self._source()
+        self.last = value
+        return value
+
+    def latest_or(self, fallback: float) -> float:
+        return self.last if self.last is not None else fallback
+
+
+def _audit_clock(clock: Callable[[], float]) -> Callable[[], float]:
+    """Read the latest runtime clock value without adding fake-clock ticks."""
+
+    if isinstance(clock, _ObservedClock):
+        return lambda: clock.latest_or(0.0)
+    return clock
+
 
 class DurableRunStatus(str, Enum):
     COMPLETED = "completed"
@@ -74,7 +104,7 @@ class RunSummary:
     audit_incomplete: bool = False
 
     def __post_init__(self) -> None:
-        if self.schema_version != 1:
+        if self.schema_version != RUN_SUMMARY_SCHEMA_VERSION:
             raise ValueError("Unsupported run summary schema version.")
         if not isinstance(self.runtime_status, DurableRunStatus):
             raise ValueError("runtime_status must be DurableRunStatus.")
@@ -143,7 +173,7 @@ class DurableRunResult:
         identity = state.get("run_identity")
         run_id = self.run_id or getattr(identity, "run_id", None) or "unknown"
         return RunSummary(
-            schema_version=1,
+            schema_version=RUN_SUMMARY_SCHEMA_VERSION,
             runtime_status=self.status,
             workflow_outcome=_summary_value(state.get("outcome")),
             verification_status=_summary_value(
@@ -362,7 +392,8 @@ def _run(
             audit_incomplete=True,
             audit_error_code=error.code.value,
         )
-    started_at = clock()
+    observed_clock = _ObservedClock(clock)
+    started_at = observed_clock()
     database = config.runtime_root / "checkpoints.sqlite"
     try:
         connection = sqlite3.connect(database, check_same_thread=False)
@@ -391,13 +422,15 @@ def _run(
                     config,
                     request.identity.run_id,
                     saver,
-                    clock,
+                    observed_clock,
                     event_sink=audit_sink,
                     task_id=request.identity.task_id,
                     thread_id=request.identity.thread_id,
                 )
             else:
-                graph = factory(config, request.identity.run_id, saver, clock)
+                graph = factory(
+                    config, request.identity.run_id, saver, observed_clock
+                )
             thread_config = _thread_config(
                 request.identity.thread_id, config.max_steps
             )
@@ -425,7 +458,7 @@ def _run(
                     request=request,
                     sink=audit_sink,
                     started_at=started_at,
-                    finished_at=time.time(),
+                    finished_at=observed_clock.latest_or(started_at),
                     secret_filter=secret_filter,
                 )
 
@@ -435,6 +468,7 @@ def _run(
                 thread_id=request.identity.thread_id,
                 task_id=request.identity.task_id,
                 secret_filter=secret_filter,
+                clock=_audit_clock(observed_clock),
             )
             try:
                 recorder.lifecycle(
@@ -472,7 +506,7 @@ def _run(
                         request=request,
                         sink=audit_sink,
                         started_at=started_at,
-                        finished_at=time.time(),
+                        finished_at=observed_clock.latest_or(started_at),
                         secret_filter=secret_filter,
                     )
                 graph_input = None
@@ -497,7 +531,7 @@ def _run(
                         request=request,
                         sink=audit_sink,
                         started_at=started_at,
-                        finished_at=time.time(),
+                        finished_at=observed_clock.latest_or(started_at),
                         secret_filter=secret_filter,
                     )
                 graph_input = {
@@ -545,7 +579,7 @@ def _run(
                     request=request,
                     sink=audit_sink,
                     started_at=started_at,
-                    finished_at=time.time(),
+                    finished_at=observed_clock.latest_or(started_at),
                     secret_filter=secret_filter,
                 )
             status = (
@@ -565,7 +599,7 @@ def _run(
                 request=request,
                 sink=audit_sink,
                 started_at=started_at,
-                finished_at=time.time(),
+                finished_at=observed_clock.latest_or(started_at),
                 secret_filter=secret_filter,
             )
         except AuditIncompleteError as error:
@@ -640,6 +674,7 @@ def create_durable_workflow(
                 "max_output_tokens": config.model_max_output_tokens,
             },
             secret_filter=secret_filter,
+            clock=_audit_clock(clock),
         )
         if event_sink is not None
         else None
@@ -710,7 +745,9 @@ def _finish_audit(
             error=(
                 {
                     "code": terminal_code,
-                    "message": secret_filter.redact_text(result.message)[:512],
+                    "message_digest": hashlib.sha256(
+                        secret_filter.redact_text(result.message).encode("utf-8")
+                    ).hexdigest(),
                 }
                 if terminal_code
                 else None

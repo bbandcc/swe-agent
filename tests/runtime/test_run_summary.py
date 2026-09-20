@@ -81,7 +81,7 @@ class RunSummaryTests(RunConfigTestCase):
         self.assertEqual(
             summary.to_dict(),
             {
-                "schema_version": 1,
+                "schema_version": 2,
                 "runtime_status": "completed",
                 "workflow_outcome": "completed",
                 "verification_status": "verified",
@@ -638,6 +638,7 @@ class RunSummaryTests(RunConfigTestCase):
 
         self.assertEqual(completed.returncode, 2)
         payload = json.loads(completed.stdout)
+        self.assertEqual(payload["schema_version"], 2)
         self.assertEqual(payload["runtime_status"], "rejected")
         self.assertEqual(payload["error_code"], "invalid_value")
 

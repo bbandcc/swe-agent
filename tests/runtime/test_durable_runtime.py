@@ -33,6 +33,7 @@ from agent.runtime import (
     DurableBudgetBoundary,
     DurableBudgetState,
     DurableCallResult,
+    JsonlEventSink,
     ModelCallResult,
     RequestIdentityScope,
     ResumeRequest,
@@ -42,6 +43,7 @@ from agent.runtime import (
     UsageRecord,
     UsageStatus,
     WorkspaceIdentity,
+    RunEvent,
     semantic_config_digest,
 )
 from agent.runtime.durable import (
@@ -749,6 +751,122 @@ class DurableRuntimeTests(RunConfigTestCase):
 
             self.assertEqual(resumed.error_code, "outcome_unknown")
             self.assertEqual(factory.dispatches, 1)
+
+    def test_event_result_does_not_override_inflight_checkpoint(self) -> None:
+        with tempfile.TemporaryDirectory() as directory:
+            config = self.make_config(
+                Path(directory), verification_specs=(), max_cost_usd=None
+            )
+            request = self.request(config)
+            sink = JsonlEventSink(config.runtime_root)
+
+            class EventBeforeCrashFactory:
+                dispatches = 0
+
+                def __call__(self, config, run_id, saver, clock):
+                    boundary = DurableBudgetBoundary(run_id, clock=clock)
+                    builder = StateGraph(TinyState)
+                    builder.add_node(
+                        "reserve_model",
+                        lambda state: boundary.reserve_model(
+                            state, "model", {"value": state.value}
+                        ),
+                    )
+
+                    def dispatch(state):
+                        self.dispatches += 1
+                        reservation = state.budget.active[0]
+                        sink.append_once(
+                            RunEvent.create(
+                                run_id=run_id,
+                                thread_id=request.identity.thread_id,
+                                task_id=request.identity.task_id,
+                                subject_id=reservation.call_id,
+                                event_type="model",
+                                phase="result",
+                                status="succeeded",
+                                timestamp=clock(),
+                                step_id=reservation.step_id,
+                                call_id=reservation.call_id,
+                                summary={"bounded": True},
+                            )
+                        )
+                        raise RuntimeError("crash after audit result")
+
+                    builder.add_node("dispatch_model", dispatch)
+                    builder.add_edge(START, "reserve_model")
+                    builder.add_edge("reserve_model", "dispatch_model")
+                    builder.add_edge("dispatch_model", END)
+                    return builder.compile(checkpointer=saver)
+
+            factory = EventBeforeCrashFactory()
+            with self.assertRaises(RuntimeError):
+                start_run(
+                    config,
+                    request,
+                    {"value": 0},
+                    graph_factory=factory,
+                    event_sink=sink,
+                    clock=lambda: 100.0,
+                )
+
+            resumed = resume_run(
+                config,
+                ResumeRequest(
+                    request.identity, request.run_config_digest, request.agent_revision
+                ),
+                graph_factory=factory,
+                event_sink=sink,
+                clock=lambda: 110.0,
+            )
+
+            self.assertEqual(resumed.error_code, "outcome_unknown")
+            self.assertEqual(factory.dispatches, 1)
+            self.assertTrue(
+                any(
+                    item.event_type == "model" and item.phase == "result"
+                    for item in sink.events
+                )
+            )
+
+    def test_checkpoint_result_without_event_only_settles_on_resume(self) -> None:
+        with tempfile.TemporaryDirectory() as directory:
+            config = self.make_config(
+                Path(directory), verification_specs=(), max_cost_usd=None
+            )
+            request = self.request(config)
+            factory = NestedCrashFactory(interrupt_after="dispatch_model")
+            sink = JsonlEventSink(config.runtime_root)
+
+            started = start_run(
+                config,
+                request,
+                {"value": 0},
+                graph_factory=factory,
+                event_sink=sink,
+                clock=lambda: 100.0,
+            )
+            resumed = resume_run(
+                config,
+                ResumeRequest(
+                    request.identity, request.run_config_digest, request.agent_revision
+                ),
+                graph_factory=factory,
+                event_sink=sink,
+                clock=lambda: 110.0,
+            )
+
+            self.assertEqual(started.status, DurableRunStatus.PAUSED)
+            self.assertEqual(resumed.status, DurableRunStatus.COMPLETED)
+            self.assertEqual(factory.dispatches, 1)
+            self.assertEqual(resumed.state["budget"].steps_used, 1)
+            self.assertFalse(
+                any(
+                    item.event_type == "model"
+                    and item.phase == "result"
+                    for item in sink.events
+                )
+            )
 
     def test_absolute_deadline_is_enforced_after_reopen(self) -> None:
         with tempfile.TemporaryDirectory() as directory:
