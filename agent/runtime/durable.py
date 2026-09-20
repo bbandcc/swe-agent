@@ -5,7 +5,7 @@ from __future__ import annotations
 import sqlite3
 import time
 from collections.abc import Callable, Mapping
-from dataclasses import dataclass
+from dataclasses import dataclass, replace
 from enum import Enum
 from typing import Any
 
@@ -31,8 +31,20 @@ from agent.runtime.identity import (
     preflight_resume,
     preflight_start,
 )
+from agent.runtime.revision import AgentCodeRevision
 from agent.runtime.semantics import semantic_config_digest
 from agent.runtime.secrets import KnownSecretFilter, SENSITIVE_DATA_MESSAGE
+from agent.runtime.trajectory import (
+    AuditIncompleteError,
+    AuditStatus,
+    EventRecorder,
+    EventSink,
+    EventSinkError,
+    JsonlEventSink,
+    RunRecord,
+    RunEvent,
+    write_run_record,
+)
 from agent.verification import AcceptanceResult
 from agent.workspace import WorkspaceRootError, workspace_root_scope
 
@@ -59,6 +71,7 @@ class RunSummary:
     record_ref: str | None = None
     warnings: tuple[str, ...] = ()
     acceptance: AcceptanceResult | None = None
+    audit_incomplete: bool = False
 
     def __post_init__(self) -> None:
         if self.schema_version != 1:
@@ -74,6 +87,8 @@ class RunSummary:
             self.acceptance, AcceptanceResult
         ):
             raise ValueError("acceptance must be AcceptanceResult or None.")
+        if not isinstance(self.audit_incomplete, bool):
+            raise ValueError("audit_incomplete must be a boolean.")
         if isinstance(self.warnings, (str, bytes)):
             raise ValueError("warnings must contain warning codes.")
         try:
@@ -106,6 +121,7 @@ class RunSummary:
                 if self.acceptance is not None
                 else None
             ),
+            "audit_incomplete": self.audit_incomplete,
         }
 
 
@@ -117,6 +133,9 @@ class DurableRunResult:
     message: str = ""
     preflight: PreflightResult | None = None
     run_id: str | None = None
+    record_ref: str | None = None
+    audit_incomplete: bool = False
+    audit_error_code: str | None = None
 
     @property
     def summary(self) -> RunSummary:
@@ -132,8 +151,10 @@ class DurableRunResult:
             ),
             error_code=_summary_value(self.error_code),
             run_id=run_id,
+            record_ref=self.record_ref,
             warnings=_preflight_warning_codes(self.preflight),
             acceptance=_acceptance_value(state.get("acceptance")),
+            audit_incomplete=self.audit_incomplete,
         )
 
     @property
@@ -149,6 +170,8 @@ def run_exit_code(summary: RunSummary) -> int:
     """Map a public summary to the conservative local CLI exit contract."""
     if summary.runtime_status is DurableRunStatus.PAUSED:
         return 3
+    if summary.audit_incomplete:
+        return 2
     if (
         summary.runtime_status is DurableRunStatus.REJECTED
         or summary.error_code is not None
@@ -237,6 +260,7 @@ def start_run(
     *,
     graph_factory: GraphFactory | None = None,
     clock: Callable[[], float] = time.time,
+    event_sink: EventSink | None = None,
 ) -> DurableRunResult:
     """Start a new durable thread after an SQLite-backed identity preflight."""
     return _run(
@@ -246,6 +270,7 @@ def start_run(
         resume=False,
         graph_factory=graph_factory,
         clock=clock,
+        event_sink=event_sink,
     )
 
 
@@ -255,6 +280,7 @@ def resume_run(
     *,
     graph_factory: GraphFactory | None = None,
     clock: Callable[[], float] = time.time,
+    event_sink: EventSink | None = None,
 ) -> DurableRunResult:
     """Resume only a matching checkpoint; never turns a miss into a new run."""
     return _run(
@@ -264,6 +290,7 @@ def resume_run(
         resume=True,
         graph_factory=graph_factory,
         clock=clock,
+        event_sink=event_sink,
     )
 
 
@@ -275,6 +302,7 @@ def _run(
     resume: bool,
     graph_factory: GraphFactory | None,
     clock: Callable[[], float],
+    event_sink: EventSink | None,
 ) -> DurableRunResult:
     secret_filter = KnownSecretFilter.from_run_config(config)
     if _identity_contains_secret(request.identity, secret_filter):
@@ -316,6 +344,25 @@ def _run(
             message=secret_filter.redact_text(str(error)),
             run_id=request.identity.run_id,
         )
+    try:
+        audit_sink = (
+            event_sink
+            if event_sink is not None
+            else JsonlEventSink(
+                config.runtime_root,
+                secret_filter=secret_filter,
+            )
+        )
+    except EventSinkError as error:
+        return DurableRunResult(
+            DurableRunStatus.FAILED,
+            error_code="audit_error",
+            message=secret_filter.redact_text(str(error)),
+            run_id=request.identity.run_id,
+            audit_incomplete=True,
+            audit_error_code=error.code.value,
+        )
+    started_at = clock()
     database = config.runtime_root / "checkpoints.sqlite"
     try:
         connection = sqlite3.connect(database, check_same_thread=False)
@@ -339,7 +386,18 @@ def _run(
             )
         try:
             factory = graph_factory or create_durable_workflow
-            graph = factory(config, request.identity.run_id, saver, clock)
+            if graph_factory is None:
+                graph = factory(
+                    config,
+                    request.identity.run_id,
+                    saver,
+                    clock,
+                    event_sink=audit_sink,
+                    task_id=request.identity.task_id,
+                    thread_id=request.identity.thread_id,
+                )
+            else:
+                graph = factory(config, request.identity.run_id, saver, clock)
             thread_config = _thread_config(
                 request.identity.thread_id, config.max_steps
             )
@@ -350,7 +408,7 @@ def _run(
                 else preflight_start(request, lookup)
             )
             if not preflight.accepted:
-                return DurableRunResult(
+                base_result = DurableRunResult(
                     DurableRunStatus.REJECTED,
                     error_code=(
                         preflight.error_code.value
@@ -361,11 +419,43 @@ def _run(
                     preflight=preflight,
                     run_id=request.identity.run_id,
                 )
+                return _finish_audit(
+                    base_result,
+                    config=config,
+                    request=request,
+                    sink=audit_sink,
+                    started_at=started_at,
+                    finished_at=time.time(),
+                    secret_filter=secret_filter,
+                )
+
+            recorder = EventRecorder(
+                audit_sink,
+                run_id=request.identity.run_id,
+                thread_id=request.identity.thread_id,
+                task_id=request.identity.task_id,
+                secret_filter=secret_filter,
+            )
+            try:
+                recorder.lifecycle(
+                    phase="start",
+                    status="started",
+                )
+            except AuditIncompleteError as error:
+                return DurableRunResult(
+                    DurableRunStatus.FAILED,
+                    error_code="audit_error",
+                    message=secret_filter.redact_text(str(error)),
+                    preflight=preflight,
+                    run_id=request.identity.run_id,
+                    audit_incomplete=True,
+                    audit_error_code=error.code,
+                )
 
             if resume:
                 uncertain = mark_uncertain_dispatch(graph, thread_config)
                 if uncertain is not None:
-                    return DurableRunResult(
+                    base_result = DurableRunResult(
                         DurableRunStatus.REJECTED,
                         state=uncertain,
                         error_code=BudgetErrorCode.OUTCOME_UNKNOWN.value,
@@ -376,6 +466,15 @@ def _run(
                         preflight=preflight,
                         run_id=request.identity.run_id,
                     )
+                    return _finish_audit(
+                        base_result,
+                        config=config,
+                        request=request,
+                        sink=audit_sink,
+                        started_at=started_at,
+                        finished_at=time.time(),
+                        secret_filter=secret_filter,
+                    )
                 graph_input = None
             else:
                 assert initial_state is not None
@@ -384,13 +483,22 @@ def _run(
                     safe_initial.get("runtime_error_code")
                     is BudgetErrorCode.SENSITIVE_DATA_DETECTED
                 ):
-                    return DurableRunResult(
+                    base_result = DurableRunResult(
                         DurableRunStatus.FAILED,
                         state=safe_initial,
                         error_code=BudgetErrorCode.SENSITIVE_DATA_DETECTED.value,
                         message=SENSITIVE_DATA_MESSAGE,
                         preflight=preflight,
                         run_id=request.identity.run_id,
+                    )
+                    return _finish_audit(
+                        base_result,
+                        config=config,
+                        request=request,
+                        sink=audit_sink,
+                        started_at=started_at,
+                        finished_at=time.time(),
+                        secret_filter=secret_filter,
                     )
                 graph_input = {
                     **safe_initial,
@@ -400,7 +508,7 @@ def _run(
                     "budget": BudgetSnapshot.create(
                         max_steps=config.max_steps,
                         max_cost_usd=config.max_cost_usd,
-                        deadline_at=clock() + config.timeout_seconds,
+                        deadline_at=started_at + config.timeout_seconds,
                     ),
                 }
             with workspace_root_scope(config.workspace_root):
@@ -421,7 +529,7 @@ def _run(
                     if hasattr(runtime_error, "value")
                     else str(runtime_error)
                 )
-                return DurableRunResult(
+                base_result = DurableRunResult(
                     DurableRunStatus.FAILED,
                     state=result,
                     error_code=code,
@@ -431,16 +539,52 @@ def _run(
                     preflight=preflight,
                     run_id=request.identity.run_id,
                 )
+                return _finish_audit(
+                    base_result,
+                    config=config,
+                    request=request,
+                    sink=audit_sink,
+                    started_at=started_at,
+                    finished_at=time.time(),
+                    secret_filter=secret_filter,
+                )
             status = (
                 DurableRunStatus.PAUSED
                 if snapshot.next
                 else DurableRunStatus.COMPLETED
             )
-            return DurableRunResult(
+            base_result = DurableRunResult(
                 status,
                 state=result,
                 preflight=preflight,
                 run_id=request.identity.run_id,
+            )
+            return _finish_audit(
+                base_result,
+                config=config,
+                request=request,
+                sink=audit_sink,
+                started_at=started_at,
+                finished_at=time.time(),
+                secret_filter=secret_filter,
+            )
+        except AuditIncompleteError as error:
+            return DurableRunResult(
+                DurableRunStatus.FAILED,
+                error_code="audit_error",
+                message=secret_filter.redact_text(str(error)),
+                run_id=request.identity.run_id,
+                audit_incomplete=True,
+                audit_error_code=error.code,
+            )
+        except EventSinkError as error:
+            return DurableRunResult(
+                DurableRunStatus.FAILED,
+                error_code="audit_error",
+                message=secret_filter.redact_text(str(error)),
+                run_id=request.identity.run_id,
+                audit_incomplete=True,
+                audit_error_code=error.code.value,
             )
         except sqlite3.Error as error:
             return DurableRunResult(
@@ -472,6 +616,10 @@ def create_durable_workflow(
     run_id: str,
     saver: SqliteSaver,
     clock: Callable[[], float] = time.time,
+    *,
+    event_sink: EventSink | None = None,
+    task_id: str | None = None,
+    thread_id: str | None = None,
 ):
     """Compile the parent with a saver; child graphs inherit it by default."""
     boundary = DurableBudgetBoundary(
@@ -480,6 +628,22 @@ def create_durable_workflow(
         model_request_timeout_seconds=config.model_request_timeout_seconds,
     )
     secret_filter = KnownSecretFilter.from_run_config(config)
+    event_recorder = (
+        EventRecorder(
+            event_sink,
+            run_id=run_id,
+            thread_id=thread_id or run_id,
+            task_id=task_id or run_id,
+            model={
+                "provider": config.model.provider,
+                "model": config.model.model,
+                "max_output_tokens": config.model_max_output_tokens,
+            },
+            secret_filter=secret_filter,
+        )
+        if event_sink is not None
+        else None
+    )
     architect = create_architect_workflow(
         durable_architect_runtime(
             config.model,
@@ -490,6 +654,7 @@ def create_durable_workflow(
         ),
         budget_boundary=boundary,
         secret_filter=secret_filter,
+        event_recorder=event_recorder,
     )
     developer = create_developer_workflow(
         durable_developer_runtime(
@@ -503,6 +668,7 @@ def create_durable_workflow(
         ),
         budget_boundary=boundary,
         secret_filter=secret_filter,
+        event_recorder=event_recorder,
     )
     return create_workflow_graph(
         architect=architect,
@@ -512,7 +678,162 @@ def create_durable_workflow(
         durable_runtime=True,
         clock=clock,
         secret_filter=secret_filter,
+        event_recorder=event_recorder,
     ).compile(checkpointer=saver).with_config({"tags": ["agent-durable-v1"]})
+
+
+def _finish_audit(
+    result: DurableRunResult,
+    *,
+    config: RunConfig,
+    request: StartRequest | ResumeRequest,
+    sink: EventSink,
+    started_at: float,
+    finished_at: float,
+    secret_filter: KnownSecretFilter,
+) -> DurableRunResult:
+    """Append terminal audit facts and publish the small run record."""
+    try:
+        terminal_code = result.error_code
+        event = RunEvent.create(
+            run_id=request.identity.run_id,
+            thread_id=request.identity.thread_id,
+            task_id=request.identity.task_id,
+            subject_id=(
+                f"{request.identity.run_id}:"
+                f"{result.status.value}:{terminal_code or 'ok'}"
+            ),
+            event_type="run",
+            phase="error" if terminal_code else "result",
+            status="failed" if terminal_code else result.status.value,
+            timestamp=finished_at,
+            error=(
+                {
+                    "code": terminal_code,
+                    "message": secret_filter.redact_text(result.message)[:512],
+                }
+                if terminal_code
+                else None
+            ),
+            summary={
+                "runtime_status": result.status.value,
+                "workflow_outcome": _state_value(
+                    result.state, "outcome"
+                ),
+                "verification_status": _state_value(
+                    result.state, "verification_status"
+                ),
+            },
+        )
+        append = sink.append_once(event)
+        if not append.ok:
+            return _audit_failure(
+                result,
+                code=append.error_code or "audit_error",
+                message=append.message,
+            )
+        record = RunRecord(
+            schema_version=1,
+            run_id=request.identity.run_id,
+            thread_id=request.identity.thread_id,
+            task_id=request.identity.task_id,
+            workspace_root=request.identity.workspace.canonical_root,
+            workspace_root_digest=request.identity.workspace.root_digest,
+            run_config_digest=request.run_config_digest,
+            runtime_status=result.status.value,
+            workflow_outcome=_state_value(result.state, "outcome"),
+            verification_status=_state_value(result.state, "verification_status"),
+            error_code=result.error_code,
+            budget=_budget_record(result.state),
+            started_at=started_at,
+            finished_at=finished_at,
+            last_event_sequence=getattr(sink, "last_sequence", append.sequence),
+            audit_status=AuditStatus.COMPLETE,
+            agent_revision=_revision_record(request.agent_revision),
+            workspace_revision_start="UNKNOWN",
+            workspace_revision_end="UNKNOWN",
+        )
+        written = write_run_record(
+            config.runtime_root,
+            record,
+            secret_filter=secret_filter,
+        )
+        if not written.success:
+            return _audit_failure(
+                result,
+                code=written.error_code or "audit_error",
+                message=written.message,
+            )
+        return replace(result, record_ref=written.record_ref)
+    except (AuditIncompleteError, EventSinkError, OSError, ValueError) as error:
+        return _audit_failure(
+            result,
+            code=getattr(error, "code", "audit_error"),
+            message=str(error),
+        )
+
+
+def _audit_failure(
+    result: DurableRunResult,
+    *,
+    code: object,
+    message: str,
+) -> DurableRunResult:
+    normalized = code.value if isinstance(code, Enum) else str(code)
+    return replace(
+        result,
+        error_code=result.error_code or "audit_error",
+        message=result.message or message,
+        audit_incomplete=True,
+        audit_error_code=normalized,
+    )
+
+
+def _state_value(state: Mapping[str, Any] | None, key: str) -> str | None:
+    if not isinstance(state, Mapping):
+        return None
+    value = state.get(key)
+    return value.value if isinstance(value, Enum) else (str(value) if value is not None else None)
+
+
+def _budget_record(state: Mapping[str, Any] | None) -> dict[str, Any] | None:
+    if not isinstance(state, Mapping):
+        return None
+    budget = state.get("budget")
+    if budget is None:
+        return None
+    return {
+        "max_steps": getattr(budget, "max_steps", None),
+        "steps_used": getattr(budget, "steps_used", None),
+        "max_cost_microusd": getattr(budget, "max_cost_microusd", None),
+        "cost_microusd": getattr(budget, "cost_microusd", None),
+        "cost_unknown": getattr(budget, "cost_unknown", None),
+        "deadline_at": getattr(budget, "deadline_at", None),
+        "usage": [
+            {
+                "call_id": getattr(item, "call_id", None),
+                "status": _enum_value(getattr(item, "status", None)),
+                "input_tokens": getattr(item, "input_tokens", None),
+                "output_tokens": getattr(item, "output_tokens", None),
+                "total_tokens": getattr(item, "total_tokens", None),
+                "cost_microusd": getattr(item, "cost_microusd", None),
+                "cost_source": getattr(item, "cost_source", None),
+            }
+            for item in getattr(budget, "usage", ())
+        ],
+    }
+
+
+def _revision_record(revision: AgentCodeRevision) -> dict[str, Any]:
+    return {
+        "commit_sha": revision.commit_sha,
+        "status": revision.status.value,
+        "reason": revision.reason.value if revision.reason else None,
+    }
+
+
+def _enum_value(value: object) -> object:
+    return value.value if isinstance(value, Enum) else value
 
 
 def _thread_config(thread_id: str, max_steps: int) -> dict[str, Any]:

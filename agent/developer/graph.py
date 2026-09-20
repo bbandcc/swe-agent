@@ -33,6 +33,7 @@ from agent.tools.codemap import codemap_tools
 from agent.tools.search import search_tools
 from agent.runtime import DurableBudgetBoundary
 from agent.runtime.secrets import KnownSecretFilter
+from agent.runtime.trajectory import EventRecorder
 
 
 def create_developer_workflow(
@@ -41,6 +42,7 @@ def create_developer_workflow(
     research_tools: Sequence[Any] | None = None,
     budget_boundary: DurableBudgetBoundary | None = None,
     secret_filter: KnownSecretFilter | None = None,
+    event_recorder: EventRecorder | None = None,
 ):
     runtime = runtime or default_developer_runtime()
     tools = list(
@@ -342,8 +344,20 @@ def create_developer_workflow(
             return "end"
         return "settle"
 
-    def persist_node(node):
-        return secret_filter.wrap_node(node) if secret_filter is not None else node
+    def persist_node(
+        node,
+        *,
+        event_type: str | None = None,
+        node_name: str | None = None,
+    ):
+        wrapped = secret_filter.wrap_node(node) if secret_filter is not None else node
+        if event_recorder is not None and event_type is not None:
+            return event_recorder.wrap_node(
+                wrapped,
+                event_type=event_type,
+                node_name=node_name or event_type,
+            )
+        return wrapped
 
     workflow = StateGraph(SoftwareDeveloperState)
     workflow.add_node("start_implementing", persist_node(validate_and_start))
@@ -352,22 +366,40 @@ def create_developer_workflow(
     )
     workflow.add_node(
         "get_clear_implementation_plan_for_atomic_task",
-        persist_node(get_clear_implementation_plan_for_atomic_task),
+        persist_node(
+            get_clear_implementation_plan_for_atomic_task,
+            event_type="model",
+            node_name="get_clear_implementation_plan_for_atomic_task",
+        ),
     )
     workflow.add_node(
         "research_tool_node",
         persist_node(
             dispatch_research_tools
             if budget_boundary is not None
-            else research_tool_node
+            else research_tool_node,
+            event_type="tool",
+            node_name="research_tools",
         ),
     )
-    workflow.add_node("stage_diff_for_task", persist_node(stage_diff_for_task))
+    workflow.add_node(
+        "stage_diff_for_task",
+        persist_node(
+            stage_diff_for_task,
+            event_type="model",
+            node_name="stage_diff_for_task",
+        ),
+    )
     workflow.add_node(
         "proceed_to_next_atomic_task", persist_node(proceed_to_next_atomic_task)
     )
     workflow.add_node(
-        "commit_file_transaction", persist_node(commit_file_transaction)
+        "commit_file_transaction",
+        persist_node(
+            commit_file_transaction,
+            event_type="edit",
+            node_name="commit_file_transaction",
+        ),
     )
     workflow.add_node(
         "proceed_to_next_task", persist_node(proceed_to_next_task)

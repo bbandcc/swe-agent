@@ -26,6 +26,7 @@ from agent.runtime.boundary import DurableBudgetState
 from agent.runtime.identity import RunIdentity
 from agent.runtime.revision import AgentCodeRevision
 from agent.runtime.secrets import KnownSecretFilter
+from agent.runtime.trajectory import EventRecorder
 
 
 class AgentState(DurableBudgetState):
@@ -73,6 +74,7 @@ def create_workflow_graph(
     workspace_root: Any = None,
     clock: Callable[[], float] = time.time,
     secret_filter: KnownSecretFilter | None = None,
+    event_recorder: EventRecorder | None = None,
 ):
     """Create the parent workflow with injectable compiled child graphs."""
     verification = VerificationController(
@@ -115,8 +117,20 @@ def create_workflow_graph(
             "developer_message": state.runtime_message,
         }
 
-    def persist_node(node):
-        return secret_filter.wrap_node(node) if secret_filter is not None else node
+    def persist_node(
+        node,
+        *,
+        event_type: str | None = None,
+        node_name: str | None = None,
+    ):
+        wrapped = secret_filter.wrap_node(node) if secret_filter is not None else node
+        if event_recorder is not None and event_type is not None:
+            return event_recorder.wrap_node(
+                wrapped,
+                event_type=event_type,
+                node_name=node_name or event_type,
+            )
+        return wrapped
 
     graph_builder = StateGraph(AgentState)
 
@@ -129,9 +143,21 @@ def create_workflow_graph(
         persist_node(swe_developer if developer is None else developer),
     )
     graph_builder.add_node(
-        "run_baseline_verification", persist_node(run_baseline)
+        "run_baseline_verification",
+        persist_node(
+            run_baseline,
+            event_type="verification",
+            node_name="run_baseline_verification",
+        ),
     )
-    graph_builder.add_node("run_post_verification", persist_node(run_post))
+    graph_builder.add_node(
+        "run_post_verification",
+        persist_node(
+            run_post,
+            event_type="verification",
+            node_name="run_post_verification",
+        ),
+    )
     graph_builder.add_node("prepare_repair", persist_node(prepare_repair))
     graph_builder.add_node("finalize_outcome", persist_node(finalize_outcome))
     if durable_runtime:

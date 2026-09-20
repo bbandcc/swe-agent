@@ -20,6 +20,7 @@ from agent.tools.search import search_tools
 from agent.runtime import BudgetSnapshot, DurableBudgetBoundary, DurableCallResult
 from agent.runtime.budget import BudgetErrorCode
 from agent.runtime.secrets import KnownSecretFilter
+from agent.runtime.trajectory import EventRecorder
 
 
 class SoftwareArchitectInput(TypedDict):
@@ -91,6 +92,7 @@ def create_architect_workflow(
     research_tools: Sequence[Any] | None = None,
     budget_boundary: DurableBudgetBoundary | None = None,
     secret_filter: KnownSecretFilter | None = None,
+    event_recorder: EventRecorder | None = None,
 ):
     runtime = runtime or default_architect_runtime()
     tools = list(
@@ -284,8 +286,20 @@ def create_architect_workflow(
             return "end"
         return "settle"
 
-    def persist_node(node):
-        return secret_filter.wrap_node(node) if secret_filter is not None else node
+    def persist_node(
+        node,
+        *,
+        event_type: str | None = None,
+        node_name: str | None = None,
+    ):
+        wrapped = secret_filter.wrap_node(node) if secret_filter is not None else node
+        if event_recorder is not None and event_type is not None:
+            return event_recorder.wrap_node(
+                wrapped,
+                event_type=event_type,
+                node_name=node_name or event_type,
+            )
+        return wrapped
 
     workflow = StateGraph(
         SoftwareArchitectState,
@@ -299,11 +313,16 @@ def create_architect_workflow(
         "extract_implementation_plan": extract_implementation_plan,
     }
     for name, node in model_nodes.items():
-        workflow.add_node(name, persist_node(node))
+        workflow.add_node(
+            name,
+            persist_node(node, event_type="model", node_name=name),
+        )
     workflow.add_node(
         "tools",
         persist_node(
-            dispatch_tools if budget_boundary is not None else tool_node
+            dispatch_tools if budget_boundary is not None else tool_node,
+            event_type="tool",
+            node_name="research_tools",
         ),
     )
 

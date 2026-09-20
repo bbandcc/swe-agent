@@ -87,9 +87,10 @@ class RunSummaryTests(RunConfigTestCase):
                 "verification_status": "verified",
                 "error_code": None,
                 "run_id": "run-1",
-            "record_ref": None,
-            "warnings": [],
-            "acceptance": {"accepted": True, "reason": "accepted"},
+                "record_ref": None,
+                "warnings": [],
+                "acceptance": {"accepted": True, "reason": "accepted"},
+                "audit_incomplete": False,
             },
         )
         self.assertEqual(run_exit_code(summary), 0)
