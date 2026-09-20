@@ -13,7 +13,7 @@
 - S3.2 production 技术冻结点：`5850b8370c49f868e90aeffe9e6042f85eaa522c`；D1/S1a、D2/S2b 已冻结，D3/S2c Seal blocker 已在本轮完成修复并通过本地验收。
 - S3.2 的配置、身份、SQLite checkpoint、预算边界、start/resume 和现有图接入均保持冻结；D3/S2c 现已将单一 JUnit XML 可信报告、稳定 case identity、保守 acceptance policy 和隔离到 owned temporary output 的 evidence 生命周期接入生产验收链路。D4/S3.2a 已补齐模型请求时限、单次外部尝试边界、普通模型响应结算和部分请求身份范围；workspace report_path 不再被 snapshot、覆盖或 restore；S3 尚未全部完成，当前不能进入 S4。
 - D2/S2b Final Seal 已收窄 library/CLI 的异常边界；`RunSummary.warnings` 只输出 preflight warning code，unexpected `RuntimeError`、`KeyboardInterrupt` 和 `SystemExit` 不被入口吞掉。
-- 最新 Codex 本地验证：unittest 232 tests OK / 6 skipped；pytest 226 passed / 6 skipped / 163 subtests passed；Python compile、11 个 prompt render、两套 CLI help、`git diff --check` 均通过。6 个 skip 仅为当前 Windows 普通 symlink 权限限制。
+- 最新 Codex 本地验证：unittest 233 tests OK / 6 skipped；pytest 227 passed / 6 skipped / 163 subtests passed；Python compile、11 个 prompt render、两套 CLI help、`git diff --check` 均通过。6 个 skip 仅为当前 Windows 普通 symlink 权限限制。
 - 没有 GitHub CI 或独立外部测试证据，不作相应声明。
 - 剩余能力：secret-safe persistence、EventSink/RunRecord/artifact、workspace locking/policy、write/verification recovery 等仍未实现；provider 正向 retry/独立 attempt 语义未实现，当前 durable 只允许单次外部尝试；当前模型 `request_digest` 只代表有界语义输入，身份范围明确为 `PARTIAL`，不能据此安全重放最终 rendered request；exactly-once 不承诺。JUnit XML 是当前唯一可信报告格式，未配置或报告缺失/畸形时保守返回证据不足；多框架 parser registry、扩展 repair 和 S4 均未实现。runner 只改写精确匹配的 `--junitxml/--junit-xml` destination 到 owned temporary output，workspace report_path 保持原 bytes/mtime；owned temp cleanup 失败返回结构化 `EXECUTION_ERROR`。pytest 对其它 workspace 文件的副作用留给 D5，本轮未实现 artifact spool/recovery。
 - 后续技术切片继续按 MASTER_PLAN §5.2 执行；保留现有 S1/S2/S3 历史编号，不重新开启或重命名 S1。
@@ -504,7 +504,9 @@ MASTER_PLAN §5.2 继续，本轮不进入 D4/S4。
   absolute deadline 仍由既有 `TIMEOUT_OVERRUN` 与副作用阻断规则优先处理。
 - [x] 普通非 `ModelCallResult` 响应继续以 `failed=False` 结算，usage/cost 保持
   `UNKNOWN`/`None`；仅明确的 provider/httpx transport 异常进入
-  `MODEL_TRANSPORT_ERROR`，本地意外 `OSError`/`RuntimeError` 继续传播。
+  `MODEL_TRANSPORT_ERROR`，本地意外 `OSError`/`RuntimeError` 继续传播。任一
+  `ModelCallResult.error` 或 `error_code` 存在都会生成 runtime error 并 FAILED
+  settle；裸 builtin `TimeoutError` 不自动伪装成 provider timeout。
 - [x] `CallReservation.request_identity_scope` 进入 checkpoint-safe 序列化；模型
   reservation 明确为 `PARTIAL`，SQLite 关闭重开后的 resume 保留该范围。当前
   digest 不是最终 rendered request，不能据此安全重放或声称 complete identity。
@@ -518,8 +520,8 @@ MASTER_PLAN §5.2 继续，本轮不进入 D4/S4。
 
 ### 当前状态
 
-D4/S3.2a Final Seal 实现与本地验收已完成。当前验证为 unittest 232 tests OK、6 skipped；
-pytest 226 passed、6 skipped、163 subtests passed。6 个 skip 仅来自当前 Windows
+D4/S3.2a Final Seal 实现与本地验收已完成。当前验证为 unittest 233 tests OK、6 skipped；
+pytest 227 passed、6 skipped、163 subtests passed。6 个 skip 仅来自当前 Windows
 账户缺少普通 symlink 创建权限；没有 GitHub CI 或独立外部测试证据。模型 provider
 版本保持不变；同步 SDK 无法被外层立即中断时，仍只能在返回后记录
 `TIMEOUT_OVERRUN`，不承诺绝对瞬时终止或 exactly-once。模型请求身份仍为

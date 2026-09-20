@@ -127,17 +127,18 @@ class DurableBudgetBoundary:
             usage = response.usage.for_call(active[0].call_id)
             digest = response.response_digest
             failed = response.error_code is not None or response.error is not None
-            error_update = (
-                {
-                    "runtime_error_code": (
-                        response.error_code
-                        or BudgetErrorCode.MODEL_OUTPUT_INVALID
-                    ),
+            if response.error_code is not None:
+                error_update = {
+                    "runtime_error_code": response.error_code,
+                    "runtime_message": response.error or response.error_code.value,
+                }
+            elif response.error is not None:
+                error_update = {
+                    "runtime_error_code": BudgetErrorCode.MODEL_OUTPUT_INVALID,
                     "runtime_message": response.error,
                 }
-                if response.error is not None
-                else {}
-            )
+            else:
+                error_update = {}
         else:
             value = response
             usage = UsageRecord.unknown(active[0].call_id)

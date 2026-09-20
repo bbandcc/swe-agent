@@ -443,6 +443,39 @@ class BudgetedGraphTests(unittest.TestCase):
         self.assertEqual(result["budget"].usage[0].input_tokens, 3)
         self.assertEqual(result["runtime_error_code"], BudgetErrorCode.MODEL_OUTPUT_INVALID)
 
+    def test_model_error_code_without_message_sets_failure_and_stops(self) -> None:
+        boundary = DurableBudgetBoundary("run", clock=lambda: 100.0)
+        initial = DurableBudgetState(
+            budget=BudgetSnapshot.create(
+                max_steps=1, max_cost_usd=None, deadline_at=200.0
+            )
+        )
+        reserved = boundary.reserve_model(initial, "model", {"task": "coded-error"})
+        state = initial.model_copy(update=reserved)
+        response = ModelCallResult(
+            value=None,
+            usage=UsageMeasurement(UsageStatus.UNKNOWN),
+            response_digest="c" * 64,
+            error_code=BudgetErrorCode.MODEL_REQUEST_TIMEOUT,
+        )
+
+        _, update = boundary.capture_model(state, response)
+        settled = boundary.settle(state.model_copy(update=update))
+
+        self.assertEqual(
+            update["runtime_error_code"], BudgetErrorCode.MODEL_REQUEST_TIMEOUT
+        )
+        self.assertEqual(update["runtime_message"], "model_request_timeout")
+        self.assertEqual(
+            settled["budget"].reservations[0].status, CallStatus.FAILED
+        )
+        self.assertEqual(
+            boundary.after_settle(
+                state.model_copy(update={**update, **settled}), "dispatch"
+            ),
+            "end",
+        )
+
     def test_model_request_timeout_settles_unknown_usage_and_stops_graph(self) -> None:
         runtime = ArchitectRuntime(
             plan_next_step=lambda _: capture_model_exception(

@@ -116,7 +116,6 @@ def classify_model_exception(error: BaseException) -> BudgetErrorCode | None:
     if isinstance(
         error,
         (
-            TimeoutError,
             httpx.TimeoutException,
             openai.APITimeoutError,
             anthropic.APITimeoutError,

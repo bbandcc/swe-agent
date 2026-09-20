@@ -116,6 +116,7 @@ class ModelRequestTimeoutTests(unittest.TestCase):
     def test_unexpected_local_errors_are_not_transport_classified(self) -> None:
         self.assertIsNone(classify_model_exception(OSError("local filesystem failure")))
         self.assertIsNone(classify_model_exception(RuntimeError("programming failure")))
+        self.assertIsNone(classify_model_exception(TimeoutError("local timeout")))
 
     def test_deepseek_timeout_is_one_attempt_and_late_response_does_not_continue(self) -> None:
         _SlowCompletionHandler.requests = []
