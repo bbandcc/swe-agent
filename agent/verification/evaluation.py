@@ -3,7 +3,6 @@
 from collections.abc import Sequence
 from dataclasses import dataclass
 from enum import Enum
-from pathlib import Path
 
 from agent.verification.contracts import (
     REPORT_SCHEMA,
@@ -11,6 +10,8 @@ from agent.verification.contracts import (
     VerificationCheckStatus,
     VerificationResult,
     VerificationStatus,
+    has_pytest_junitxml_option,
+    is_pytest_command,
 )
 
 
@@ -167,8 +168,6 @@ def evaluate_acceptance(
 
     target_cases = {key for key in all_cases if not is_allowed(key)}
     if not target_cases:
-        if baseline_failures == set(all_cases) and post_failures == set(all_cases):
-            return AcceptanceResult(True, AcceptanceReason.ACCEPTED)
         return AcceptanceResult(False, AcceptanceReason.EVIDENCE_INSUFFICIENT)
     target_failures = post_failures & target_cases
     fixed_target = (baseline_failures - post_failures) & target_cases
@@ -187,10 +186,11 @@ def _valid_report(result: VerificationResult) -> bool:
         and report.report_schema == REPORT_SCHEMA
         and report.check_id == result.name
         and bool(report.cases)
+        and has_pytest_junitxml_option(result.argv)
     ):
         return False
     statuses = {case.status for case in report.cases}
-    if _is_pytest_command(result.argv) and result.exit_code not in {0, 1}:
+    if is_pytest_command(result.argv) and result.exit_code not in {0, 1}:
         return False
     if result.status is VerificationCheckStatus.PASS:
         return result.exit_code == 0 and statuses == {VerificationCaseStatus.PASS}
@@ -199,16 +199,6 @@ def _valid_report(result: VerificationResult) -> bool:
             status is not VerificationCaseStatus.PASS for status in statuses
         )
     return False
-
-
-def _is_pytest_command(argv: Sequence[str]) -> bool:
-    normalized = [Path(str(item)).name.lower() for item in argv]
-    return any(item in {"pytest", "py.test"} for item in normalized) or any(
-        item.startswith(("pytest", "py.test")) for item in normalized
-    ) or any(
-        normalized[index] == "-m" and normalized[index + 1] == "pytest"
-        for index in range(len(normalized) - 1)
-    )
 
 
 def _is_pass(status: VerificationCaseStatus) -> bool:

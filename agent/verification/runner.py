@@ -16,6 +16,7 @@ from agent.verification.contracts import (
     VerificationReport,
     VerificationResult,
     VerificationSpec,
+    is_pytest_junitxml_producer,
 )
 from agent.verification.process_tree import ProcessTree
 from agent.verification.report import VerificationReportError, parse_junit_xml
@@ -64,6 +65,7 @@ class VerificationRunner:
             assert report_resolution.path is not None
             try:
                 report_path, owned_report_dir = _owned_report_path(spec.report_path)
+                report_before = _report_signature(report_path)
             except OSError as error:
                 return _execution_error(
                     spec,
@@ -76,10 +78,13 @@ class VerificationRunner:
             try:
                 report_guard.snapshot()
             except OSError as error:
-                _cleanup_owned_report(owned_report_dir)
+                cleanup_error = _cleanup_owned_report(owned_report_dir)
+                message = f"Verification report path could not be protected: {error}"
+                if cleanup_error is not None:
+                    message += f"; temporary report cleanup failed: {cleanup_error}"
                 return _execution_error(
                     spec,
-                    f"Verification report path could not be protected: {error}",
+                    message,
                     started_at,
                 )
             effective_argv = _rewrite_report_argv(
@@ -90,6 +95,10 @@ class VerificationRunner:
                 workspace_path=report_resolution.path,
             )
 
+        process: subprocess.Popen[bytes] | None = None
+        process_tree: ProcessTree | None = None
+        result: VerificationResult | None = None
+        cleanup_errors: list[str] = []
         try:
             process = subprocess.Popen(
                 effective_argv,
@@ -103,71 +112,65 @@ class VerificationRunner:
                     subprocess.CREATE_NEW_PROCESS_GROUP if os.name == "nt" else 0
                 ),
             )
-        except (OSError, ValueError) as error:
-            if report_guard is not None:
-                report_guard.restore()
-            _cleanup_owned_report(owned_report_dir)
-            return _execution_error(
-                spec,
-                f"Verification process could not start: {error}",
-                started_at,
-            )
-        process_tree = ProcessTree(process)
+            process_tree = ProcessTree(process)
 
-        stdout_capture = _BoundedOutput(spec.max_output_bytes)
-        stderr_capture = _BoundedOutput(spec.max_output_bytes)
-        assert process.stdout is not None and process.stderr is not None
-        readers = (
-            threading.Thread(
-                target=stdout_capture.consume, args=(process.stdout,), daemon=True
-            ),
-            threading.Thread(
-                target=stderr_capture.consume, args=(process.stderr,), daemon=True
-            ),
-        )
-        for reader in readers:
-            reader.start()
+            stdout_capture = _BoundedOutput(spec.max_output_bytes)
+            stderr_capture = _BoundedOutput(spec.max_output_bytes)
+            assert process.stdout is not None and process.stderr is not None
+            readers = (
+                threading.Thread(
+                    target=stdout_capture.consume,
+                    args=(process.stdout,),
+                    daemon=True,
+                ),
+                threading.Thread(
+                    target=stderr_capture.consume,
+                    args=(process.stderr,),
+                    daemon=True,
+                ),
+            )
+            for reader in readers:
+                reader.start()
 
-        exit_code: int | None = None
-        message = ""
-        try:
-            exit_code = process.wait(timeout=spec.timeout_seconds)
-            status = (
-                VerificationCheckStatus.PASS
-                if exit_code == 0
-                else VerificationCheckStatus.FAIL
-            )
-        except subprocess.TimeoutExpired:
-            process_tree.terminate()
-            status = VerificationCheckStatus.TIMEOUT
-            message = (
-                f"Verification timed out after {spec.timeout_seconds:g} seconds."
-            )
-        for reader in readers:
-            reader.join(timeout=1)
-        if any(reader.is_alive() for reader in readers):
-            process.stdout.close()
-            process.stderr.close()
+            exit_code: int | None = None
+            message = ""
+            try:
+                exit_code = process.wait(timeout=spec.timeout_seconds)
+                status = (
+                    VerificationCheckStatus.PASS
+                    if exit_code == 0
+                    else VerificationCheckStatus.FAIL
+                )
+            except subprocess.TimeoutExpired:
+                process_tree.terminate()
+                status = VerificationCheckStatus.TIMEOUT
+                message = (
+                    f"Verification timed out after {spec.timeout_seconds:g} seconds."
+                )
             for reader in readers:
                 reader.join(timeout=1)
-            status = VerificationCheckStatus.EXECUTION_ERROR
-            message = "Verification output pipes did not close after process exit."
+            if any(reader.is_alive() for reader in readers):
+                process.stdout.close()
+                process.stderr.close()
+                for reader in readers:
+                    reader.join(timeout=1)
+                status = VerificationCheckStatus.EXECUTION_ERROR
+                message = "Verification output pipes did not close after process exit."
 
-        stdout, stdout_truncated, stdout_digest = stdout_capture.result()
-        stderr, stderr_truncated, stderr_digest = stderr_capture.result()
-        capture_error = stdout_capture.error or stderr_capture.error
-        if capture_error is not None:
-            status = VerificationCheckStatus.EXECUTION_ERROR
-            message = f"Verification output could not be captured: {capture_error}"
+            stdout, stdout_truncated, stdout_digest = stdout_capture.result()
+            stderr, stderr_truncated, stderr_digest = stderr_capture.result()
+            capture_error = stdout_capture.error or stderr_capture.error
+            if capture_error is not None:
+                status = VerificationCheckStatus.EXECUTION_ERROR
+                message = (
+                    f"Verification output could not be captured: {capture_error}"
+                )
 
-        process_tree.close()
-
-        report = None
-        if report_path is not None and status not in {
-            VerificationCheckStatus.TIMEOUT,
-            VerificationCheckStatus.EXECUTION_ERROR,
-        }:
-            try:
+            report = None
+            if report_path is not None and status not in {
+                VerificationCheckStatus.TIMEOUT,
+                VerificationCheckStatus.EXECUTION_ERROR,
+            }:
                 if report_guard is not None:
                     report_guard.copy_changed_output(report_path)
                 report, report_message = _load_report(
@@ -177,15 +180,8 @@ class VerificationRunner:
                 )
                 if report_message:
                     message = _append_message(message, report_message)
-            except OSError as error:
-                status = VerificationCheckStatus.EXECUTION_ERROR
-                message = _append_message(
-                    message,
-                    f"Structured verification report could not be isolated: {error}",
-                )
 
-        try:
-            return VerificationResult.create(
+            result = VerificationResult.create(
                 name=spec.name,
                 argv=spec.argv,
                 cwd=resolution.relative_path or ".",
@@ -202,10 +198,56 @@ class VerificationRunner:
                 report=report,
                 allowed_failure_case_ids=spec.allowed_failure_case_ids,
             )
+        except (OSError, ValueError) as error:
+            prefix = (
+                "Verification process could not start"
+                if process is None
+                else "Verification execution failed"
+            )
+            result = _execution_error(
+                spec,
+                f"{prefix}: {error}",
+                started_at,
+            )
         finally:
-            if report_guard is not None:
-                report_guard.restore()
-            _cleanup_owned_report(owned_report_dir)
+            try:
+                if process_tree is not None:
+                    try:
+                        if process is not None and process.poll() is None:
+                            process_tree.terminate()
+                    except OSError as error:
+                        cleanup_errors.append(f"process cleanup failed: {error}")
+                    finally:
+                        try:
+                            process_tree.close()
+                        except OSError as error:
+                            cleanup_errors.append(
+                                f"process handle cleanup failed: {error}"
+                            )
+            finally:
+                try:
+                    if report_guard is not None:
+                        restore_error = report_guard.restore()
+                        if restore_error is not None:
+                            cleanup_errors.append(
+                                f"workspace report restore failed: {restore_error}"
+                            )
+                finally:
+                    cleanup_error = _cleanup_owned_report(owned_report_dir)
+                    if cleanup_error is not None:
+                        cleanup_errors.append(
+                            f"temporary report cleanup failed: {cleanup_error}"
+                        )
+
+        if cleanup_errors:
+            return _execution_error(
+                spec,
+                "Verification evidence cleanup failed: "
+                + "; ".join(cleanup_errors),
+                started_at,
+            )
+        assert result is not None
+        return result
 
 
 def _validate_spec(spec: VerificationSpec) -> str | None:
@@ -217,6 +259,10 @@ def _validate_spec(spec: VerificationSpec) -> str | None:
         return "Verification timeout must be a finite positive number."
     if spec.max_output_bytes < len(_TRUNCATION_MARKER) + 2:
         return "Verification max_output_bytes is too small."
+    if spec.report_path is not None and not is_pytest_junitxml_producer(
+        spec.argv, spec.report_path
+    ):
+        return "Verification report_path requires pytest --junitxml output."
     return None
 
 
@@ -358,14 +404,14 @@ class _WorkspaceReportGuard:
             return
         shutil.copyfile(self._target, owned_path)
 
-    def restore(self) -> None:
+    def restore(self) -> OSError | None:
         try:
             self._remove_target()
             if self._existed:
                 shutil.copy2(self._backup, self._target)
-        except OSError:
-            # Verification output is diagnostic; cleanup must not mask its result.
-            pass
+        except OSError as error:
+            return error
+        return None
 
     def _remove_target(self) -> None:
         try:
@@ -377,9 +423,15 @@ class _WorkspaceReportGuard:
             pass
 
 
-def _cleanup_owned_report(directory: Path | None) -> None:
+def _cleanup_owned_report(directory: Path | None) -> OSError | None:
     if directory is not None:
-        shutil.rmtree(directory, ignore_errors=True)
+        try:
+            shutil.rmtree(directory)
+        except FileNotFoundError:
+            return None
+        except OSError as error:
+            return error
+    return None
 
 
 def _report_signature(path: Path) -> tuple[object, ...] | None:

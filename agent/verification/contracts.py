@@ -3,9 +3,11 @@
 import hashlib
 import json
 import math
+import os
 from collections.abc import Sequence
 from dataclasses import dataclass
 from enum import Enum
+from pathlib import Path
 
 
 class VerificationCheckStatus(str, Enum):
@@ -25,6 +27,7 @@ class VerificationCaseStatus(str, Enum):
 
 
 REPORT_SCHEMA = "junit-xml-v1"
+_PYTEST_JUNITXML_OPTIONS = ("--junitxml", "--junit-xml")
 
 
 class VerificationStatus(str, Enum):
@@ -218,6 +221,67 @@ class VerificationResult:
             report=report,
             allowed_failure_case_ids=allowed_failure_case_ids,
         )
+
+
+def is_pytest_command(argv: Sequence[str]) -> bool:
+    """Recognize only direct pytest or ``python -m pytest`` producers."""
+    if not argv:
+        return False
+    executable = Path(str(argv[0])).name.lower()
+    if executable in {"pytest", "pytest.exe", "py.test", "py.test.exe"}:
+        return True
+    return (
+        len(argv) >= 3
+        and str(argv[1]) == "-m"
+        and str(argv[2]).lower() == "pytest"
+    )
+
+
+def is_pytest_junitxml_producer(
+    argv: Sequence[str], report_path: str
+) -> bool:
+    """Require an explicit pytest ``--junitxml`` output matching the spec."""
+    if not is_pytest_command(argv):
+        return False
+    configured = _report_path_key(report_path)
+    if not configured:
+        return False
+    return any(
+        _report_path_key(output) == configured
+        for output in _pytest_junitxml_outputs(argv)
+    )
+
+
+def has_pytest_junitxml_option(argv: Sequence[str]) -> bool:
+    """Return whether argv explicitly requests a pytest JUnit XML output."""
+    return is_pytest_command(argv) and bool(_pytest_junitxml_outputs(argv))
+
+
+def _pytest_junitxml_outputs(argv: Sequence[str]) -> tuple[str, ...]:
+    outputs: list[str] = []
+    index = 0
+    while index < len(argv):
+        item = str(argv[index])
+        for option in _PYTEST_JUNITXML_OPTIONS:
+            prefix = f"{option}="
+            if item.startswith(prefix):
+                outputs.append(item[len(prefix) :])
+                break
+            if item == option and index + 1 < len(argv):
+                outputs.append(str(argv[index + 1]))
+                index += 1
+                break
+        index += 1
+    return tuple(outputs)
+
+
+def _report_path_key(value: str) -> str:
+    text = str(value).replace("\\", "/").strip()
+    while text.startswith("./"):
+        text = text[2:]
+    if text.casefold().startswith("workspace_repo/"):
+        text = text[len("workspace_repo/") :]
+    return os.path.normcase(text)
 
 
 def _sequence_tuple(value: object, name: str) -> tuple:

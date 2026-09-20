@@ -47,23 +47,23 @@ def plan() -> ImplementationPlan:
     )
 
 
-def file_check(*, timeout_seconds: float = 2) -> VerificationSpec:
+def file_check(root: Path, *, timeout_seconds: float = 2) -> VerificationSpec:
     executable = getattr(sys, "_base_executable", sys.executable)
+    (root / "test_app_check.py").write_text(
+        "from pathlib import Path\n"
+        "def test_app_file():\n"
+        "    assert 'BROKEN' not in Path('app.py').read_text(encoding='utf-8')\n",
+        encoding="utf-8",
+        newline="",
+    )
     return VerificationSpec(
         name="app-check",
         argv=(
             executable,
-            "-c",
-            (
-                "from pathlib import Path; import sys; "
-                "text=Path('app.py').read_text(encoding='utf-8'); "
-                "failed='BROKEN' in text; "
-                "Path('report.xml').write_text("
-                "'<testsuite><testcase classname=\"app\" name=\"file\"'"
-                "+ ('><failure/></testcase></testsuite>' if failed else ' /></testsuite>'), "
-                "encoding='utf-8'); "
-                "sys.exit(1 if failed else 0)"
-            ),
+            "-m",
+            "pytest",
+            "-q",
+            "--junitxml=report.xml",
         ),
         timeout_seconds=timeout_seconds,
         report_path="report.xml",
@@ -99,7 +99,7 @@ class _SequenceRunner:
         status = next(self._statuses)
         return VerificationResult.create(
             name=spec.name,
-            argv=spec.argv,
+            argv=("pytest", "--junitxml=report.xml"),
             cwd=spec.cwd,
             status=status,
             exit_code=0 if status is VerificationCheckStatus.PASS else 1,
@@ -112,15 +112,30 @@ class _SequenceRunner:
                 check_id=spec.name,
                 report_schema=REPORT_SCHEMA,
                 cases=(
-                    VerificationCase(
-                        check_id=spec.name,
-                        case_id="case",
-                        status=(
-                            VerificationCaseStatus.PASS
-                            if status is VerificationCheckStatus.PASS
-                            else VerificationCaseStatus.FAIL
+                    (
+                        VerificationCase(
+                            check_id=spec.name,
+                            case_id="target",
+                            status=VerificationCaseStatus.PASS,
                         ),
-                    ),
+                        VerificationCase(
+                            check_id=spec.name,
+                            case_id="legacy",
+                            status=VerificationCaseStatus.FAIL,
+                        ),
+                    )
+                    if spec.allowed_failure_case_ids
+                    else (
+                        VerificationCase(
+                            check_id=spec.name,
+                            case_id="case",
+                            status=(
+                                VerificationCaseStatus.PASS
+                                if status is VerificationCheckStatus.PASS
+                                else VerificationCaseStatus.FAIL
+                            ),
+                        ),
+                    )
                 ),
             ),
             allowed_failure_case_ids=spec.allowed_failure_case_ids,
@@ -344,7 +359,7 @@ class VerificationWorkflowTests(unittest.TestCase):
             target.write_text("value = 1\n", encoding="utf-8", newline="")
             child = developer(root, lambda _: "invalid model response")
 
-            result = run_parent(root, child, (file_check(),))
+            result = run_parent(root, child, (file_check(root),))
 
             self.assertEqual(result["developer_status"], DeveloperStatus.FAILED)
             self.assertEqual(
@@ -363,7 +378,7 @@ class VerificationWorkflowTests(unittest.TestCase):
                 lambda _: search_replace("value = 1", "value = 1"),
             )
 
-            result = run_parent(root, child, (file_check(),))
+            result = run_parent(root, child, (file_check(root),))
 
             self.assertEqual(result["developer_status"], DeveloperStatus.FAILED)
             self.assertEqual(
@@ -384,7 +399,7 @@ class VerificationWorkflowTests(unittest.TestCase):
                     "developer_status": DeveloperStatus.FAILED,
                     "developer_message": "developer failed",
                 },
-                verification_specs=(file_check(),),
+                verification_specs=(file_check(root),),
                 verification_runner=VerificationRunner(root),
             ).compile().invoke({})
 
@@ -412,7 +427,7 @@ class VerificationWorkflowTests(unittest.TestCase):
                 return search_replace("value = 'BROKEN'", "value = 2")
 
             result = run_parent(
-                root, developer(root, propose), (file_check(),)
+                root, developer(root, propose), (file_check(root),)
             )
 
             self.assertEqual(
@@ -467,19 +482,21 @@ class VerificationWorkflowTests(unittest.TestCase):
                     return search_replace("B = 1", "B = 'BROKEN'")
                 return search_replace("B = 'BROKEN'", "B = 2")
 
+            (root / "test_two_files.py").write_text(
+                "from pathlib import Path\n"
+                "def test_files():\n"
+                "    assert 'BROKEN' not in Path('b.py').read_text(encoding='utf-8')\n",
+                encoding="utf-8",
+                newline="",
+            )
             check = VerificationSpec(
                 name="two-files",
                 argv=(
                     getattr(sys, "_base_executable", sys.executable),
-                    "-c",
-                    (
-                        "from pathlib import Path; import sys; "
-                        "failed='BROKEN' in Path('b.py').read_text(encoding='utf-8'); "
-                        "Path('report.xml').write_text("
-                        "'<testsuite><testcase classname=\"app\" name=\"file\"'"
-                        "+ ('><failure/></testcase></testsuite>' if failed else ' /></testsuite>'), "
-                        "encoding='utf-8'); sys.exit(1 if failed else 0)"
-                    ),
+                    "-m",
+                    "pytest",
+                    "-q",
+                    "--junitxml=report.xml",
                 ),
                 report_path="report.xml",
             )
@@ -519,21 +536,25 @@ class VerificationWorkflowTests(unittest.TestCase):
                 self.assertTrue(post["stderr_truncated"])
                 return search_replace("value = 'BROKEN'", "value = 2")
 
+            (root / "test_noisy.py").write_text(
+                "import sys\n"
+                "from pathlib import Path\n"
+                "def test_noisy():\n"
+                "    print('x' * 500)\n"
+                "    print('y' * 500, file=sys.stderr)\n"
+                "    assert 'BROKEN' not in Path('app.py').read_text()\n",
+                encoding="utf-8",
+                newline="",
+            )
             noisy_check = VerificationSpec(
                 name="noisy-check",
                 argv=(
                     getattr(sys, "_base_executable", sys.executable),
-                    "-c",
-                    (
-                        "from pathlib import Path; import sys; "
-                        "text=Path('app.py').read_text(); "
-                        "print('x' * 500); print('y' * 500, file=sys.stderr); "
-                        "failed='BROKEN' in text; "
-                        "Path('report.xml').write_text("
-                        "'<testsuite><testcase classname=\"app\" name=\"file\"'"
-                        "+ ('><failure/></testcase></testsuite>' if failed else ' /></testsuite>'), "
-                        "encoding='utf-8'); sys.exit(1 if failed else 0)"
-                    ),
+                    "-m",
+                    "pytest",
+                    "-q",
+                    "-s",
+                    "--junitxml=report.xml",
                 ),
                 max_output_bytes=96,
                 report_path="report.xml",
@@ -566,7 +587,7 @@ class VerificationWorkflowTests(unittest.TestCase):
                 return search_replace(old, new)
 
             result = run_parent(
-                root, developer(root, propose), (file_check(),)
+                root, developer(root, propose), (file_check(root),)
             )
 
             self.assertEqual(
@@ -596,7 +617,7 @@ class VerificationWorkflowTests(unittest.TestCase):
                 return search_replace("missing text", "value = 2")
 
             result = run_parent(
-                root, developer(root, propose), (file_check(),)
+                root, developer(root, propose), (file_check(root),)
             )
 
             self.assertEqual(result["repair_attempts"], 1)
@@ -640,7 +661,7 @@ class VerificationWorkflowTests(unittest.TestCase):
                 VerificationSpec(
                     name="check",
                     argv=("unused",),
-                    allowed_failure_case_ids=("case",),
+                    allowed_failure_case_ids=("legacy",),
                 ),
             ),
             verification_runner=runner,
@@ -669,7 +690,7 @@ class VerificationWorkflowTests(unittest.TestCase):
                 lambda _: search_replace("value = 'BROKEN'", "value = 2"),
             )
 
-            result = run_parent(root, child, (file_check(),))
+            result = run_parent(root, child, (file_check(root),))
 
             self.assertEqual(
                 result["verification_status"], VerificationStatus.IMPROVED
@@ -691,7 +712,7 @@ class VerificationWorkflowTests(unittest.TestCase):
                 lambda _: search_replace("value = 1", "value = 2"),
             )
 
-            result = run_parent(root, child, (file_check(),))
+            result = run_parent(root, child, (file_check(root),))
 
             self.assertEqual(
                 result["verification_status"],

@@ -71,7 +71,7 @@ def structured_result(
 ) -> VerificationResult:
     return VerificationResult.create(
         name=spec.name,
-        argv=spec.argv,
+        argv=("pytest", "--junitxml=report.xml"),
         cwd=spec.cwd,
         status=status,
         exit_code=0 if status is VerificationCheckStatus.PASS else 1,

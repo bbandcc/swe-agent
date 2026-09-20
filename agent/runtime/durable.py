@@ -137,7 +137,11 @@ class DurableRunResult:
 
     @property
     def accepted(self) -> bool:
-        return run_exit_code(self.summary) == 0
+        """Return lifecycle acceptance, separate from business outcome."""
+        return self.status not in {
+            DurableRunStatus.REJECTED,
+            DurableRunStatus.FAILED,
+        }
 
 
 def run_exit_code(summary: RunSummary) -> int:

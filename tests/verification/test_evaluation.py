@@ -27,7 +27,7 @@ def result(
         )
     return VerificationResult.create(
         name=name,
-        argv=("python", "-m", "unittest"),
+        argv=("python", "-m", "pytest", "--junitxml=report.xml"),
         cwd=".",
         status=status,
         exit_code=0 if status is VerificationCheckStatus.PASS else 1,

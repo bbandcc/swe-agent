@@ -16,6 +16,7 @@ from pydantic import SecretStr
 
 from agent.config import ModelSettings, model_settings
 from agent.verification import VerificationSpec
+from agent.verification.contracts import is_pytest_junitxml_producer
 from agent.verification.config import configured_verification_specs
 from agent.workspace import (
     WorkspaceRootError,
@@ -316,6 +317,13 @@ def _validate_verification_spec(spec: VerificationSpec) -> None:
         raise RunConfigError(
             RunConfigErrorCode.INVALID_VALUE,
             "Verification report_path must be a valid path.",
+        )
+    if spec.report_path is not None and not is_pytest_junitxml_producer(
+        spec.argv, spec.report_path
+    ):
+        raise RunConfigError(
+            RunConfigErrorCode.INVALID_VALUE,
+            "Verification report_path requires pytest --junitxml output.",
         )
     if any(
         not isinstance(item, str) or not item.strip()

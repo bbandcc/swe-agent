@@ -82,6 +82,20 @@ class VerificationConfigurationTests(unittest.TestCase):
             with self.assertRaisesRegex(ValueError, "duplicate"):
                 configured_verification_specs()
 
+    def test_rejects_non_pytest_junit_producer(self) -> None:
+        value = json.dumps(
+            [
+                {
+                    "name": "unsafe-report",
+                    "argv": [sys.executable, "-c", "pass"],
+                    "report_path": "report.xml",
+                }
+            ]
+        )
+        with patch.dict(os.environ, {VERIFICATION_CHECKS_ENV: value}):
+            with self.assertRaisesRegex(ValueError, "pytest --junitxml"):
+                configured_verification_specs()
+
     def test_rejects_invalid_timeout_from_environment(self) -> None:
         for timeout in (math.nan, math.inf, -math.inf, 0, -1):
             with self.subTest(timeout=timeout):
@@ -118,17 +132,21 @@ class VerificationConfigurationTests(unittest.TestCase):
     def test_production_graph_executes_configured_checks(self) -> None:
         with tempfile.TemporaryDirectory() as directory:
             root = Path(directory)
+            (root / "test_configured.py").write_text(
+                "def test_configured_check():\n    assert True\n",
+                encoding="utf-8",
+                newline="",
+            )
             value = json.dumps(
                 [
                     {
                         "name": "production-check",
                         "argv": [
                             os.fspath(Path(sys.executable)),
-                            "-c",
-                            "from pathlib import Path; "
-                            "Path('report.xml').write_text("
-                            "'<testsuite><testcase classname=\"cfg\" name=\"configured\" />'"
-                            "+ '</testsuite>', encoding='utf-8'); print('configured')",
+                            "-m",
+                            "pytest",
+                            "-q",
+                            "--junitxml=report.xml",
                         ],
                         "report_path": "report.xml",
                     }

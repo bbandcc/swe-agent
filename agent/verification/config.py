@@ -6,7 +6,10 @@ import os
 from collections.abc import Mapping
 from typing import Any
 
-from agent.verification.contracts import VerificationSpec
+from agent.verification.contracts import (
+    VerificationSpec,
+    is_pytest_junitxml_producer,
+)
 
 VERIFICATION_CHECKS_ENV = "SWE_AGENT_VERIFICATION_CHECKS"
 _ALLOWED_KEYS = {
@@ -82,6 +85,12 @@ def _parse_spec(value: Any, index: int) -> VerificationSpec:
         not isinstance(report_path, str) or not report_path.strip()
     ):
         raise ValueError(f"{label}.report_path must be a non-empty string or null.")
+    if report_path is not None and not is_pytest_junitxml_producer(
+        tuple(argv), report_path
+    ):
+        raise ValueError(
+            f"{label}.report_path requires pytest --junitxml output."
+        )
     if (
         not isinstance(allowed_failure_case_ids, list)
         or any(

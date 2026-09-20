@@ -203,6 +203,25 @@ class RunSummaryTests(RunConfigTestCase):
             with self.subTest(name=name):
                 self.assertEqual(run_exit_code(result.summary), expected)
 
+    def test_result_accepted_keeps_lifecycle_separate_from_business_acceptance(
+        self,
+    ) -> None:
+        completed_unverified = durable_result(
+            DurableRunStatus.COMPLETED,
+            outcome=WorkflowOutcome.UNVERIFIED,
+            verification=VerificationStatus.UNVERIFIED,
+        )
+        paused = durable_result(DurableRunStatus.PAUSED)
+
+        self.assertTrue(completed_unverified.accepted)
+        self.assertTrue(paused.accepted)
+        self.assertEqual(run_exit_code(completed_unverified.summary), 1)
+        self.assertEqual(run_exit_code(paused.summary), 3)
+        self.assertFalse(
+            durable_result(DurableRunStatus.REJECTED).accepted
+        )
+        self.assertFalse(durable_result(DurableRunStatus.FAILED).accepted)
+
     def test_trusted_allowed_failure_acceptance_is_exit_zero(self) -> None:
         result = durable_result(
             DurableRunStatus.COMPLETED,

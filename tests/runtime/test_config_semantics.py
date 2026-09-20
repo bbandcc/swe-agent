@@ -127,7 +127,11 @@ class SemanticConfigDigestTests(RunConfigTestCase):
                 "verification_report_path": replace(
                     config,
                     verification_specs=(
-                        replace(first_spec, report_path="report.xml"),
+                        replace(
+                            first_spec,
+                            argv=("python", "-m", "pytest", "--junitxml=report.xml"),
+                            report_path="report.xml",
+                        ),
                         second_spec,
                     ),
                 ),

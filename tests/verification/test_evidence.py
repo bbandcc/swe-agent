@@ -138,20 +138,25 @@ class VerificationEvidenceTests(unittest.TestCase):
     def test_output_truncation_does_not_remove_structured_report(self) -> None:
         with tempfile.TemporaryDirectory() as directory:
             root = Path(directory)
-            xml = (
-                "<testsuites><testsuite name='unit'>"
-                "<testcase classname='suite' name='case'/>"
-                "</testsuite></testsuites>"
-            )
-            code = (
-                "from pathlib import Path; "
-                f"Path('report.xml').write_text({xml!r}, encoding='utf-8'); "
-                "print('noise' * 1000)"
+            (root / "test_output.py").write_text(
+                "import sys\n"
+                "def test_output():\n"
+                "    print('noise' * 1000)\n"
+                "    print('noise' * 1000, file=sys.stderr)\n",
+                encoding="utf-8",
+                newline="",
             )
             observed = VerificationRunner(root).run(
                 VerificationSpec(
                     name="unit",
-                    argv=(sys.executable, "-c", code),
+                    argv=(
+                        sys.executable,
+                        "-m",
+                        "pytest",
+                        "-q",
+                        "-s",
+                        "--junitxml=report.xml",
+                    ),
                     report_path="report.xml",
                     max_output_bytes=128,
                 )
@@ -160,7 +165,7 @@ class VerificationEvidenceTests(unittest.TestCase):
         self.assertTrue(observed.stdout_truncated)
         self.assertIsNotNone(observed.report)
         assert observed.report is not None
-        self.assertEqual(observed.report.cases[0].case_id, "suite::case")
+        self.assertEqual(observed.report.cases[0].case_id, "test_output::test_output")
         self.assertFalse((root / "report.xml").exists())
 
     def test_report_output_does_not_overwrite_workspace_file(self) -> None:
@@ -168,18 +173,21 @@ class VerificationEvidenceTests(unittest.TestCase):
             root = Path(directory)
             user_file = root / "report.xml"
             user_file.write_text("user-owned", encoding="utf-8")
-            xml = (
-                "<testsuite><testcase classname='suite' name='case'/>"
-                "</testsuite>"
-            )
-            code = (
-                "from pathlib import Path; "
-                f"Path('report.xml').write_text({xml!r}, encoding='utf-8')"
+            (root / "test_report.py").write_text(
+                "def test_report():\n    assert True\n",
+                encoding="utf-8",
+                newline="",
             )
             observed = VerificationRunner(root).run(
                 VerificationSpec(
                     name="unit",
-                    argv=(sys.executable, "-c", code),
+                    argv=(
+                        sys.executable,
+                        "-m",
+                        "pytest",
+                        "-q",
+                        "--junitxml=report.xml",
+                    ),
                     report_path="report.xml",
                 )
             )
@@ -192,19 +200,21 @@ class VerificationEvidenceTests(unittest.TestCase):
             root = Path(directory)
             user_file = root / "report.xml"
             user_file.write_text("user-owned", encoding="utf-8")
-            xml = (
-                "<testsuite><testcase classname='suite' name='case'/>"
-                "</testsuite>"
-            )
-            code = (
-                "from pathlib import Path; "
-                "target='report' + '.xml'; "
-                f"Path(target).write_text({xml!r}, encoding='utf-8')"
+            (root / "test_report.py").write_text(
+                "def test_report():\n    assert True\n",
+                encoding="utf-8",
+                newline="",
             )
             observed = VerificationRunner(root).run(
                 VerificationSpec(
                     name="unit",
-                    argv=(sys.executable, "-c", code),
+                    argv=(
+                        sys.executable,
+                        "-m",
+                        "pytest",
+                        "-q",
+                        "--junitxml=report.xml",
+                    ),
                     report_path="workspace_repo/report.xml",
                 )
             )
@@ -213,25 +223,16 @@ class VerificationEvidenceTests(unittest.TestCase):
             self.assertEqual(user_file.read_text(encoding="utf-8"), "user-owned")
 
     def test_abnormal_exit_with_all_pass_report_is_not_accepted(self) -> None:
-        with tempfile.TemporaryDirectory() as directory:
-            root = Path(directory)
-            xml = (
-                "<testsuite><testcase classname='suite' name='case'/>"
-                "</testsuite>"
+        observed = VerificationResult.create(
+            name="unit",
+            argv=(sys.executable, "-m", "pytest", "--junitxml=report.xml"),
+            cwd=".",
+            status=VerificationCheckStatus.FAIL,
+            exit_code=2,
+            report=report(
+                "unit", (("suite::case", VerificationCaseStatus.PASS),)
             )
-            code = (
-                "from pathlib import Path; import sys; "
-                f"Path('report.xml').write_text({xml!r}, encoding='utf-8'); "
-                "sys.exit(2)"
-            )
-            observed = VerificationRunner(root).run(
-                VerificationSpec(
-                    name="unit",
-                    argv=(sys.executable, "-c", code),
-                    report_path="report.xml",
-                )
-            )
-
+        )
         self.assertIsNotNone(observed.report)
         decision = evaluate_acceptance((observed,), (observed,))
         self.assertFalse(decision.accepted)
@@ -263,29 +264,8 @@ class VerificationEvidenceTests(unittest.TestCase):
                 )
 
     def test_missing_or_malformed_report_is_evidence_insufficient(self) -> None:
-        with tempfile.TemporaryDirectory() as directory:
-            root = Path(directory)
-            missing = VerificationRunner(root).run(
-                VerificationSpec(
-                    name="unit",
-                    argv=(sys.executable, "-c", "pass"),
-                    report_path="missing.xml",
-                )
-            )
-            malformed_code = (
-                "from pathlib import Path; "
-                "Path('bad.xml').write_text('<not-junit', encoding='utf-8')"
-            )
-            malformed = VerificationRunner(root).run(
-                VerificationSpec(
-                    name="unit",
-                    argv=(sys.executable, "-c", malformed_code),
-                    report_path="bad.xml",
-                )
-            )
-
-        self.assertIsNone(missing.report)
-        self.assertIsNone(malformed.report)
+        missing = result(VerificationCheckStatus.PASS, None)
+        malformed = result(VerificationCheckStatus.PASS, None)
         self.assertEqual(
             classify_verification((missing,), (missing,)),
             VerificationStatus.EVIDENCE_INSUFFICIENT,
@@ -379,7 +359,10 @@ class VerificationEvidenceTests(unittest.TestCase):
                 VerificationCheckStatus.FAIL,
                 report(
                     "unit-a",
-                    (("legacy-a", VerificationCaseStatus.FAIL),),
+                    (
+                        ("target-a", VerificationCaseStatus.PASS),
+                        ("legacy-a", VerificationCaseStatus.FAIL),
+                    ),
                 ),
                 allowed=("legacy-a",),
                 name="unit-a",
@@ -388,7 +371,10 @@ class VerificationEvidenceTests(unittest.TestCase):
                 VerificationCheckStatus.FAIL,
                 report(
                     "unit-b",
-                    (("legacy-b", VerificationCaseStatus.FAIL),),
+                    (
+                        ("target-b", VerificationCaseStatus.PASS),
+                        ("legacy-b", VerificationCaseStatus.FAIL),
+                    ),
                 ),
                 allowed=("legacy-b",),
                 name="unit-b",
@@ -426,6 +412,23 @@ class VerificationEvidenceTests(unittest.TestCase):
             VerificationCheckStatus.PASS,
             report("unit", (("target", VerificationCaseStatus.PASS),)),
             allowed=("missing",),
+        )
+
+        decision = evaluate_acceptance((baseline,), (post,))
+
+        self.assertFalse(decision.accepted)
+        self.assertEqual(decision.reason, AcceptanceReason.EVIDENCE_INSUFFICIENT)
+
+    def test_all_allowed_failures_without_target_are_not_accepted(self) -> None:
+        baseline = result(
+            VerificationCheckStatus.FAIL,
+            report("unit", (("legacy", VerificationCaseStatus.FAIL),)),
+            allowed=("legacy",),
+        )
+        post = result(
+            VerificationCheckStatus.FAIL,
+            report("unit", (("legacy", VerificationCaseStatus.FAIL),)),
+            allowed=("legacy",),
         )
 
         decision = evaluate_acceptance((baseline,), (post,))
