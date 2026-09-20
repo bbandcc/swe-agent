@@ -45,9 +45,10 @@ def result(
     allowed: tuple[str, ...] = (),
     stdout: str = "",
     duration: float = 1.0,
+    name: str = "unit",
 ) -> VerificationResult:
     return VerificationResult.create(
-        name="unit",
+        name=name,
         argv=("pytest", "--junitxml=report.xml"),
         cwd=".",
         status=status,
@@ -160,6 +161,106 @@ class VerificationEvidenceTests(unittest.TestCase):
         self.assertIsNotNone(observed.report)
         assert observed.report is not None
         self.assertEqual(observed.report.cases[0].case_id, "suite::case")
+        self.assertFalse((root / "report.xml").exists())
+
+    def test_report_output_does_not_overwrite_workspace_file(self) -> None:
+        with tempfile.TemporaryDirectory() as directory:
+            root = Path(directory)
+            user_file = root / "report.xml"
+            user_file.write_text("user-owned", encoding="utf-8")
+            xml = (
+                "<testsuite><testcase classname='suite' name='case'/>"
+                "</testsuite>"
+            )
+            code = (
+                "from pathlib import Path; "
+                f"Path('report.xml').write_text({xml!r}, encoding='utf-8')"
+            )
+            observed = VerificationRunner(root).run(
+                VerificationSpec(
+                    name="unit",
+                    argv=(sys.executable, "-c", code),
+                    report_path="report.xml",
+                )
+            )
+
+            self.assertIsNotNone(observed.report)
+            self.assertEqual(user_file.read_text(encoding="utf-8"), "user-owned")
+
+    def test_report_path_isolated_when_command_builds_path_indirectly(self) -> None:
+        with tempfile.TemporaryDirectory() as directory:
+            root = Path(directory)
+            user_file = root / "report.xml"
+            user_file.write_text("user-owned", encoding="utf-8")
+            xml = (
+                "<testsuite><testcase classname='suite' name='case'/>"
+                "</testsuite>"
+            )
+            code = (
+                "from pathlib import Path; "
+                "target='report' + '.xml'; "
+                f"Path(target).write_text({xml!r}, encoding='utf-8')"
+            )
+            observed = VerificationRunner(root).run(
+                VerificationSpec(
+                    name="unit",
+                    argv=(sys.executable, "-c", code),
+                    report_path="workspace_repo/report.xml",
+                )
+            )
+
+            self.assertIsNotNone(observed.report)
+            self.assertEqual(user_file.read_text(encoding="utf-8"), "user-owned")
+
+    def test_abnormal_exit_with_all_pass_report_is_not_accepted(self) -> None:
+        with tempfile.TemporaryDirectory() as directory:
+            root = Path(directory)
+            xml = (
+                "<testsuite><testcase classname='suite' name='case'/>"
+                "</testsuite>"
+            )
+            code = (
+                "from pathlib import Path; import sys; "
+                f"Path('report.xml').write_text({xml!r}, encoding='utf-8'); "
+                "sys.exit(2)"
+            )
+            observed = VerificationRunner(root).run(
+                VerificationSpec(
+                    name="unit",
+                    argv=(sys.executable, "-c", code),
+                    report_path="report.xml",
+                )
+            )
+
+        self.assertIsNotNone(observed.report)
+        decision = evaluate_acceptance((observed,), (observed,))
+        self.assertFalse(decision.accepted)
+        self.assertEqual(decision.reason, AcceptanceReason.EVIDENCE_INSUFFICIENT)
+
+    def test_pytest_abnormal_exit_with_failure_report_is_not_accepted(self) -> None:
+        baseline = result(
+            VerificationCheckStatus.FAIL,
+            report("unit", (("case", VerificationCaseStatus.FAIL),)),
+        )
+        for exit_code in (2, 3, 4, 5):
+            with self.subTest(exit_code=exit_code):
+                abnormal = VerificationResult.create(
+                    name="unit",
+                    argv=("pytest", "--junitxml=report.xml"),
+                    cwd=".",
+                    status=VerificationCheckStatus.FAIL,
+                    exit_code=exit_code,
+                    report=report(
+                        "unit", (("case", VerificationCaseStatus.FAIL),)
+                    ),
+                )
+
+                decision = evaluate_acceptance((baseline,), (abnormal,))
+
+                self.assertFalse(decision.accepted)
+                self.assertEqual(
+                    decision.reason, AcceptanceReason.EVIDENCE_INSUFFICIENT
+                )
 
     def test_missing_or_malformed_report_is_evidence_insufficient(self) -> None:
         with tempfile.TemporaryDirectory() as directory:
@@ -271,6 +372,66 @@ class VerificationEvidenceTests(unittest.TestCase):
 
         self.assertTrue(decision.accepted)
         self.assertEqual(decision.reason, AcceptanceReason.ACCEPTED)
+
+    def test_allowed_failure_is_scoped_to_each_check(self) -> None:
+        baseline = (
+            result(
+                VerificationCheckStatus.FAIL,
+                report(
+                    "unit-a",
+                    (("legacy-a", VerificationCaseStatus.FAIL),),
+                ),
+                allowed=("legacy-a",),
+                name="unit-a",
+            ),
+            result(
+                VerificationCheckStatus.FAIL,
+                report(
+                    "unit-b",
+                    (("legacy-b", VerificationCaseStatus.FAIL),),
+                ),
+                allowed=("legacy-b",),
+                name="unit-b",
+            ),
+        )
+        post = baseline
+
+        decision = evaluate_acceptance(baseline, post)
+
+        self.assertTrue(decision.accepted)
+
+    def test_allowed_failure_cannot_degrade_to_error_or_skipped(self) -> None:
+        baseline = result(
+            VerificationCheckStatus.FAIL,
+            report("unit", (("legacy", VerificationCaseStatus.FAIL),)),
+            allowed=("legacy",),
+        )
+        for status in (VerificationCaseStatus.ERROR, VerificationCaseStatus.SKIPPED):
+            with self.subTest(status=status):
+                post = result(
+                    VerificationCheckStatus.FAIL,
+                    report("unit", (("legacy", status),)),
+                    allowed=("legacy",),
+                )
+                decision = evaluate_acceptance((baseline,), (post,))
+                self.assertFalse(decision.accepted)
+
+    def test_unknown_allowed_case_is_evidence_insufficient(self) -> None:
+        baseline = result(
+            VerificationCheckStatus.PASS,
+            report("unit", (("target", VerificationCaseStatus.PASS),)),
+            allowed=("missing",),
+        )
+        post = result(
+            VerificationCheckStatus.PASS,
+            report("unit", (("target", VerificationCaseStatus.PASS),)),
+            allowed=("missing",),
+        )
+
+        decision = evaluate_acceptance((baseline,), (post,))
+
+        self.assertFalse(decision.accepted)
+        self.assertEqual(decision.reason, AcceptanceReason.EVIDENCE_INSUFFICIENT)
 
 
 if __name__ == "__main__":

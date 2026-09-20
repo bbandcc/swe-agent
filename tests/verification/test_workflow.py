@@ -13,6 +13,7 @@ from agent.developer.state import DeveloperStatus
 from agent.editing import EditErrorCode, EditResult, EditStatus, WorkspaceEditor
 from agent.graph import AgentState, WorkflowOutcome, create_workflow_graph
 from agent.runtime import BudgetErrorCode, BudgetSnapshot
+from agent.runtime.durable import DurableRunResult, DurableRunStatus, run_exit_code
 from agent.verification import (
     REPORT_SCHEMA,
     VerificationCase,
@@ -122,6 +123,7 @@ class _SequenceRunner:
                     ),
                 ),
             ),
+            allowed_failure_case_ids=spec.allowed_failure_case_ids,
         )
 
 
@@ -625,6 +627,35 @@ class VerificationWorkflowTests(unittest.TestCase):
             self.assertEqual(result["outcome"], WorkflowOutcome.UNVERIFIED)
             self.assertEqual(result["repair_attempts"], 0)
             self.assertEqual(target.read_text(encoding="utf-8"), "value = 2\n")
+
+    def test_trusted_allowed_failure_reaches_public_acceptance(self) -> None:
+        runner = _SequenceRunner(
+            VerificationCheckStatus.FAIL,
+            VerificationCheckStatus.FAIL,
+        )
+        result = create_workflow_graph(
+            architect=lambda _: {"implementation_plan": plan()},
+            developer=lambda _: {"developer_status": DeveloperStatus.COMPLETED},
+            verification_specs=(
+                VerificationSpec(
+                    name="check",
+                    argv=("unused",),
+                    allowed_failure_case_ids=("case",),
+                ),
+            ),
+            verification_runner=runner,
+        ).compile().invoke({})
+
+        self.assertEqual(
+            result["verification_status"],
+            VerificationStatus.PRE_EXISTING_FAILURE,
+        )
+        self.assertTrue(result["acceptance"].accepted)
+        summary_result = DurableRunResult(
+            DurableRunStatus.COMPLETED,
+            state=result,
+        )
+        self.assertEqual(run_exit_code(summary_result.summary), 0)
 
     def test_baseline_failure_that_becomes_pass_is_improved(self) -> None:
         with tempfile.TemporaryDirectory() as directory:

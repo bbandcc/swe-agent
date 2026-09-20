@@ -3,6 +3,7 @@
 from collections.abc import Sequence
 from dataclasses import dataclass
 from enum import Enum
+from pathlib import Path
 
 from agent.verification.contracts import (
     REPORT_SCHEMA,
@@ -26,6 +27,15 @@ class AcceptanceReason(str, Enum):
 class AcceptanceResult:
     accepted: bool
     reason: AcceptanceReason
+
+    def __post_init__(self) -> None:
+        if not isinstance(self.accepted, bool):
+            raise ValueError("Acceptance accepted must be a boolean.")
+        if not isinstance(self.reason, AcceptanceReason):
+            try:
+                object.__setattr__(self, "reason", AcceptanceReason(self.reason))
+            except (TypeError, ValueError) as error:
+                raise ValueError("Acceptance reason is invalid.") from error
 
 
 def classify_verification(
@@ -103,16 +113,21 @@ def evaluate_acceptance(
         return AcceptanceResult(False, AcceptanceReason.EVIDENCE_INSUFFICIENT)
 
     all_cases: dict[tuple[str, str], tuple[object, object]] = {}
-    allowed: set[str] | None = None
+    allowed_by_check: dict[str, set[str]] = {}
     for before, after in zip(baseline, post, strict=True):
         assert before.report is not None and after.report is not None
         if set(before.report.case_map) != set(after.report.case_map):
             return AcceptanceResult(False, AcceptanceReason.EVIDENCE_INSUFFICIENT)
         before_allowed = set(before.allowed_failure_case_ids)
         after_allowed = set(after.allowed_failure_case_ids)
-        if allowed is None:
-            allowed = before_allowed
-        if before_allowed != after_allowed or before_allowed != allowed:
+        if before_allowed != after_allowed:
+            return AcceptanceResult(False, AcceptanceReason.EVIDENCE_INSUFFICIENT)
+        allowed_by_check[before.name] = before_allowed
+        valid_allowed_tokens = set(before.report.case_map)
+        valid_allowed_tokens.update(
+            f"{before.name}::{case_id}" for case_id in before.report.case_map
+        )
+        if not before_allowed.issubset(valid_allowed_tokens):
             return AcceptanceResult(False, AcceptanceReason.EVIDENCE_INSUFFICIENT)
         for case_id, before_case in before.report.case_map.items():
             all_cases[(before.name, case_id)] = (
@@ -120,7 +135,6 @@ def evaluate_acceptance(
                 after.report.case_map[case_id],
             )
 
-    assert allowed is not None
     if not all_cases:
         return AcceptanceResult(False, AcceptanceReason.EVIDENCE_INSUFFICIENT)
 
@@ -140,21 +154,21 @@ def evaluate_acceptance(
 
     def is_allowed(key: tuple[str, str]) -> bool:
         check_id, case_id = key
+        allowed = allowed_by_check[check_id]
         return case_id in allowed or f"{check_id}::{case_id}" in allowed
 
-    for token in allowed:
-        if "::" not in token:
-            matches = sum(case_id == token for _, case_id in all_cases)
-            if matches > 1:
-                return AcceptanceResult(
-                    False, AcceptanceReason.EVIDENCE_INSUFFICIENT
-                )
-
-    if any(is_allowed(key) and key not in baseline_failures for key in all_cases):
-        return AcceptanceResult(False, AcceptanceReason.EVIDENCE_INSUFFICIENT)
+    for key, (before, after) in all_cases.items():
+        if is_allowed(key) and (
+            before.status is not VerificationCaseStatus.FAIL
+            or after.status
+            in {VerificationCaseStatus.ERROR, VerificationCaseStatus.SKIPPED}
+        ):
+            return AcceptanceResult(False, AcceptanceReason.EVIDENCE_INSUFFICIENT)
 
     target_cases = {key for key in all_cases if not is_allowed(key)}
     if not target_cases:
+        if baseline_failures == set(all_cases) and post_failures == set(all_cases):
+            return AcceptanceResult(True, AcceptanceReason.ACCEPTED)
         return AcceptanceResult(False, AcceptanceReason.EVIDENCE_INSUFFICIENT)
     target_failures = post_failures & target_cases
     fixed_target = (baseline_failures - post_failures) & target_cases
@@ -168,11 +182,32 @@ def evaluate_acceptance(
 
 def _valid_report(result: VerificationResult) -> bool:
     report = result.report
-    return (
+    if not (
         report is not None
         and report.report_schema == REPORT_SCHEMA
         and report.check_id == result.name
         and bool(report.cases)
+    ):
+        return False
+    statuses = {case.status for case in report.cases}
+    if _is_pytest_command(result.argv) and result.exit_code not in {0, 1}:
+        return False
+    if result.status is VerificationCheckStatus.PASS:
+        return result.exit_code == 0 and statuses == {VerificationCaseStatus.PASS}
+    if result.status is VerificationCheckStatus.FAIL:
+        return result.exit_code not in {None, 0} and any(
+            status is not VerificationCaseStatus.PASS for status in statuses
+        )
+    return False
+
+
+def _is_pytest_command(argv: Sequence[str]) -> bool:
+    normalized = [Path(str(item)).name.lower() for item in argv]
+    return any(item in {"pytest", "py.test"} for item in normalized) or any(
+        item.startswith(("pytest", "py.test")) for item in normalized
+    ) or any(
+        normalized[index] == "-m" and normalized[index + 1] == "pytest"
+        for index in range(len(normalized) - 1)
     )
 
 

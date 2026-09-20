@@ -272,6 +272,19 @@ class RunConfigValidationTests(RunConfigTestCase):
             with self.assertRaises(RunConfigError):
                 self.make_config(root, verification_specs=None)
 
+    def test_rejects_duplicate_verification_names(self) -> None:
+        with tempfile.TemporaryDirectory() as directory:
+            root = Path(directory)
+            duplicate = verification_spec("unit", "compileall")
+            with self.assertRaisesRegex(RunConfigError, "duplicate"):
+                self.make_config(
+                    root,
+                    verification_specs=(
+                        verification_spec("unit", "unittest"),
+                        duplicate,
+                    ),
+                )
+
 
 if __name__ == "__main__":
     unittest.main()

@@ -13,6 +13,7 @@ from agent.developer.state import DeveloperErrorCode, DeveloperStatus
 from agent.editing import EditResult
 from agent.outcome import WorkflowOutcome
 from agent.verification import (
+    AcceptanceResult,
     VerificationResult,
     VerificationRunner,
     VerificationSpec,
@@ -55,6 +56,7 @@ class AgentState(DurableBudgetState):
         VerificationStatus.PENDING
     )
     verification_message: str = Field("")
+    acceptance: AcceptanceResult | None = Field(None)
     verification_feedback: dict[str, Any] | None = Field(None)
     repair_attempts: int = Field(0, ge=0)
     outcome: WorkflowOutcome = Field(WorkflowOutcome.PENDING)

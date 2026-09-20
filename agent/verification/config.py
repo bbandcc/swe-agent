@@ -36,7 +36,13 @@ def configured_verification_specs(
         ) from error
     if not isinstance(values, list):
         raise ValueError(f"{VERIFICATION_CHECKS_ENV} must be a JSON list.")
-    return tuple(_parse_spec(value, index) for index, value in enumerate(values))
+    specs = tuple(_parse_spec(value, index) for index, value in enumerate(values))
+    names = [spec.name.strip() for spec in specs]
+    if len(set(names)) != len(names):
+        raise ValueError(
+            f"{VERIFICATION_CHECKS_ENV} must not contain duplicate check names."
+        )
+    return specs
 
 
 def _parse_spec(value: Any, index: int) -> VerificationSpec:

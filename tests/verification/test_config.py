@@ -71,6 +71,17 @@ class VerificationConfigurationTests(unittest.TestCase):
             with self.assertRaisesRegex(ValueError, "argv"):
                 configured_verification_specs()
 
+    def test_rejects_duplicate_check_names(self) -> None:
+        value = json.dumps(
+            [
+                {"name": "unit", "argv": ["python", "-m", "unittest"]},
+                {"name": "unit", "argv": ["python", "-m", "compileall"]},
+            ]
+        )
+        with patch.dict(os.environ, {VERIFICATION_CHECKS_ENV: value}):
+            with self.assertRaisesRegex(ValueError, "duplicate"):
+                configured_verification_specs()
+
     def test_rejects_invalid_timeout_from_environment(self) -> None:
         for timeout in (math.nan, math.inf, -math.inf, 0, -1):
             with self.subTest(timeout=timeout):

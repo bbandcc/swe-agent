@@ -33,6 +33,7 @@ from agent.runtime import (
 )
 from agent.runtime.__main__ import main
 from agent.verification import VerificationStatus
+from agent.verification import AcceptanceReason, AcceptanceResult
 from agent.workspace import WorkspaceRootError, WorkspaceRootErrorCode
 from tests.runtime._config_support import RunConfigTestCase
 
@@ -45,12 +46,20 @@ def durable_result(
     error_code: str | None = None,
     run_id: str = "run-1",
     preflight: PreflightResult | None = None,
+    acceptance: AcceptanceResult | None = None,
 ) -> DurableRunResult:
+    if (
+        acceptance is None
+        and outcome is WorkflowOutcome.COMPLETED
+        and verification is VerificationStatus.VERIFIED
+    ):
+        acceptance = AcceptanceResult(True, AcceptanceReason.ACCEPTED)
     return DurableRunResult(
         status=status,
         state={
             "outcome": outcome,
             "verification_status": verification,
+            "acceptance": acceptance,
         },
         error_code=error_code,
         preflight=preflight,
@@ -78,8 +87,9 @@ class RunSummaryTests(RunConfigTestCase):
                 "verification_status": "verified",
                 "error_code": None,
                 "run_id": "run-1",
-                "record_ref": None,
-                "warnings": [],
+            "record_ref": None,
+            "warnings": [],
+            "acceptance": {"accepted": True, "reason": "accepted"},
             },
         )
         self.assertEqual(run_exit_code(summary), 0)
@@ -193,6 +203,32 @@ class RunSummaryTests(RunConfigTestCase):
             with self.subTest(name=name):
                 self.assertEqual(run_exit_code(result.summary), expected)
 
+    def test_trusted_allowed_failure_acceptance_is_exit_zero(self) -> None:
+        result = durable_result(
+            DurableRunStatus.COMPLETED,
+            outcome=WorkflowOutcome.COMPLETED,
+            verification=VerificationStatus.PRE_EXISTING_FAILURE,
+            acceptance=AcceptanceResult(True, AcceptanceReason.ACCEPTED),
+        )
+
+        summary = result.summary
+
+        self.assertEqual(summary.acceptance.reason, AcceptanceReason.ACCEPTED)
+        self.assertEqual(run_exit_code(summary), 0)
+
+    def test_malformed_checkpoint_acceptance_cannot_enable_exit_zero(self) -> None:
+        result = DurableRunResult(
+            DurableRunStatus.COMPLETED,
+            state={
+                "outcome": WorkflowOutcome.COMPLETED,
+                "verification_status": VerificationStatus.VERIFIED,
+                "acceptance": {"accepted": "true", "reason": "accepted"},
+            },
+        )
+
+        self.assertIsNone(result.summary.acceptance)
+        self.assertEqual(run_exit_code(result.summary), 1)
+
     def test_invalid_config_is_structured_by_cli(self) -> None:
         with patch(
             "agent.runtime.__main__.load_run_config",
@@ -219,6 +255,18 @@ class RunSummaryTests(RunConfigTestCase):
                         DurableRunStatus.COMPLETED,
                         outcome=WorkflowOutcome.COMPLETED,
                         verification=VerificationStatus.VERIFIED,
+                    ),
+                    0,
+                ),
+                (
+                    "accepted_pre_existing_failure",
+                    durable_result(
+                        DurableRunStatus.COMPLETED,
+                        outcome=WorkflowOutcome.COMPLETED,
+                        verification=VerificationStatus.PRE_EXISTING_FAILURE,
+                        acceptance=AcceptanceResult(
+                            True, AcceptanceReason.ACCEPTED
+                        ),
                     ),
                     0,
                 ),

@@ -113,8 +113,15 @@ class RunConfig:
                 "verification_specs must be an iterable of specifications.",
             ) from error
         specs: list[VerificationSpec] = []
+        names: set[str] = set()
         for spec in configured_specs:
             _validate_verification_spec(spec)
+            if spec.name.strip() in names:
+                raise RunConfigError(
+                    RunConfigErrorCode.INVALID_VALUE,
+                    "verification_specs must not contain duplicate names.",
+                )
+            names.add(spec.name.strip())
             specs.append(replace(spec, argv=tuple(spec.argv)))
 
         object.__setattr__(self, "workspace_root", workspace)

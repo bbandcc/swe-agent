@@ -18,7 +18,12 @@ from agent.verification.contracts import (
     VerificationSpec,
     VerificationStatus,
 )
-from agent.verification.evaluation import classify_verification
+from agent.verification.evaluation import (
+    AcceptanceReason,
+    AcceptanceResult,
+    classify_verification,
+    evaluate_acceptance,
+)
 from agent.verification.runner import VerificationRunner
 
 MAX_REPAIR_ATTEMPTS = 2
@@ -34,6 +39,7 @@ class _VerificationState(Protocol):
     implementation_plan: ImplementationPlan | None
     last_edit_result: EditResult | None
     outcome: WorkflowOutcome
+    acceptance: AcceptanceResult | None
 
 
 class VerificationController:
@@ -59,6 +65,7 @@ class VerificationController:
             "verification_feedback": None,
             "repair_plan": None,
             "repair_attempts": 0,
+            "acceptance": None,
             "developer_status": state.developer_status,
             "outcome": WorkflowOutcome.PENDING,
         }
@@ -68,6 +75,7 @@ class VerificationController:
                 "baseline_verification": (),
                 "verification_status": VerificationStatus.UNVERIFIED,
                 "verification_message": "No verification checks are configured.",
+                "acceptance": _insufficient_acceptance(),
             }
         results, deadline_overrun = self._run_checks(state)
         if deadline_overrun:
@@ -80,6 +88,7 @@ class VerificationController:
                     "Baseline verification exceeded the absolute run deadline."
                 ),
                 "outcome": WorkflowOutcome.FAILED,
+                "acceptance": _insufficient_acceptance(),
             }
         if _has_execution_problem(results):
             return {
@@ -90,6 +99,7 @@ class VerificationController:
                     "Baseline verification could not execute reliably."
                 ),
                 "outcome": WorkflowOutcome.FAILED,
+                "acceptance": _insufficient_acceptance(),
             }
         if _has_evidence_problem(results):
             return {
@@ -100,6 +110,7 @@ class VerificationController:
                     "Baseline verification did not produce a valid structured report."
                 ),
                 "outcome": WorkflowOutcome.FAILED,
+                "acceptance": _insufficient_acceptance(),
             }
         return {
             **initial,
@@ -114,6 +125,7 @@ class VerificationController:
                 "post_verification": (),
                 "verification_status": VerificationStatus.UNVERIFIED,
                 "verification_message": "No verification checks are configured.",
+                "acceptance": _insufficient_acceptance(),
                 "outcome": _workflow_outcome(
                     state.developer_status, VerificationStatus.UNVERIFIED
                 ),
@@ -128,8 +140,10 @@ class VerificationController:
                     "Post-edit verification exceeded the absolute run deadline."
                 ),
                 "outcome": WorkflowOutcome.FAILED,
+                "acceptance": _insufficient_acceptance(),
             }
         status = classify_verification(state.baseline_verification, results)
+        acceptance = evaluate_acceptance(state.baseline_verification, results)
         if (
             status is VerificationStatus.REGRESSION
             and state.repair_attempts >= MAX_REPAIR_ATTEMPTS
@@ -139,6 +153,7 @@ class VerificationController:
             "post_verification": results,
             "verification_status": status,
             "verification_message": _verification_message(status),
+            "acceptance": acceptance,
             "outcome": _workflow_outcome(state.developer_status, status),
         }
 
@@ -165,6 +180,7 @@ class VerificationController:
             "developer_status": DeveloperStatus.PENDING,
             "developer_error_code": None,
             "developer_message": "",
+            "acceptance": None,
             "outcome": WorkflowOutcome.PENDING,
         }
 
@@ -243,6 +259,10 @@ def _deadline_error_update() -> dict[str, object]:
     }
 
 
+def _insufficient_acceptance() -> AcceptanceResult:
+    return AcceptanceResult(False, AcceptanceReason.EVIDENCE_INSUFFICIENT)
+
+
 def _has_execution_problem(results: Sequence[VerificationResult]) -> bool:
     return any(
         result.status
@@ -255,7 +275,9 @@ def _has_execution_problem(results: Sequence[VerificationResult]) -> bool:
 
 
 def _has_evidence_problem(results: Sequence[VerificationResult]) -> bool:
-    return any(result.report is None for result in results)
+    if any(result.report is None for result in results):
+        return True
+    return classify_verification(results, results) is VerificationStatus.EVIDENCE_INSUFFICIENT
 
 
 def _result_feedback(result: VerificationResult) -> dict[str, object]:

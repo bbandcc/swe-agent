@@ -32,6 +32,7 @@ from agent.runtime.identity import (
     preflight_start,
 )
 from agent.runtime.semantics import semantic_config_digest
+from agent.verification import AcceptanceResult
 from agent.workspace import WorkspaceRootError, workspace_root_scope
 
 GraphFactory = Callable[[RunConfig, str, SqliteSaver, Callable[[], float]], Any]
@@ -56,6 +57,7 @@ class RunSummary:
     run_id: str
     record_ref: str | None = None
     warnings: tuple[str, ...] = ()
+    acceptance: AcceptanceResult | None = None
 
     def __post_init__(self) -> None:
         if self.schema_version != 1:
@@ -67,6 +69,10 @@ class RunSummary:
         object.__setattr__(self, "run_id", self.run_id.strip())
         if self.record_ref is not None and not isinstance(self.record_ref, str):
             raise ValueError("record_ref must be a string or None.")
+        if self.acceptance is not None and not isinstance(
+            self.acceptance, AcceptanceResult
+        ):
+            raise ValueError("acceptance must be AcceptanceResult or None.")
         if isinstance(self.warnings, (str, bytes)):
             raise ValueError("warnings must contain warning codes.")
         try:
@@ -91,6 +97,14 @@ class RunSummary:
             "run_id": self.run_id,
             "record_ref": self.record_ref,
             "warnings": list(self.warnings),
+            "acceptance": (
+                {
+                    "accepted": self.acceptance.accepted,
+                    "reason": self.acceptance.reason.value,
+                }
+                if self.acceptance is not None
+                else None
+            ),
         }
 
 
@@ -118,14 +132,12 @@ class DurableRunResult:
             error_code=_summary_value(self.error_code),
             run_id=run_id,
             warnings=_preflight_warning_codes(self.preflight),
+            acceptance=_acceptance_value(state.get("acceptance")),
         )
 
     @property
     def accepted(self) -> bool:
-        return self.status not in {
-            DurableRunStatus.REJECTED,
-            DurableRunStatus.FAILED,
-        }
+        return run_exit_code(self.summary) == 0
 
 
 def run_exit_code(summary: RunSummary) -> int:
@@ -145,7 +157,8 @@ def run_exit_code(summary: RunSummary) -> int:
     if (
         summary.runtime_status is DurableRunStatus.COMPLETED
         and summary.workflow_outcome == "completed"
-        and summary.verification_status == "verified"
+        and summary.acceptance is not None
+        and summary.acceptance.accepted
     ):
         return 0
     return 1
@@ -155,6 +168,30 @@ def _summary_value(value: object) -> str | None:
     if value is None:
         return None
     return value.value if isinstance(value, Enum) else str(value)
+
+
+def _acceptance_value(value: object) -> AcceptanceResult | None:
+    if value is None:
+        return None
+    if isinstance(value, AcceptanceResult):
+        return value
+    if isinstance(value, Mapping):
+        try:
+            from agent.verification import AcceptanceReason
+
+            accepted = value["accepted"]
+            if not isinstance(accepted, bool):
+                return None
+            reason = value.get("reason")
+            if isinstance(reason, Enum):
+                reason = reason.value
+            return AcceptanceResult(
+                accepted=accepted,
+                reason=AcceptanceReason(str(reason)),
+            )
+        except (KeyError, TypeError, ValueError):
+            return None
+    return None
 
 
 def _preflight_warning_codes(

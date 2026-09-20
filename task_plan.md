@@ -10,14 +10,14 @@
 
 ### 当前状态文件基线
 
-- S3.2 production 技术冻结点：`5850b8370c49f868e90aeffe9e6042f85eaa522c`；D1/S1a、D2/S2b 与本轮 D3/S2c continuation prerequisite 均已有源码与测试证据。
-- S3.2 的配置、身份、SQLite checkpoint、预算边界、start/resume 和现有图接入均保持冻结；D3/S2c 已增加单一 JUnit XML 可信报告、稳定 case identity 和保守 acceptance policy。S3 尚未全部完成，当前不能进入 S4。
+- S3.2 production 技术冻结点：`5850b8370c49f868e90aeffe9e6042f85eaa522c`；D1/S1a、D2/S2b 与 D3/S2c Final Seal 均已有源码与测试证据。
+- S3.2 的配置、身份、SQLite checkpoint、预算边界、start/resume 和现有图接入均保持冻结；D3/S2c 已将单一 JUnit XML 可信报告、稳定 case identity、保守 acceptance policy 和临时 evidence cleanup 接入生产验收链路。S3 尚未全部完成，当前不能进入 S4。
 - D2/S2b Final Seal 已收窄 library/CLI 的异常边界；`RunSummary.warnings` 只输出 preflight warning code，unexpected `RuntimeError`、`KeyboardInterrupt` 和 `SystemExit` 不被入口吞掉。
-- 最新 Codex 本地验证：unittest 195 tests OK / 6 skipped；pytest 189 passed / 6 skipped / 149 subtests passed；Python compile、11 个 prompt render、CLI help、`git diff --check` 均通过。6 个 skip 仅为当前 Windows 普通 symlink 权限限制。
+- 最新 Codex 本地验证：unittest 207 tests OK / 6 skipped；pytest 201 passed / 6 skipped / 156 subtests passed；Python compile、11 个 prompt render、CLI help、`git diff --check` 均通过。6 个 skip 仅为当前 Windows 普通 symlink 权限限制。
 - 没有 GitHub CI 或独立外部测试证据，不作相应声明。
-- 剩余能力：provider timeout/retry/attempt、secret-safe persistence、EventSink/RunRecord/artifact、workspace locking/policy、write/verification recovery 等仍未实现；exactly-once 不承诺。JUnit XML 是当前唯一可信报告格式，未配置或报告缺失/畸形时保守返回证据不足；多框架 parser registry、扩展 repair 和 S4 均未实现。
+- 剩余能力：provider timeout/retry/attempt、secret-safe persistence、EventSink/RunRecord/artifact、workspace locking/policy、write/verification recovery 等仍未实现；exactly-once 不承诺。JUnit XML 是当前唯一可信报告格式，未配置或报告缺失/畸形时保守返回证据不足；多框架 parser registry、扩展 repair 和 S4 均未实现。JUnit evidence 只在 owned temporary output 中读取，正常运行结束后清理。
 - 后续技术切片继续按 MASTER_PLAN §5.2 执行；保留现有 S1/S2/S3 历史编号，不重新开启或重命名 S1。
-- MASTER_PLAN 对应：当前实现事实冻结在 S3.2、D1/S1a、D2/S2b 和 D3/S2c prerequisite，后续运行控制、轨迹和恢复要求继续按 §5.2 映射执行；本次不推进下一阶段。
+- MASTER_PLAN 对应：当前实现事实冻结在 S3.2、D1/S1a、D2/S2b 和 D3/S2c Final Seal，后续运行控制、轨迹和恢复要求继续按 §5.2 映射执行；本次不推进下一阶段。
 
 ## 当前文档任务：独立 MASTER PLAN（2026-09-16）
 
@@ -449,3 +449,28 @@ spool、workspace/thread 独占、read/write authorization policy、pending-
 write/hash recovery、verification execution recovery；exactly-once 不承诺。
 当前不进入 S4；后续继续完成 `MASTER_PLAN` §5.2 中属于运行控制、轨迹和恢复
 的剩余要求，并保留现有 S1/S2/S3.1/S3.2 阶段编号体系。
+
+## D3/S2c Final Seal：稳定验收策略链路
+
+### 固定范围
+
+- 基线：`c17cb0a32fffcfb3c52924a1e1b06c2e786f3864`。
+- 只把结构化 acceptance policy 接入 VerificationController、RunSummary 和 CLI，封闭按 check 的 allow-list、pytest JUnit 退出状态一致性与临时 evidence 生命周期。
+- 不扩展 repair，不新增 parser registry、provider timeout、EventSink、recovery 或 S4 能力。
+
+### TDD 验收切片
+
+- [x] post verification 调用 `evaluate_acceptance`，可信 accepted 才能产生 CLI exit 0；PRE_EXISTING_FAILURE、IMPROVED 等诊断状态保持原值。
+- [x] 按 `VerificationSpec.name` 独立解释 allowed failure，拒绝重复 check id，并拒绝 FAIL→ERROR/SKIPPED 的退化。
+- [x] 校验 pytest 非正常退出与 JUnit 报告矛盾，旧 `failure_id` 只保留诊断用途。
+- [x] 将 JUnit 报告重定向到 owned temporary output，兼容间接路径写入并在结束时恢复/清理 workspace 文件。
+- [x] 完成全量 unittest/pytest、compile、11 个 prompt render、CLI help 和 diff check。
+
+### 当前状态
+
+D3/S2c Final Seal 已完成。最新本地验证为 unittest 207 tests OK、6 skipped；
+pytest 201 passed、6 skipped、156 subtests passed。6 个 skip 仅来自当前 Windows
+账户缺少普通 symlink 创建权限；没有 GitHub CI 或独立外部测试证据。当前仍只支持
+`junit-xml-v1`，报告缺失、畸形、退出状态矛盾或命令异常时保守拒绝；owned
+temporary evidence 不进入用户 workspace。后续能力仍按 MASTER_PLAN §5.2 继续，
+本轮不进入 D4/S4。

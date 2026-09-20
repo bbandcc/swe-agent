@@ -46,6 +46,8 @@ from agent.runtime.revision import (
     AgentRevisionStatus,
 )
 from agent.verification import (
+    AcceptanceReason,
+    AcceptanceResult,
     VerificationCase,
     VerificationCaseStatus,
     VerificationCheckStatus,
@@ -140,6 +142,8 @@ def checkpoint_serializer() -> JsonPlusSerializer:
             WorkspaceSnapshot,
             WorkspaceTransaction,
             VerificationCheckStatus,
+            AcceptanceReason,
+            AcceptanceResult,
             VerificationCase,
             VerificationCaseStatus,
             VerificationReport,
