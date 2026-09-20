@@ -93,9 +93,13 @@ def create_workflow_graph(
         return verification.prepare_repair(state)
 
     def route_after_baseline(state: AgentState) -> str:
+        if state.runtime_error_code is not None:
+            return "end"
         return verification.route_after_baseline(state)
 
     def route_after_post(state: AgentState) -> str:
+        if state.runtime_error_code is not None:
+            return "end"
         return verification.route_after_post(state)
 
     def finalize_outcome(state: AgentState) -> dict[str, Any]:

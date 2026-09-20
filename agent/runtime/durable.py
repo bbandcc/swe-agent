@@ -277,6 +277,13 @@ def _run(
     clock: Callable[[], float],
 ) -> DurableRunResult:
     secret_filter = KnownSecretFilter.from_run_config(config)
+    if _identity_contains_secret(request.identity, secret_filter):
+        return DurableRunResult(
+            DurableRunStatus.REJECTED,
+            error_code=BudgetErrorCode.SENSITIVE_DATA_DETECTED.value,
+            message=SENSITIVE_DATA_MESSAGE,
+            run_id=secret_filter.marker,
+        )
     if request.run_config_digest != semantic_config_digest(config):
         return DurableRunResult(
             DurableRunStatus.REJECTED,
@@ -513,3 +520,16 @@ def _thread_config(thread_id: str, max_steps: int) -> dict[str, Any]:
         "configurable": {"thread_id": thread_id},
         "recursion_limit": durable_recursion_limit(max_steps),
     }
+
+
+def _identity_contains_secret(
+    identity: Any, secret_filter: KnownSecretFilter
+) -> bool:
+    values = (
+        identity.run_id,
+        identity.thread_id,
+        identity.task_id,
+        identity.workspace.canonical_root,
+        identity.workspace.root_digest,
+    )
+    return any(secret_filter.contains_secret(value) for value in values)

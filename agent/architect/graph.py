@@ -39,6 +39,8 @@ class SoftwareArchitectOutput(TypedDict):
 
 
 def should_call_tool(state: SoftwareArchitectState):
+    if state.runtime_error_code is not None:
+        return "end"
     last_message = state.implementation_research_scratchpad[-1]
     if getattr(last_message, "tool_calls", None):
         return "should_call_tool"
@@ -46,6 +48,8 @@ def should_call_tool(state: SoftwareArchitectState):
 
 
 def should_conduct_research(state: SoftwareArchitectState):
+    if state.runtime_error_code is not None:
+        return "end"
     if state.is_valid_research_step:
         return "plan_is_valid"
     return "plan_is_not_valid"
@@ -266,7 +270,20 @@ def create_architect_workflow(
         return tool_node.invoke(state, config)
 
     def route_after_tool_dispatch(state: SoftwareArchitectState) -> str:
+        if (
+            state.runtime_error_code is not None
+            and state.durable_call_result is None
+        ):
+            return "end"
         return "settle" if state.durable_call_result is not None else "record"
+
+    def route_model_to_settle(state: SoftwareArchitectState) -> str:
+        if (
+            state.runtime_error_code is not None
+            and state.durable_call_result is None
+        ):
+            return "end"
+        return "settle"
 
     def persist_node(node):
         return secret_filter.wrap_node(node) if secret_filter is not None else node
@@ -302,7 +319,11 @@ def create_architect_workflow(
                 budget_boundary.may_dispatch,
                 {"dispatch": name, "end": END},
             )
-            workflow.add_edge(name, f"settle_{name}")
+            workflow.add_conditional_edges(
+                name,
+                route_model_to_settle,
+                {"settle": f"settle_{name}", "end": END},
+            )
         workflow.add_node("reserve_tools", persist_node(reserve_tools))
         workflow.add_node(
             "record_tool_results", persist_node(record_tool_results)
@@ -316,7 +337,11 @@ def create_architect_workflow(
         workflow.add_conditional_edges(
             "tools",
             route_after_tool_dispatch,
-            {"record": "record_tool_results", "settle": "settle_tools"},
+            {
+                "record": "record_tool_results",
+                "settle": "settle_tools",
+                "end": END,
+            },
         )
         workflow.add_edge("record_tool_results", "settle_tools")
         workflow.add_edge(START, "reserve_come_up_with_research_next_step")
@@ -364,13 +389,18 @@ def create_architect_workflow(
         return workflow.compile().with_config({"tags": ["research-agent-v4"]})
 
     workflow.add_edge(START, "come_up_with_research_next_step")
-    workflow.add_edge("come_up_with_research_next_step", "check_research_step")
+    workflow.add_conditional_edges(
+        "come_up_with_research_next_step",
+        lambda state: "end" if state.runtime_error_code is not None else "continue",
+        {"continue": "check_research_step", "end": END},
+    )
     workflow.add_conditional_edges(
         "check_research_step",
         should_conduct_research,
         {
             "plan_is_valid": "conduct_research",
             "plan_is_not_valid": "come_up_with_research_next_step",
+            "end": END,
         },
     )
     workflow.add_conditional_edges(
@@ -379,9 +409,14 @@ def create_architect_workflow(
         {
             "should_call_tool": "tools",
             "implement_plan": "extract_implementation_plan",
+            "end": END,
         },
     )
-    workflow.add_edge("tools", "conduct_research")
+    workflow.add_conditional_edges(
+        "tools",
+        route_after_tool_dispatch,
+        {"record": "conduct_research", "settle": "conduct_research", "end": END},
+    )
     workflow.add_edge("extract_implementation_plan", END)
     return workflow.compile().with_config({"tags": ["research-agent-v4"]})
 

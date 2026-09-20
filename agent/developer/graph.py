@@ -327,7 +327,20 @@ def create_developer_workflow(
         return research_tool_node.invoke(state, config)
 
     def route_after_tool_dispatch(state: SoftwareDeveloperState) -> str:
+        if (
+            state.runtime_error_code is not None
+            and state.durable_call_result is None
+        ):
+            return "end"
         return "settle" if state.durable_call_result is not None else "record"
+
+    def route_model_to_settle(state: SoftwareDeveloperState) -> str:
+        if (
+            state.runtime_error_code is not None
+            and state.durable_call_result is None
+        ):
+            return "end"
+        return "settle"
 
     def persist_node(node):
         return secret_filter.wrap_node(node) if secret_filter is not None else node
@@ -375,7 +388,11 @@ def create_developer_workflow(
                 budget_boundary.may_dispatch,
                 {"dispatch": name, "end": END},
             )
-            workflow.add_edge(name, f"settle_{name}")
+            workflow.add_conditional_edges(
+                name,
+                route_model_to_settle,
+                {"settle": f"settle_{name}", "end": END},
+            )
         workflow.add_node("reserve_research_tools", persist_node(reserve_tools))
         workflow.add_node(
             "record_research_tool_results", persist_node(record_tool_results)
@@ -396,6 +413,7 @@ def create_developer_workflow(
             {
                 "record": "record_research_tool_results",
                 "settle": "settle_research_tools",
+                "end": END,
             },
         )
         workflow.add_edge("record_research_tool_results", "settle_research_tools")

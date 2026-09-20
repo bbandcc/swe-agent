@@ -14,6 +14,9 @@ from agent.developer.state import (
     SoftwareDeveloperState,
 )
 from agent.editing import EditResult, EditStatus
+from agent.editing import EditErrorCode
+from agent.runtime.budget import BudgetErrorCode
+from agent.runtime.secrets import SENSITIVE_DATA_MESSAGE
 
 
 def start_implementing(state: SoftwareDeveloperState) -> dict[str, Any]:
@@ -76,12 +79,17 @@ def duplicate_file_task_error(
 
 
 def should_start(state: SoftwareDeveloperState):
-    if state.developer_status is DeveloperStatus.RUNNING:
+    if (
+        state.runtime_error_code is None
+        and state.developer_status is DeveloperStatus.RUNNING
+    ):
         return "continue"
     return END
 
 
 def should_continue_implementation_research(state: SoftwareDeveloperState) -> str:
+    if state.runtime_error_code is not None:
+        return END
     last_research_step = state.atomic_implementation_research[-1]
     if last_research_step.tool_calls:
         return "should_continue_research"
@@ -89,13 +97,19 @@ def should_continue_implementation_research(state: SoftwareDeveloperState) -> st
 
 
 def should_continue_after_preparation(state: SoftwareDeveloperState):
-    if state.developer_status is DeveloperStatus.FAILED:
+    if (
+        state.developer_status is DeveloperStatus.FAILED
+        or state.runtime_error_code is not None
+    ):
         return END
     return "continue"
 
 
 def route_after_staging(state: SoftwareDeveloperState):
-    if state.developer_status is DeveloperStatus.FAILED:
+    if (
+        state.runtime_error_code is not None
+        or state.developer_status is DeveloperStatus.FAILED
+    ):
         return END
     plan = state.active_implementation_plan
     if plan is None:
@@ -107,6 +121,8 @@ def route_after_staging(state: SoftwareDeveloperState):
 
 
 def route_after_commit(state: SoftwareDeveloperState):
+    if state.runtime_error_code is not None:
+        return END
     result = state.last_edit_result
     if result is not None and result.status is EditStatus.APPLIED:
         return "advance"
@@ -151,12 +167,20 @@ def convert_tools_messages_to_ai_and_human(
 
 
 def failed_edit(result: EditResult) -> dict[str, Any]:
-    return {
+    update = {
         "last_edit_result": result,
         "developer_status": DeveloperStatus.FAILED,
         "developer_error_code": None,
         "developer_message": result.message,
     }
+    if result.error_code == EditErrorCode.SENSITIVE_DATA_DETECTED:
+        update.update(
+            {
+                "runtime_error_code": BudgetErrorCode.SENSITIVE_DATA_DETECTED,
+                "runtime_message": SENSITIVE_DATA_MESSAGE,
+            }
+        )
+    return update
 
 
 def invalid_state(message: str) -> dict[str, Any]:

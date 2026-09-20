@@ -19,7 +19,15 @@ _CODE_BEARING_STATE_KEYS = frozenset(
         "current_file_content",
         "current_file_snapshot",
         "current_file_transaction",
+        "edit_proposal",
+        "file_content",
         "last_edit_result",
+        "new_file_content",
+        "new_text",
+        "old_text",
+        "patch",
+        "proposal",
+        "working_content",
     }
 )
 
@@ -83,6 +91,12 @@ class KnownSecretFilter:
         for secret in self._secrets:
             redacted = redacted.replace(secret, self.marker)
         return redacted
+
+    def contains_secret(self, value: str) -> bool:
+        """Return whether a text value contains one of the known secrets."""
+        if not isinstance(value, str):
+            raise TypeError("value must be a string.")
+        return bool(self._secrets) and self.redact_text(value) != value
 
     def sanitize(
         self, value: Any, *, code_bearing: bool = False
@@ -157,10 +171,23 @@ class KnownSecretFilter:
     def wrap_node(self, node):
         """Wrap a public LangGraph node without touching ToolNode internals."""
         def wrapped(*args, **kwargs):
-            if hasattr(node, "invoke"):
-                update = node.invoke(*args, **kwargs)
-            else:
-                update = node(*args, **kwargs)
+            try:
+                if hasattr(node, "invoke"):
+                    update = node.invoke(*args, **kwargs)
+                else:
+                    update = node(*args, **kwargs)
+            except Exception as error:
+                # LangGraph may persist an exception as a pending write before
+                # propagating it.  Convert only known-secret exceptions here;
+                # ordinary programming failures keep their original behavior.
+                if self._exception_contains_secret(error):
+                    from agent.runtime.budget import BudgetErrorCode
+
+                    return {
+                        "runtime_error_code": BudgetErrorCode.SENSITIVE_DATA_DETECTED,
+                        "runtime_message": SENSITIVE_DATA_MESSAGE,
+                    }
+                raise
             if not isinstance(update, Mapping):
                 return update
             return self.sanitize_node_update(update)
@@ -233,6 +260,15 @@ class KnownSecretFilter:
             redacted=any(item.redacted for item in items),
             code_bearing=any(item.code_bearing for item in items),
         )
+
+    def _exception_contains_secret(self, error: Exception) -> bool:
+        for formatter in (str, repr):
+            try:
+                if self.contains_secret(formatter(error)):
+                    return True
+            except Exception:
+                continue
+        return False
 
 
 __all__ = [
