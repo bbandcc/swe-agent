@@ -1,3 +1,4 @@
+import io
 import math
 import sys
 import tempfile
@@ -158,7 +159,54 @@ class VerificationRunnerTests(unittest.TestCase):
             self.assertEqual(result.status, VerificationCheckStatus.EXECUTION_ERROR)
             self.assertIn("pytest --junitxml", result.message)
 
-    def test_nonexistent_report_path_is_removed_after_success(self) -> None:
+    def test_rewrites_only_matching_junit_destination(self) -> None:
+        captured: list[tuple[str, ...]] = []
+
+        class FakeProcess:
+            stdout = io.BytesIO()
+            stderr = io.BytesIO()
+
+            def wait(self, timeout: float) -> int:
+                return 0
+
+            def poll(self) -> int:
+                return 0
+
+        def fake_popen(argv: list[str], **_: object) -> FakeProcess:
+            captured.append(tuple(argv))
+            return FakeProcess()
+
+        with tempfile.TemporaryDirectory() as directory:
+            root = Path(directory)
+            spec = VerificationSpec(
+                name="rewrite",
+                argv=(
+                    sys.executable,
+                    "-m",
+                    "pytest",
+                    "tests/report.xml_case.py",
+                    "-k",
+                    "report.xml",
+                    "--junitxml",
+                    "report.xml",
+                ),
+                report_path="report.xml",
+            )
+            with patch.object(
+                runner_module.subprocess, "Popen", side_effect=fake_popen
+            ):
+                result = VerificationRunner(root).run(spec)
+
+        self.assertEqual(result.status, VerificationCheckStatus.PASS)
+        self.assertEqual(len(captured), 1)
+        effective = captured[0]
+        self.assertEqual(effective[3], "tests/report.xml_case.py")
+        self.assertEqual(effective[5], "report.xml")
+        self.assertEqual(effective[6], "--junitxml")
+        self.assertNotEqual(effective[7], "report.xml")
+        self.assertTrue(effective[7].endswith("report.xml"))
+
+    def test_nonexistent_workspace_report_stays_absent_after_success(self) -> None:
         with tempfile.TemporaryDirectory() as directory:
             root = Path(directory)
             (root / "test_report.py").write_text(
@@ -171,6 +219,25 @@ class VerificationRunnerTests(unittest.TestCase):
 
             self.assertEqual(result.status, VerificationCheckStatus.PASS)
             self.assertFalse((root / "report.xml").exists())
+
+    def test_existing_workspace_report_is_never_touched(self) -> None:
+        with tempfile.TemporaryDirectory() as directory:
+            root = Path(directory)
+            report = root / "report.xml"
+            report.write_bytes(b"user-owned")
+            before = report.stat()
+            (root / "test_report.py").write_text(
+                "def test_report():\n    assert True\n",
+                encoding="utf-8",
+                newline="",
+            )
+
+            result = VerificationRunner(root).run(self._pytest_spec())
+
+            after = report.stat()
+            self.assertEqual(result.status, VerificationCheckStatus.PASS)
+            self.assertEqual(report.read_bytes(), b"user-owned")
+            self.assertEqual(after.st_mtime_ns, before.st_mtime_ns)
 
     def test_stale_workspace_report_is_not_reused_as_new_evidence(self) -> None:
         with tempfile.TemporaryDirectory() as directory:
@@ -215,31 +282,6 @@ class VerificationRunnerTests(unittest.TestCase):
             self.assertIsNone(result.report)
             self.assertIn("invalid", result.message.lower())
 
-    def test_restore_failure_is_structured_execution_error(self) -> None:
-        with tempfile.TemporaryDirectory() as directory:
-            root = Path(directory)
-            (root / "report.xml").write_text("original", encoding="utf-8")
-            (root / "test_report.py").write_text(
-                "def test_report():\n    assert True\n",
-                encoding="utf-8",
-                newline="",
-            )
-            real_copy2 = runner_module.shutil.copy2
-            copy_count = 0
-
-            def fail_restore(source: Path, target: Path, *args: object, **kwargs: object):
-                nonlocal copy_count
-                copy_count += 1
-                if copy_count == 2:
-                    raise OSError("restore failed")
-                return real_copy2(source, target, *args, **kwargs)
-
-            with patch.object(runner_module.shutil, "copy2", side_effect=fail_restore):
-                result = VerificationRunner(root).run(self._pytest_spec())
-
-            self.assertEqual(result.status, VerificationCheckStatus.EXECUTION_ERROR)
-            self.assertIn("restore", result.message.lower())
-
     def test_cleanup_failure_is_structured_execution_error(self) -> None:
         with tempfile.TemporaryDirectory() as directory:
             root = Path(directory)
@@ -258,13 +300,14 @@ class VerificationRunnerTests(unittest.TestCase):
             self.assertEqual(result.status, VerificationCheckStatus.EXECUTION_ERROR)
             self.assertIn("cleanup", result.message.lower())
 
-    def test_interrupt_propagates_after_report_restore(self) -> None:
+    def test_interrupt_propagates_after_owned_report_cleanup(self) -> None:
         for interruption in (KeyboardInterrupt, SystemExit):
             with self.subTest(interruption=interruption.__name__):
                 with tempfile.TemporaryDirectory() as directory:
                     root = Path(directory)
                     report = root / "report.xml"
-                    report.write_text("original", encoding="utf-8")
+                    report.write_bytes(b"original")
+                    before = report.stat()
                     with patch.object(
                         runner_module.subprocess,
                         "Popen",
@@ -273,7 +316,9 @@ class VerificationRunnerTests(unittest.TestCase):
                         with self.assertRaises(interruption):
                             VerificationRunner(root).run(self._pytest_spec())
 
-                    self.assertEqual(report.read_text(encoding="utf-8"), "original")
+                    after = report.stat()
+                    self.assertEqual(report.read_bytes(), b"original")
+                    self.assertEqual(after.st_mtime_ns, before.st_mtime_ns)
 
     def test_does_not_interpret_a_shell_command_string(self) -> None:
         with tempfile.TemporaryDirectory() as directory:

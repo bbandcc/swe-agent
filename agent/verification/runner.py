@@ -49,7 +49,6 @@ class VerificationRunner:
         report_path: Path | None = None
         report_before: tuple[object, ...] | None = None
         owned_report_dir: Path | None = None
-        report_guard: _WorkspaceReportGuard | None = None
         effective_argv = list(spec.argv)
         if spec.report_path is not None:
             report_resolution = self._resolver.resolve_file(
@@ -72,21 +71,6 @@ class VerificationRunner:
                     f"Verification report output could not be allocated: {error}",
                     started_at,
                 )
-            report_guard = _WorkspaceReportGuard(
-                report_resolution.path, owned_report_dir
-            )
-            try:
-                report_guard.snapshot()
-            except OSError as error:
-                cleanup_error = _cleanup_owned_report(owned_report_dir)
-                message = f"Verification report path could not be protected: {error}"
-                if cleanup_error is not None:
-                    message += f"; temporary report cleanup failed: {cleanup_error}"
-                return _execution_error(
-                    spec,
-                    message,
-                    started_at,
-                )
             effective_argv = _rewrite_report_argv(
                 spec.argv,
                 spec.report_path,
@@ -94,6 +78,16 @@ class VerificationRunner:
                 workspace_relative=report_resolution.relative_path,
                 workspace_path=report_resolution.path,
             )
+            if effective_argv == list(spec.argv):
+                cleanup_error = _cleanup_owned_report(owned_report_dir)
+                message = "Verification report output could not be redirected."
+                if cleanup_error is not None:
+                    message += f" Temporary report cleanup failed: {cleanup_error}"
+                return _execution_error(
+                    spec,
+                    message,
+                    started_at,
+                )
 
         process: subprocess.Popen[bytes] | None = None
         process_tree: ProcessTree | None = None
@@ -171,8 +165,6 @@ class VerificationRunner:
                 VerificationCheckStatus.TIMEOUT,
                 VerificationCheckStatus.EXECUTION_ERROR,
             }:
-                if report_guard is not None:
-                    report_guard.copy_changed_output(report_path)
                 report, report_message = _load_report(
                     report_path,
                     before=report_before,
@@ -225,19 +217,11 @@ class VerificationRunner:
                                 f"process handle cleanup failed: {error}"
                             )
             finally:
-                try:
-                    if report_guard is not None:
-                        restore_error = report_guard.restore()
-                        if restore_error is not None:
-                            cleanup_errors.append(
-                                f"workspace report restore failed: {restore_error}"
-                            )
-                finally:
-                    cleanup_error = _cleanup_owned_report(owned_report_dir)
-                    if cleanup_error is not None:
-                        cleanup_errors.append(
-                            f"temporary report cleanup failed: {cleanup_error}"
-                        )
+                cleanup_error = _cleanup_owned_report(owned_report_dir)
+                if cleanup_error is not None:
+                    cleanup_errors.append(
+                        f"temporary report cleanup failed: {cleanup_error}"
+                    )
 
         if cleanup_errors:
             return _execution_error(
@@ -347,80 +331,59 @@ def _rewrite_report_argv(
     workspace_relative: str | None = None,
     workspace_path: Path | None = None,
 ) -> list[str]:
-    """Redirect the configured JUnit path without touching workspace files."""
+    """Redirect only an exact pytest JUnit destination value."""
     owned_text = owned_path.as_posix()
-    configured = Path(configured_path)
-    candidates = {
-        configured_path,
-        configured_path.replace("\\", "/"),
-        configured.as_posix(),
-        configured.name,
-    }
+    candidates = {_report_path_key(configured_path)}
     if workspace_relative:
-        candidates.add(workspace_relative)
-        candidates.add(workspace_relative.replace("\\", "/"))
+        candidates.add(_report_path_key(workspace_relative))
     if workspace_path is not None:
-        candidates.add(str(workspace_path))
-        candidates.add(workspace_path.as_posix())
+        candidates.add(_report_path_key(str(workspace_path)))
     rewritten: list[str] = []
-    replaced = False
-    for item in argv:
-        updated = item
-        for candidate in candidates:
-            if candidate and candidate in updated:
-                updated = updated.replace(candidate, owned_text)
-                replaced = True
-        rewritten.append(updated)
-    return rewritten if replaced else list(argv)
+    index = 0
+    while index < len(argv):
+        item = argv[index]
+        matched_option = next(
+            (
+                option
+                for option in ("--junitxml", "--junit-xml")
+                if item == option or item.startswith(f"{option}=")
+            ),
+            None,
+        )
+        if matched_option is None:
+            rewritten.append(item)
+            index += 1
+            continue
+
+        if item == matched_option:
+            rewritten.append(item)
+            if index + 1 < len(argv):
+                value = argv[index + 1]
+                if _report_path_key(value) in candidates:
+                    rewritten.append(owned_text)
+                else:
+                    rewritten.append(value)
+                index += 2
+            else:
+                index += 1
+            continue
+
+        value = item[len(matched_option) + 1 :]
+        if _report_path_key(value) in candidates:
+            rewritten.append(f"{matched_option}={owned_text}")
+        else:
+            rewritten.append(item)
+        index += 1
+    return rewritten
 
 
-class _WorkspaceReportGuard:
-    """Keep configured report paths ephemeral even when argv rewriting misses."""
-
-    def __init__(self, target: Path, directory: Path) -> None:
-        self._target = target
-        self._backup = directory / ".workspace-report-backup"
-        self._before: tuple[object, ...] | None = None
-        self._existed = False
-
-    def snapshot(self) -> None:
-        self._before = _report_signature(self._target)
-        try:
-            self._target.lstat()
-        except FileNotFoundError:
-            return
-        if self._target.is_symlink() or not self._target.is_file():
-            raise OSError("configured report path is not a regular file")
-        shutil.copy2(self._target, self._backup)
-        self._existed = True
-
-    def copy_changed_output(self, owned_path: Path) -> None:
-        if owned_path.exists():
-            return
-        after = _report_signature(self._target)
-        if after is None or after == self._before:
-            return
-        if self._target.is_symlink() or not self._target.is_file():
-            return
-        shutil.copyfile(self._target, owned_path)
-
-    def restore(self) -> OSError | None:
-        try:
-            self._remove_target()
-            if self._existed:
-                shutil.copy2(self._backup, self._target)
-        except OSError as error:
-            return error
-        return None
-
-    def _remove_target(self) -> None:
-        try:
-            if self._target.is_symlink() or self._target.is_file():
-                self._target.unlink()
-            elif self._target.is_dir():
-                self._target.rmdir()
-        except FileNotFoundError:
-            pass
+def _report_path_key(value: str) -> str:
+    text = str(value).replace("\\", "/").strip()
+    while text.startswith("./"):
+        text = text[2:]
+    if text.casefold().startswith("workspace_repo/"):
+        text = text[len("workspace_repo/") :]
+    return os.path.normcase(text)
 
 
 def _cleanup_owned_report(directory: Path | None) -> OSError | None:
