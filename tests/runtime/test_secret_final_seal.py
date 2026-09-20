@@ -38,6 +38,7 @@ from agent.runtime import (
     AgentRevisionStatus,
     BudgetErrorCode,
     BudgetSnapshot,
+    DurableCallResult,
     DurableBudgetBoundary,
     KnownSecretFilter,
     ModelRetryPolicy,
@@ -46,6 +47,7 @@ from agent.runtime import (
     REDACTION_MARKER,
     ResumeRequest,
     StartRequest,
+    UsageRecord,
     WorkspaceIdentity,
     resume_run,
     semantic_config_digest,
@@ -66,6 +68,76 @@ from tests.runtime._config_support import RunConfigTestCase
 
 
 class SecretFinalSealTests(RunConfigTestCase):
+    def test_architect_secret_filter_only_stops_after_tool_error_with_stale_call_result(
+        self,
+    ) -> None:
+        canary = "S3_TOOL_SECRET"
+        calls = {"plan": 0, "check": 0, "conduct": 0, "extract": 0, "tool": 0}
+
+        def plan_next_step(_values):
+            calls["plan"] += 1
+            return ResearchStep(reasoning="inspect", hypothesis="inspect the file")
+
+        def check_research_step(_values):
+            calls["check"] += 1
+            return ResearchEvaluation(reasoning="valid", is_valid=True)
+
+        def conduct_research(_values):
+            calls["conduct"] += 1
+            return AIMessage(
+                content="",
+                tool_calls=[
+                    {"name": "explode", "args": {}, "id": "tool-call-1"}
+                ],
+            )
+
+        def extract_implementation_plan(_values):
+            calls["extract"] += 1
+            return ImplementationPlan(tasks=[])
+
+        @tool
+        def explode() -> str:
+            """Raise a canary-bearing failure from the public ToolNode seam."""
+            calls["tool"] += 1
+            raise RuntimeError(f"tool response leaked {canary}")
+
+        runtime = ArchitectRuntime(
+            plan_next_step=plan_next_step,
+            check_research_step=check_research_step,
+            conduct_research=conduct_research,
+            extract_implementation_plan=extract_implementation_plan,
+            load_codebase_structure=lambda: "app.py",
+        )
+        stale_call_result = DurableCallResult(
+            ("seed-call",),
+            (UsageRecord.unknown("seed-call"),),
+            ("0" * 64,),
+        )
+
+        result = create_architect_workflow(
+            runtime,
+            research_tools=[explode],
+            budget_boundary=None,
+            secret_filter=KnownSecretFilter((canary,)),
+        ).invoke(
+            {
+                "implementation_research_scratchpad": [
+                    HumanMessage(content="inspect app.py")
+                ],
+                "durable_call_result": stale_call_result,
+            }
+        )
+
+        self.assertEqual(
+            calls,
+            {"plan": 1, "check": 1, "conduct": 1, "extract": 0, "tool": 1},
+        )
+        self.assertEqual(
+            result["runtime_error_code"],
+            BudgetErrorCode.SENSITIVE_DATA_DETECTED,
+        )
+        self.assertNotIn(canary, repr(result))
+
     def test_architect_secret_filter_only_stops_after_secret_model_error(self) -> None:
         canary = "S3_ARCHITECT_SECRET"
         calls = {"check": 0, "conduct": 0, "extract": 0, "tool": 0}
