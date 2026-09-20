@@ -3,6 +3,8 @@
 from typing import Any
 
 from agent.runtime.config import (
+    DEFAULT_MODEL_REQUEST_TIMEOUT_SECONDS,
+    ModelRetryPolicy,
     RunConfig,
     RunConfigError,
     RunConfigErrorCode,
@@ -45,8 +47,10 @@ from agent.runtime.budget import (
 from agent.runtime.calls import (
     ModelCallResult,
     UsageMeasurement,
+    capture_model_exception,
     capture_model_result,
     capture_model_failure,
+    classify_model_exception,
     measure_usage,
 )
 from agent.runtime.boundary import (
@@ -57,6 +61,8 @@ from agent.runtime.boundary import (
 
 __all__ = [
     "RunConfig",
+    "DEFAULT_MODEL_REQUEST_TIMEOUT_SECONDS",
+    "ModelRetryPolicy",
     "RunConfigError",
     "RunConfigErrorCode",
     "TokenPricing",
@@ -90,8 +96,10 @@ __all__ = [
     "UsageStatus",
     "ModelCallResult",
     "UsageMeasurement",
+    "capture_model_exception",
     "capture_model_result",
     "capture_model_failure",
+    "classify_model_exception",
     "measure_usage",
     "DurableBudgetBoundary",
     "DurableBudgetState",

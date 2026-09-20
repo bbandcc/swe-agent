@@ -91,6 +91,18 @@ def create_architect_workflow(
         codemap_tools + search_tools if research_tools is None else research_tools
     )
 
+    def prepare_model_values(
+        state: SoftwareArchitectState, values: dict[str, Any]
+    ) -> tuple[dict[str, Any] | None, dict[str, Any]]:
+        if budget_boundary is None:
+            return values, {}
+        timeout, deadline_update = budget_boundary.model_dispatch_timeout(state)
+        if deadline_update:
+            return None, deadline_update
+        assert timeout is not None
+        values["_model_request_timeout_seconds"] = timeout
+        return values, {}
+
     def come_up_with_research_next_step(
         state: SoftwareArchitectState,
     ) -> dict[str, Any]:
@@ -100,10 +112,10 @@ def create_architect_workflow(
                 ),
                 "codebase_structure": runtime.load_codebase_structure(),
             }
-        if budget_boundary is not None:
-            deadline_update = budget_boundary.guard_dispatch(state)
-            if deadline_update:
-                return deadline_update
+        values, deadline_update = prepare_model_values(state, values)
+        if deadline_update:
+            return deadline_update
+        assert values is not None
         response = runtime.plan_next_step(values)
         budget_update: dict[str, Any] = {}
         if budget_boundary is not None:
@@ -131,10 +143,10 @@ def create_architect_workflow(
                     state.implementation_research_scratchpad
                 )
             }
-        if budget_boundary is not None:
-            deadline_update = budget_boundary.guard_dispatch(state)
-            if deadline_update:
-                return deadline_update
+        values, deadline_update = prepare_model_values(state, values)
+        if deadline_update:
+            return deadline_update
+        assert values is not None
         response = runtime.check_research_step(values)
         budget_update: dict[str, Any] = {}
         if budget_boundary is not None:
@@ -161,10 +173,10 @@ def create_architect_workflow(
                 ),
                 "codebase_structure": runtime.load_codebase_structure(),
             }
-        if budget_boundary is not None:
-            deadline_update = budget_boundary.guard_dispatch(state)
-            if deadline_update:
-                return deadline_update
+        values, deadline_update = prepare_model_values(state, values)
+        if deadline_update:
+            return deadline_update
+        assert values is not None
         response = runtime.conduct_research(values)
         budget_update: dict[str, Any] = {}
         if budget_boundary is not None:
@@ -188,10 +200,10 @@ def create_architect_workflow(
                     pydantic_object=ImplementationPlan
                 ).get_format_instructions(),
             }
-        if budget_boundary is not None:
-            deadline_update = budget_boundary.guard_dispatch(state)
-            if deadline_update:
-                return deadline_update
+        values, deadline_update = prepare_model_values(state, values)
+        if deadline_update:
+            return deadline_update
+        assert values is not None
         response = runtime.extract_implementation_plan(values)
         budget_update: dict[str, Any] = {}
         if budget_boundary is not None:

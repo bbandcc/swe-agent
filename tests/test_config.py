@@ -43,6 +43,16 @@ class ModelConfigurationTests(unittest.TestCase):
             model.openai_api_key.get_secret_value(), "test-deepseek-key"
         )
 
+    def test_legacy_environment_entry_keeps_provider_retry_option(self) -> None:
+        environment = {
+            "AGENT_MODEL_PROVIDER": "deepseek",
+            "DEEPSEEK_API_KEY": "test-deepseek-key",
+        }
+        with patch.dict(os.environ, environment, clear=True):
+            model = build_chat_model(max_tokens=16, max_retries=2)
+
+        self.assertEqual(model.max_retries, 2)
+
     def test_retains_explicit_anthropic_provider(self) -> None:
         environment = {
             "AGENT_MODEL_PROVIDER": "anthropic",
@@ -89,6 +99,7 @@ class ModelConfigurationTests(unittest.TestCase):
         self.assertEqual(
             model.openai_api_key.get_secret_value(), "explicit-key"
         )
+        self.assertEqual(model.max_retries, 0)
 
     def test_explicit_settings_reject_unbound_model_options(self) -> None:
         settings = ModelSettings(
@@ -142,6 +153,54 @@ class ModelConfigurationTests(unittest.TestCase):
 
         self.assertIsInstance(model, ChatAnthropic)
         self.assertEqual(model.max_tokens, 654)
+
+    def test_explicit_provider_timeout_and_retries_are_bound(self) -> None:
+        deepseek = ModelSettings(
+            provider="deepseek",
+            model="deepseek-v4-flash",
+            base_url="https://api.deepseek.com",
+            api_key=SecretStr("explicit-deepseek-key"),
+        )
+        anthropic = ModelSettings(
+            provider="anthropic",
+            model="claude-sonnet-4-6",
+            base_url=None,
+            api_key=SecretStr("explicit-anthropic-key"),
+        )
+
+        deepseek_model = build_chat_model(
+            deepseek,
+            max_output_tokens=654,
+            request_timeout_seconds=1.25,
+            max_retries=0,
+        )
+        anthropic_model = build_chat_model(
+            anthropic,
+            max_output_tokens=654,
+            request_timeout_seconds=1.25,
+            max_retries=0,
+        )
+
+        self.assertEqual(deepseek_model.request_timeout, 1.25)
+        self.assertEqual(deepseek_model.max_retries, 0)
+        self.assertEqual(anthropic_model.default_request_timeout, 1.25)
+        self.assertEqual(anthropic_model.max_retries, 0)
+
+    def test_explicit_provider_retries_must_be_disabled(self) -> None:
+        settings = ModelSettings(
+            provider="anthropic",
+            model="claude-sonnet-4-6",
+            base_url=None,
+            api_key=None,
+        )
+
+        with self.assertRaisesRegex(ValueError, "max_retries=0"):
+            build_chat_model(
+                settings,
+                max_output_tokens=128,
+                request_timeout_seconds=1,
+                max_retries=1,
+            )
 
     def test_rejects_invalid_explicit_output_limit(self) -> None:
         settings = ModelSettings(

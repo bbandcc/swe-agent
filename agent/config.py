@@ -1,6 +1,7 @@
 """Environment-backed model configuration shared by agent runtimes."""
 
 import os
+import math
 from collections.abc import Mapping
 from dataclasses import dataclass
 from typing import Any, Literal
@@ -60,6 +61,8 @@ def build_chat_model(
     settings: ModelSettings | None = None,
     *,
     max_output_tokens: int | None = None,
+    request_timeout_seconds: float | None = None,
+    max_retries: int | None = None,
     **options: Any,
 ) -> BaseChatModel:
     """Build an existing provider from explicit or legacy environment config."""
@@ -67,7 +70,7 @@ def build_chat_model(
     if explicit_settings and options:
         names = ", ".join(sorted(options))
         raise ValueError(
-            "Explicit ModelSettings only accept max_output_tokens because "
+            "Explicit ModelSettings only accept semantic model settings because "
             f"other options are not bound by the semantic RunConfig: {names}"
         )
     if explicit_settings and max_output_tokens is None:
@@ -89,6 +92,41 @@ def build_chat_model(
                 "max_tokens and max_output_tokens cannot both be provided"
             )
         options["max_tokens"] = max_output_tokens
+    if request_timeout_seconds is not None:
+        if (
+            isinstance(request_timeout_seconds, bool)
+            or not isinstance(request_timeout_seconds, (int, float))
+            or not math.isfinite(request_timeout_seconds)
+            or request_timeout_seconds <= 0
+        ):
+            raise ValueError(
+                "request_timeout_seconds must be a finite positive number"
+            )
+        if "timeout" in options:
+            raise ValueError(
+                "timeout and request_timeout_seconds cannot both be provided"
+            )
+        options["timeout"] = float(request_timeout_seconds)
+    if max_retries is not None:
+        if (
+            isinstance(max_retries, bool)
+            or not isinstance(max_retries, int)
+            or max_retries < 0
+        ):
+            raise ValueError("max_retries must be a non-negative integer")
+        if explicit_settings and max_retries != 0:
+            raise ValueError(
+                "Durable explicit ModelSettings require max_retries=0"
+            )
+        if "max_retries" in options:
+            raise ValueError(
+                "max_retries cannot be provided twice"
+            )
+        options["max_retries"] = max_retries
+    elif explicit_settings:
+        # Explicit settings are the semantic/durable seam.  Never inherit a
+        # provider's hidden retry default when the caller does not override it.
+        options["max_retries"] = 0
     connection: dict[str, Any] = {
         "model": settings.model,
         "base_url": settings.base_url,

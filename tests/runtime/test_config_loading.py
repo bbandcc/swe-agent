@@ -42,6 +42,8 @@ class RunConfigLoadingTests(RunConfigTestCase):
                 "AGENT_MODEL_BASE_URL": "https://api.deepseek.com",
                 "DEEPSEEK_API_KEY": "mapping-secret",
                 "AGENT_MODEL_MAX_OUTPUT_TOKENS": "2048",
+                "AGENT_MODEL_REQUEST_TIMEOUT_SECONDS": "12.5",
+                "AGENT_MODEL_MAX_ATTEMPTS": "1",
                 "SWE_AGENT_VERIFICATION_CHECKS": json.dumps(
                     [
                         {
@@ -64,6 +66,8 @@ class RunConfigLoadingTests(RunConfigTestCase):
 
             self.assertEqual(config.workspace_root, workspace.resolve())
             self.assertEqual(config.model_max_output_tokens, 2048)
+            self.assertEqual(config.model_request_timeout_seconds, 12.5)
+            self.assertEqual(config.model_retry_policy.max_attempts, 1)
             self.assertEqual(config.verification_specs[0].argv[-1], "unittest")
             self.assertEqual(config.timeout_seconds, 600)
             self.assertEqual(config.max_steps, 30)

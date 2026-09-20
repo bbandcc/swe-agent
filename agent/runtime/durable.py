@@ -450,10 +450,18 @@ def create_durable_workflow(
     clock: Callable[[], float] = time.time,
 ):
     """Compile the parent with a saver; child graphs inherit it by default."""
-    boundary = DurableBudgetBoundary(run_id, clock=clock)
+    boundary = DurableBudgetBoundary(
+        run_id,
+        clock=clock,
+        model_request_timeout_seconds=config.model_request_timeout_seconds,
+    )
     architect = create_architect_workflow(
         durable_architect_runtime(
-            config.model, config.model_max_output_tokens, config.pricing
+            config.model,
+            config.model_max_output_tokens,
+            config.pricing,
+            model_request_timeout_seconds=config.model_request_timeout_seconds,
+            model_retry_policy=config.model_retry_policy,
         ),
         budget_boundary=boundary,
     )
@@ -463,6 +471,8 @@ def create_durable_workflow(
             config.model_max_output_tokens,
             config.pricing,
             workspace_root=config.workspace_root,
+            model_request_timeout_seconds=config.model_request_timeout_seconds,
+            model_retry_policy=config.model_retry_policy,
         ),
         budget_boundary=boundary,
     )

@@ -7,7 +7,7 @@ from pathlib import Path
 from pydantic import SecretStr
 
 from agent.config import ModelSettings
-from agent.runtime import RunConfig, TokenPricing
+from agent.runtime import ModelRetryPolicy, RunConfig, TokenPricing
 from agent.verification import VerificationSpec
 
 
@@ -51,6 +51,8 @@ class RunConfigTestCase(unittest.TestCase):
             "timeout_seconds": 900.0,
             "max_steps": 40,
             "max_cost_usd": Decimal("2.50"),
+            "model_request_timeout_seconds": 45.0,
+            "model_retry_policy": ModelRetryPolicy(max_attempts=1),
             "pricing": TokenPricing(
                 input_cost_per_million_tokens=Decimal("0.25"),
                 output_cost_per_million_tokens=Decimal("0.50"),

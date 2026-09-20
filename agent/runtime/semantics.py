@@ -42,6 +42,12 @@ def _semantic_config_payload(config: RunConfig) -> dict[str, Any]:
             "model": config.model.model,
             "base_url": config.model.base_url,
             "max_output_tokens": config.model_max_output_tokens,
+            "request_timeout_seconds": _number_text(
+                config.model_request_timeout_seconds
+            ),
+            "retry_policy": {
+                "max_attempts": config.model_retry_policy.max_attempts,
+            },
         },
         "verification_specs": [
             {

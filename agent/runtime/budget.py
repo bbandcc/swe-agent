@@ -40,6 +40,8 @@ class BudgetErrorCode(str, Enum):
     CALL_IN_FLIGHT = "call_in_flight"
     OUTCOME_UNKNOWN = "outcome_unknown"
     MODEL_OUTPUT_INVALID = "model_output_invalid"
+    MODEL_REQUEST_TIMEOUT = "model_request_timeout"
+    MODEL_TRANSPORT_ERROR = "model_transport_error"
 
 
 @dataclass(frozen=True, slots=True)

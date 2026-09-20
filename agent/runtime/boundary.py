@@ -4,6 +4,7 @@ from __future__ import annotations
 
 import hashlib
 import json
+import math
 import time
 from collections.abc import Callable, Mapping, Sequence
 from dataclasses import dataclass
@@ -19,6 +20,7 @@ from agent.runtime.budget import (
     UsageRecord,
 )
 from agent.runtime.calls import ModelCallResult
+from agent.runtime.config import DEFAULT_MODEL_REQUEST_TIMEOUT_SECONDS
 
 
 @dataclass(frozen=True, slots=True)
@@ -65,12 +67,23 @@ class DurableBudgetBoundary:
         *,
         controller: BudgetController | None = None,
         clock: Callable[[], float] = time.time,
+        model_request_timeout_seconds: float = DEFAULT_MODEL_REQUEST_TIMEOUT_SECONDS,
     ) -> None:
         if not run_id:
             raise ValueError("run_id must be non-empty.")
         self.run_id = run_id
         self.controller = controller or BudgetController()
         self.clock = clock
+        if (
+            isinstance(model_request_timeout_seconds, bool)
+            or not isinstance(model_request_timeout_seconds, (int, float))
+            or not math.isfinite(model_request_timeout_seconds)
+            or model_request_timeout_seconds <= 0
+        ):
+            raise ValueError(
+                "model_request_timeout_seconds must be a finite positive number."
+            )
+        self.model_request_timeout_seconds = float(model_request_timeout_seconds)
 
     def reserve_model(
         self, state: DurableBudgetState, label: str, request: Mapping[str, Any]
@@ -114,7 +127,10 @@ class DurableBudgetBoundary:
             digest = response.response_digest
             error_update = (
                 {
-                    "runtime_error_code": BudgetErrorCode.MODEL_OUTPUT_INVALID,
+                    "runtime_error_code": (
+                        response.error_code
+                        or BudgetErrorCode.MODEL_OUTPUT_INVALID
+                    ),
                     "runtime_message": response.error,
                 }
                 if response.error is not None
@@ -128,7 +144,10 @@ class DurableBudgetBoundary:
         return value, {
             **error_update,
             "durable_call_result": DurableCallResult(
-                (active[0].call_id,), (usage,), (digest,)
+                (active[0].call_id,),
+                (usage,),
+                (digest,),
+                failed=response.error_code is not None or response.error is not None,
             ),
             **self._deadline_overrun_update(snapshot),
         }
@@ -138,6 +157,20 @@ class DurableBudgetBoundary:
         snapshot = self._snapshot(state)
         if self.clock() < snapshot.deadline_at:
             return {}
+        return self._deadline_dispatch_update(snapshot)
+
+    def model_dispatch_timeout(
+        self, state: DurableBudgetState
+    ) -> tuple[float | None, dict[str, Any]]:
+        """Return the effective provider timeout at the dispatch boundary."""
+        snapshot = self._snapshot(state)
+        remaining = snapshot.deadline_at - self.clock()
+        if remaining <= 0:
+            return None, self._deadline_dispatch_update(snapshot)
+        return min(self.model_request_timeout_seconds, remaining), {}
+
+    @staticmethod
+    def _deadline_dispatch_update(snapshot: BudgetSnapshot) -> dict[str, Any]:
         active = snapshot.active
         if not active:
             raise ValueError("A dispatch guard requires active reservations.")

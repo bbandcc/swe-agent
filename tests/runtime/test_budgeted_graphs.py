@@ -20,7 +20,9 @@ from agent.runtime import (
     BudgetSnapshot,
     CallStatus,
     DurableBudgetBoundary,
+    DurableBudgetState,
     ModelCallResult,
+    capture_model_exception,
     UsageMeasurement,
     UsageStatus,
     durable_recursion_limit,
@@ -90,6 +92,58 @@ def structured_result(
 
 
 class BudgetedGraphTests(unittest.TestCase):
+    def test_model_request_timeout_uses_remaining_deadline_and_settles_unknown(self) -> None:
+        now = [107.0]
+        boundary = DurableBudgetBoundary(
+            "run",
+            clock=lambda: now[0],
+            model_request_timeout_seconds=30.0,
+        )
+        initial = DurableBudgetState(
+            budget=BudgetSnapshot.create(
+                max_steps=2, max_cost_usd=None, deadline_at=110.0
+            )
+        )
+        reserved = boundary.reserve_model(initial, "model", {"task": "x"})
+        state = initial.model_copy(update=reserved)
+
+        timeout, failure = boundary.model_dispatch_timeout(state)
+
+        self.assertEqual(timeout, 3.0)
+        self.assertEqual(failure, {})
+        model_failure = capture_model_exception(
+            BudgetErrorCode.MODEL_REQUEST_TIMEOUT
+        )
+        _, update = boundary.capture_model(state, model_failure)
+        settled = boundary.settle(state.model_copy(update=update))
+
+        self.assertEqual(
+            update["runtime_error_code"], BudgetErrorCode.MODEL_REQUEST_TIMEOUT
+        )
+        self.assertEqual(settled["budget"].steps_used, 1)
+        self.assertEqual(settled["budget"].reservations[0].status, CallStatus.FAILED)
+        self.assertEqual(settled["budget"].usage[0].status, UsageStatus.UNKNOWN)
+        self.assertIsNone(settled["budget"].usage[0].cost_microusd)
+
+    def test_model_dispatch_timeout_returns_deadline_failure_without_call(self) -> None:
+        now = [100.0]
+        boundary = DurableBudgetBoundary(
+            "run", clock=lambda: now[0], model_request_timeout_seconds=30.0
+        )
+        initial = DurableBudgetState(
+            budget=BudgetSnapshot.create(
+                max_steps=1, max_cost_usd=None, deadline_at=110.0
+            )
+        )
+        reserved = boundary.reserve_model(initial, "model", {"task": "x"})
+        state = initial.model_copy(update=reserved)
+        now[0] = 111.0
+
+        timeout, failure = boundary.model_dispatch_timeout(state)
+
+        self.assertIsNone(timeout)
+        self.assertEqual(failure["runtime_error_code"], BudgetErrorCode.TIMEOUT_OVERRUN)
+        self.assertEqual(failure["durable_call_result"].failed, True)
     def test_model_dispatch_rechecks_deadline_after_reservation(self) -> None:
         calls = 0
         ticks = iter((100.0, 201.0))
@@ -346,6 +400,37 @@ class BudgetedGraphTests(unittest.TestCase):
         self.assertEqual(result["budget"].steps_used, 1)
         self.assertEqual(result["budget"].usage[0].input_tokens, 3)
         self.assertEqual(result["runtime_error_code"], BudgetErrorCode.MODEL_OUTPUT_INVALID)
+
+    def test_model_request_timeout_settles_unknown_usage_and_stops_graph(self) -> None:
+        runtime = ArchitectRuntime(
+            plan_next_step=lambda _: capture_model_exception(
+                BudgetErrorCode.MODEL_REQUEST_TIMEOUT
+            ),
+            check_research_step=lambda _: self.fail("must stop after timeout"),
+            conduct_research=lambda _: self.fail("must stop after timeout"),
+            extract_implementation_plan=lambda _: self.fail("must stop after timeout"),
+            load_codebase_structure=lambda: "app.py",
+        )
+
+        result = create_architect_workflow(
+            runtime,
+            research_tools=[],
+            budget_boundary=DurableBudgetBoundary("run", clock=lambda: 100.0),
+        ).invoke(
+            {
+                "implementation_research_scratchpad": [HumanMessage(content="task")],
+                "budget": BudgetSnapshot.create(
+                    max_steps=4, max_cost_usd=None, deadline_at=200.0
+                ),
+            }
+        )
+
+        self.assertEqual(
+            result["runtime_error_code"], BudgetErrorCode.MODEL_REQUEST_TIMEOUT
+        )
+        self.assertEqual(result["budget"].steps_used, 1)
+        self.assertEqual(result["budget"].usage[0].status, UsageStatus.UNKNOWN)
+        self.assertEqual(result["budget"].reservations[0].status, CallStatus.FAILED)
 
     def test_model_deadline_overrun_settles_usage_and_blocks_commit(self) -> None:
         with tempfile.TemporaryDirectory() as directory:

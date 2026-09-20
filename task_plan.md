@@ -11,11 +11,11 @@
 ### 当前状态文件基线
 
 - S3.2 production 技术冻结点：`5850b8370c49f868e90aeffe9e6042f85eaa522c`；D1/S1a、D2/S2b 已冻结，D3/S2c Seal blocker 已在本轮完成修复并通过本地验收。
-- S3.2 的配置、身份、SQLite checkpoint、预算边界、start/resume 和现有图接入均保持冻结；D3/S2c 现已将单一 JUnit XML 可信报告、稳定 case identity、保守 acceptance policy 和隔离到 owned temporary output 的 evidence 生命周期接入生产验收链路。workspace report_path 不再被 snapshot、覆盖或 restore；S3 尚未全部完成，当前不能进入 S4。
+- S3.2 的配置、身份、SQLite checkpoint、预算边界、start/resume 和现有图接入均保持冻结；D3/S2c 现已将单一 JUnit XML 可信报告、稳定 case identity、保守 acceptance policy 和隔离到 owned temporary output 的 evidence 生命周期接入生产验收链路。D4/S3.2a 已补齐模型请求时限与单次外部尝试边界；workspace report_path 不再被 snapshot、覆盖或 restore；S3 尚未全部完成，当前不能进入 S4。
 - D2/S2b Final Seal 已收窄 library/CLI 的异常边界；`RunSummary.warnings` 只输出 preflight warning code，unexpected `RuntimeError`、`KeyboardInterrupt` 和 `SystemExit` 不被入口吞掉。
-- 最新 Codex 本地验证：unittest 218 tests OK / 6 skipped；pytest 212 passed / 6 skipped / 158 subtests passed；Python compile、11 个 prompt render、两套 CLI help、`git diff --check` 均通过。6 个 skip 仅为当前 Windows 普通 symlink 权限限制。
+- 最新 Codex 本地验证：unittest 227 tests OK / 6 skipped；pytest 221 passed / 6 skipped / 163 subtests passed；Python compile、11 个 prompt render、两套 CLI help、`git diff --check` 均通过。6 个 skip 仅为当前 Windows 普通 symlink 权限限制。
 - 没有 GitHub CI 或独立外部测试证据，不作相应声明。
-- 剩余能力：provider timeout/retry/attempt、secret-safe persistence、EventSink/RunRecord/artifact、workspace locking/policy、write/verification recovery 等仍未实现；exactly-once 不承诺。JUnit XML 是当前唯一可信报告格式，未配置或报告缺失/畸形时保守返回证据不足；多框架 parser registry、扩展 repair 和 S4 均未实现。runner 只改写精确匹配的 `--junitxml/--junit-xml` destination 到 owned temporary output，workspace report_path 保持原 bytes/mtime；owned temp cleanup 失败返回结构化 `EXECUTION_ERROR`。pytest 对其它 workspace 文件的副作用留给 D5，本轮未实现 artifact spool/recovery。
+- 剩余能力：secret-safe persistence、EventSink/RunRecord/artifact、workspace locking/policy、write/verification recovery 等仍未实现；provider 正向 retry/独立 attempt 语义未实现，当前 durable 只允许单次外部尝试；exactly-once 不承诺。JUnit XML 是当前唯一可信报告格式，未配置或报告缺失/畸形时保守返回证据不足；多框架 parser registry、扩展 repair 和 S4 均未实现。runner 只改写精确匹配的 `--junitxml/--junit-xml` destination 到 owned temporary output，workspace report_path 保持原 bytes/mtime；owned temp cleanup 失败返回结构化 `EXECUTION_ERROR`。pytest 对其它 workspace 文件的副作用留给 D5，本轮未实现 artifact spool/recovery。
 - 后续技术切片继续按 MASTER_PLAN §5.2 执行；保留现有 S1/S2/S3 历史编号，不重新开启或重命名 S1。
 - MASTER_PLAN 对应：当前实现事实冻结在 S3.2、D1/S1a、D2/S2b 和已验收的 D3/S2c Seal，后续运行控制、轨迹和恢复要求继续按 §5.2 映射执行；本次不推进下一阶段。
 
@@ -475,3 +475,43 @@ pytest 212 passed、6 skipped、158 subtests passed。6 个 skip 仅来自当前
 owned temporary output 中读取，workspace report_path 的原有 bytes/mtime 不变，
 pytest 对其它 workspace 文件的副作用不在本轮处理，也未实现 artifact spool/recovery。后续能力仍按
 MASTER_PLAN §5.2 继续，本轮不进入 D4/S4。
+
+## D4/S3.2a：实际调用时限
+
+### 固定范围
+
+- 基线：`88cbd5e0630cec4ca6c1bf247d5a1fc4fee83980`。
+- 只增加 RunConfig 的模型请求 timeout/retry policy、semantic digest 绑定、
+  durable dispatch 的剩余 deadline clamp，以及模型 timeout/transport failure
+  的结构化结算；D3/S2c verification acceptance 保持冻结。
+- 不新增 provider、依赖、EventSink、secret filter、recovery 或 S4 能力。
+
+### TDD 验收切片
+
+- [x] 核对虚拟环境公开构造签名：`langchain-deepseek 1.1.0` 的
+  `ChatDeepSeek(timeout, max_retries)` 与 `langchain-anthropic 1.7.1` 的
+  `ChatAnthropic(timeout, max_retries)`；explicit durable path 传入 timeout 与
+  `max_retries=0`，legacy `settings=None` 入口保留原 options 行为。
+- [x] RunConfig 校验有限正的 `model_request_timeout_seconds`，单次尝试
+  `ModelRetryPolicy(max_attempts=1)`，并把两者纳入 versioned semantic digest。
+- [x] reservation 后通过公开 boundary 计算
+  `min(model_request_timeout_seconds, deadline_remaining)`；剩余时间耗尽时零
+  外部调用、已预留 step 不回退。
+- [x] provider timeout/transport failure 结算 UNKNOWN usage/cost，错误分别为
+  `MODEL_REQUEST_TIMEOUT` / `MODEL_TRANSPORT_ERROR`，不自动重发；返回后越过
+  absolute deadline 仍由既有 `TIMEOUT_OVERRUN` 与副作用阻断规则优先处理。
+- [x] 真实本地慢 HTTP server 验证 DeepSeek 请求只发生一次，迟到响应不继续；
+  fake-clock、模型/工具预算、repair、resume、N+1 和多 verification deadline
+  回归保持通过。
+- [x] 完成全量 unittest/pytest、compile、11 个 prompt render、两套 CLI help 和
+  `git diff --check`。
+
+### 当前状态
+
+D4/S3.2a 实现与本地验收已完成。当前验证为 unittest 227 tests OK、6 skipped；
+pytest 221 passed、6 skipped、163 subtests passed。6 个 skip 仅来自当前 Windows
+账户缺少普通 symlink 创建权限；没有 GitHub CI 或独立外部测试证据。模型 provider
+版本保持不变；同步 SDK 无法被外层立即中断时，仍只能在返回后记录
+`TIMEOUT_OVERRUN`，不承诺绝对瞬时终止或 exactly-once。后续 secret-safe
+persistence、EventSink/RunRecord/artifact、workspace locking/policy、pending-write/
+verification recovery 仍未实现，本轮不进入 D4 后续切片或 S4。

@@ -57,6 +57,10 @@ class RunConfigValidationTests(RunConfigTestCase):
                 ("timeout_seconds", -1),
                 ("timeout_seconds", math.nan),
                 ("timeout_seconds", math.inf),
+                ("model_request_timeout_seconds", 0),
+                ("model_request_timeout_seconds", -1),
+                ("model_request_timeout_seconds", math.nan),
+                ("model_request_timeout_seconds", math.inf),
                 ("max_steps", 0),
                 ("max_steps", -1),
                 ("max_steps", True),
@@ -72,6 +76,14 @@ class RunConfigValidationTests(RunConfigTestCase):
                     self.assertEqual(
                         raised.exception.code, RunConfigErrorCode.INVALID_VALUE
                     )
+
+    def test_retry_policy_is_single_attempt_only(self) -> None:
+        with tempfile.TemporaryDirectory() as directory:
+            with self.assertRaises(RunConfigError):
+                self.make_config(
+                    Path(directory),
+                    model_retry_policy={"max_attempts": 2},
+                )
 
     def test_rejects_invalid_pricing(self) -> None:
         cases = (

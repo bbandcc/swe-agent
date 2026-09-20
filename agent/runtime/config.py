@@ -5,7 +5,7 @@ from __future__ import annotations
 import math
 import os
 from collections.abc import Mapping
-from dataclasses import dataclass, replace
+from dataclasses import dataclass, field, replace
 from decimal import Decimal, InvalidOperation
 from enum import Enum
 from pathlib import Path
@@ -26,6 +26,7 @@ from agent.workspace import (
 
 DEFAULT_RUNTIME_ROOT = "./.swe-agent-runtime"
 DEFAULT_MODEL_MAX_OUTPUT_TOKENS = 4096
+DEFAULT_MODEL_REQUEST_TIMEOUT_SECONDS = 60.0
 DEFAULT_RUN_TIMEOUT_SECONDS = 1800.0
 DEFAULT_MAX_STEPS = 100
 
@@ -43,6 +44,32 @@ class RunConfigError(ValueError):
     def __init__(self, code: RunConfigErrorCode, message: str) -> None:
         self.code = code
         super().__init__(message)
+
+
+@dataclass(frozen=True, slots=True)
+class ModelRetryPolicy:
+    """Durable model retry contract.
+
+    S3.2a intentionally supports one external attempt per logical model call.
+    A positive ``max_attempts`` keeps the policy explicit and serializable,
+    while values greater than one are rejected until independent attempt
+    identities and recovery semantics exist.
+    """
+
+    max_attempts: int = 1
+
+    @property
+    def max_retries(self) -> int:
+        """Provider-facing retry count for the single-attempt policy."""
+        return self.max_attempts - 1
+
+    def __post_init__(self) -> None:
+        _require_positive_integer(self.max_attempts, "model_retry_policy.max_attempts")
+        if self.max_attempts != 1:
+            raise RunConfigError(
+                RunConfigErrorCode.INVALID_VALUE,
+                "Durable model retry policy currently requires max_attempts=1.",
+            )
 
 
 @dataclass(frozen=True, slots=True)
@@ -79,6 +106,8 @@ class RunConfig:
     max_steps: int
     max_cost_usd: Decimal | None = None
     pricing: TokenPricing | None = None
+    model_request_timeout_seconds: float = DEFAULT_MODEL_REQUEST_TIMEOUT_SECONDS
+    model_retry_policy: ModelRetryPolicy = field(default_factory=ModelRetryPolicy)
 
     def __post_init__(self) -> None:
         workspace = _validated_root(self.workspace_root, must_exist=True)
@@ -95,6 +124,10 @@ class RunConfig:
             "model_max_output_tokens",
         )
         _require_positive_number(self.timeout_seconds, "timeout_seconds")
+        _require_positive_number(
+            self.model_request_timeout_seconds,
+            "model_request_timeout_seconds",
+        )
         _require_positive_integer(self.max_steps, "max_steps")
         if self.max_cost_usd is not None:
             _require_positive_decimal(self.max_cost_usd, "max_cost_usd")
@@ -104,6 +137,11 @@ class RunConfig:
             raise RunConfigError(
                 RunConfigErrorCode.INVALID_VALUE,
                 "pricing must be TokenPricing or None.",
+            )
+        if not isinstance(self.model_retry_policy, ModelRetryPolicy):
+            raise RunConfigError(
+                RunConfigErrorCode.INVALID_VALUE,
+                "model_retry_policy must be ModelRetryPolicy.",
             )
 
         try:
@@ -130,6 +168,11 @@ class RunConfig:
         object.__setattr__(self, "model", model)
         object.__setattr__(self, "verification_specs", tuple(specs))
         object.__setattr__(self, "timeout_seconds", float(self.timeout_seconds))
+        object.__setattr__(
+            self,
+            "model_request_timeout_seconds",
+            float(self.model_request_timeout_seconds),
+        )
 
 
 def load_run_config(environ: Mapping[str, str]) -> RunConfig:
@@ -151,6 +194,29 @@ def load_run_config(environ: Mapping[str, str]) -> RunConfig:
             ),
             "SWE_AGENT_RUN_TIMEOUT_SECONDS",
         )
+        model_request_timeout = _parse_float(
+            environ.get(
+                "AGENT_MODEL_REQUEST_TIMEOUT_SECONDS",
+                str(DEFAULT_MODEL_REQUEST_TIMEOUT_SECONDS),
+            ),
+            "AGENT_MODEL_REQUEST_TIMEOUT_SECONDS",
+        )
+        if "AGENT_MODEL_MAX_RETRIES" in environ:
+            configured_retries = _parse_integer(
+                environ["AGENT_MODEL_MAX_RETRIES"],
+                "AGENT_MODEL_MAX_RETRIES",
+            )
+            if configured_retries < 0:
+                raise RunConfigError(
+                    RunConfigErrorCode.INVALID_VALUE,
+                    "AGENT_MODEL_MAX_RETRIES must be non-negative.",
+                )
+            model_max_attempts = configured_retries + 1
+        else:
+            model_max_attempts = _parse_integer(
+                environ.get("AGENT_MODEL_MAX_ATTEMPTS", "1"),
+                "AGENT_MODEL_MAX_ATTEMPTS",
+            )
         max_steps = _parse_integer(
             environ.get("SWE_AGENT_MAX_STEPS", str(DEFAULT_MAX_STEPS)),
             "SWE_AGENT_MAX_STEPS",
@@ -182,6 +248,8 @@ def load_run_config(environ: Mapping[str, str]) -> RunConfig:
         max_steps=max_steps,
         max_cost_usd=max_cost,
         pricing=pricing,
+        model_request_timeout_seconds=model_request_timeout,
+        model_retry_policy=ModelRetryPolicy(max_attempts=model_max_attempts),
     )
 
 

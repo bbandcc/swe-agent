@@ -4,14 +4,22 @@ from decimal import Decimal
 from langchain_core.messages import AIMessage
 
 from agent.runtime import (
+    BudgetErrorCode,
     TokenPricing,
     UsageStatus,
     capture_model_result,
+    capture_model_exception,
     measure_usage,
 )
 
 
 class ModelUsageTests(unittest.TestCase):
+    def test_transport_failure_keeps_usage_unknown(self) -> None:
+        result = capture_model_exception(BudgetErrorCode.MODEL_TRANSPORT_ERROR)
+
+        self.assertEqual(result.error_code, BudgetErrorCode.MODEL_TRANSPORT_ERROR)
+        self.assertEqual(result.usage.status, UsageStatus.UNKNOWN)
+        self.assertIsNone(result.usage.cost_microusd)
     def test_captures_raw_usage_before_parser_without_raw_content(self) -> None:
         message = AIMessage(
             content="secret raw response",

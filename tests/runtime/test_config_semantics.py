@@ -146,6 +146,9 @@ class SemanticConfigDigestTests(RunConfigTestCase):
                     ),
                 ),
                 "run_timeout": replace(config, timeout_seconds=901),
+                "model_request_timeout": replace(
+                    config, model_request_timeout_seconds=46
+                ),
                 "max_steps": replace(config, max_steps=41),
                 "max_cost": replace(
                     config, max_cost_usd=Decimal("2.51")

@@ -11,8 +11,18 @@ from agent.architect.models import ResearchEvaluation, ResearchStep
 from agent.common.entities import ImplementationPlan
 from agent.config import build_chat_model
 from agent.config import ModelSettings
-from agent.runtime.calls import capture_model_failure, capture_model_result
-from agent.runtime.config import TokenPricing
+from agent.runtime.calls import (
+    ModelCallResult,
+    capture_model_exception,
+    capture_model_failure,
+    capture_model_result,
+    classify_model_exception,
+)
+from agent.runtime.config import (
+    DEFAULT_MODEL_REQUEST_TIMEOUT_SECONDS,
+    ModelRetryPolicy,
+    TokenPricing,
+)
 from agent.tools.codemap import codemap_tools
 from agent.tools.search import search_tools
 from agent.tools.write import get_files_structure
@@ -88,25 +98,53 @@ def durable_architect_runtime(
     settings: ModelSettings,
     max_output_tokens: int,
     pricing: TokenPricing | None,
+    *,
+    model_request_timeout_seconds: float = DEFAULT_MODEL_REQUEST_TIMEOUT_SECONDS,
+    model_retry_policy: ModelRetryPolicy | None = None,
 ) -> ArchitectRuntime:
     """Build explicit model calls that retain raw usage before parsing."""
-    model = build_chat_model(settings, max_output_tokens=max_output_tokens)
-    plan = markdown_to_prompt_template(
+    plan_prompt = markdown_to_prompt_template(
         "agent/architect/prompts/plan_next_step_prompt.md"
-    ) | model.with_structured_output(ResearchStep, include_raw=True)
-    check = markdown_to_prompt_template(
+    )
+    check_prompt = markdown_to_prompt_template(
         "agent/architect/prompts/check_research_already_explored.md"
-    ) | model.with_structured_output(ResearchEvaluation, include_raw=True)
-    research = markdown_to_prompt_template(
+    )
+    research_prompt = markdown_to_prompt_template(
         "agent/architect/prompts/conduct_research_plan_prompt.md"
-    ) | model.bind_tools(search_tools + codemap_tools)
-    extract = markdown_to_prompt_template(
+    )
+    extract_prompt = markdown_to_prompt_template(
         "agent/architect/prompts/extract_implementation_plan.md"
-    ) | model
+    )
     parser = JsonOutputParser(pydantic_object=ImplementationPlan)
+    retry_policy = model_retry_policy or ModelRetryPolicy()
 
-    def invoke_structured(runnable, values):
-        result = runnable.invoke(values)
+    def model_for(values):
+        timeout = values.get(
+            "_model_request_timeout_seconds", model_request_timeout_seconds
+        )
+        return build_chat_model(
+            settings,
+            max_output_tokens=max_output_tokens,
+            request_timeout_seconds=timeout,
+            max_retries=retry_policy.max_attempts - 1,
+        )
+
+    def invoke_model(call):
+        try:
+            return call()
+        except Exception as error:
+            error_code = classify_model_exception(error)
+            if error_code is None:
+                raise
+            return capture_model_exception(error_code)
+
+    def invoke_structured(prompt, schema, values):
+        runnable = prompt | model_for(values).with_structured_output(
+            schema, include_raw=True
+        )
+        result = invoke_model(lambda: runnable.invoke(values))
+        if isinstance(result, ModelCallResult):
+            return result
         if result.get("parsing_error") is not None or result.get("parsed") is None:
             return capture_model_failure(
                 result["raw"],
@@ -116,7 +154,10 @@ def durable_architect_runtime(
         return capture_model_result(result["parsed"], result["raw"], pricing)
 
     def invoke_extract(values):
-        raw = extract.invoke(values)
+        runnable = extract_prompt | model_for(values)
+        raw = invoke_model(lambda: runnable.invoke(values))
+        if isinstance(raw, ModelCallResult):
+            return raw
         try:
             parsed = ImplementationPlan(**parser.invoke(raw))
         except Exception as error:
@@ -124,12 +165,21 @@ def durable_architect_runtime(
         return capture_model_result(parsed, raw, pricing)
 
     def invoke_research(values):
-        raw = research.invoke(values)
+        runnable = research_prompt | model_for(values).bind_tools(
+            search_tools + codemap_tools
+        )
+        raw = invoke_model(lambda: runnable.invoke(values))
+        if isinstance(raw, ModelCallResult):
+            return raw
         return capture_model_result(raw, raw, pricing)
 
     return ArchitectRuntime(
-        plan_next_step=lambda values: invoke_structured(plan, values),
-        check_research_step=lambda values: invoke_structured(check, values),
+        plan_next_step=lambda values: invoke_structured(
+            plan_prompt, ResearchStep, values
+        ),
+        check_research_step=lambda values: invoke_structured(
+            check_prompt, ResearchEvaluation, values
+        ),
         conduct_research=invoke_research,
         extract_implementation_plan=invoke_extract,
         load_codebase_structure=_load_codebase_structure,

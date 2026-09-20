@@ -16,8 +16,18 @@ from agent.tools.search import search_tools
 from agent.tools.write import get_files_structure
 from agent.workspace import configured_workspace_root
 from helpers.prompts import markdown_to_prompt_template
-from agent.runtime.calls import capture_model_failure, capture_model_result
-from agent.runtime.config import TokenPricing
+from agent.runtime.calls import (
+    ModelCallResult,
+    capture_model_exception,
+    capture_model_failure,
+    capture_model_result,
+    classify_model_exception,
+)
+from agent.runtime.config import (
+    DEFAULT_MODEL_REQUEST_TIMEOUT_SECONDS,
+    ModelRetryPolicy,
+    TokenPricing,
+)
 
 RunnableInput = dict[str, Any]
 
@@ -83,26 +93,56 @@ def durable_developer_runtime(
     pricing: TokenPricing | None,
     *,
     workspace_root,
+    model_request_timeout_seconds: float = DEFAULT_MODEL_REQUEST_TIMEOUT_SECONDS,
+    model_retry_policy: ModelRetryPolicy | None = None,
 ) -> DeveloperRuntime:
     """Build explicit Developer calls with raw usage accounting."""
-    model = build_chat_model(settings, max_output_tokens=max_output_tokens)
-    research = markdown_to_prompt_template(
+    research_prompt = markdown_to_prompt_template(
         "agent/developer/prompts/get_clear_implementation_plan.md"
-    ) | model.bind_tools(search_tools + codemap_tools)
-    edit = markdown_to_prompt_template(
+    )
+    edit_prompt = markdown_to_prompt_template(
         "agent/developer/prompts/create_diff_prompt.md"
-    ) | model
-    create = markdown_to_prompt_template(
+    )
+    create_prompt = markdown_to_prompt_template(
         "agent/developer/prompts/implement_new_file.md"
-    ) | model
+    )
     parser = StrOutputParser()
+    retry_policy = model_retry_policy or ModelRetryPolicy()
 
-    def invoke_message(runnable, values):
-        raw = runnable.invoke(values)
+    def model_for(values):
+        timeout = values.get(
+            "_model_request_timeout_seconds", model_request_timeout_seconds
+        )
+        return build_chat_model(
+            settings,
+            max_output_tokens=max_output_tokens,
+            request_timeout_seconds=timeout,
+            max_retries=retry_policy.max_attempts - 1,
+        )
+
+    def invoke_model(call):
+        try:
+            return call()
+        except Exception as error:
+            error_code = classify_model_exception(error)
+            if error_code is None:
+                raise
+            return capture_model_exception(error_code)
+
+    def invoke_message(prompt, values, *, tools: bool = False):
+        model = model_for(values)
+        runnable = prompt | (
+            model.bind_tools(search_tools + codemap_tools) if tools else model
+        )
+        raw = invoke_model(lambda: runnable.invoke(values))
+        if isinstance(raw, ModelCallResult):
+            return raw
         return capture_model_result(raw, raw, pricing)
 
-    def invoke_text(runnable, values):
-        raw = runnable.invoke(values)
+    def invoke_text(prompt, values):
+        raw = invoke_model(lambda: (prompt | model_for(values)).invoke(values))
+        if isinstance(raw, ModelCallResult):
+            return raw
         try:
             parsed = parser.invoke(raw)
         except Exception as error:
@@ -112,9 +152,11 @@ def durable_developer_runtime(
     return DeveloperRuntime(
         edit_executor=lambda: DeveloperEditExecutor(WorkspaceEditor(workspace_root)),
         load_codebase_structure=_load_codebase_structure,
-        research_atomic_task=lambda values: invoke_message(research, values),
-        propose_existing_file_edit=lambda values: invoke_text(edit, values),
-        propose_new_file=lambda values: invoke_text(create, values),
+        research_atomic_task=lambda values: invoke_message(
+            research_prompt, values, tools=True
+        ),
+        propose_existing_file_edit=lambda values: invoke_text(edit_prompt, values),
+        propose_new_file=lambda values: invoke_text(create_prompt, values),
     )
 
 

@@ -45,6 +45,18 @@ def create_developer_workflow(
         search_tools + codemap_tools if research_tools is None else research_tools
     )
 
+    def prepare_model_values(
+        state: SoftwareDeveloperState, values: dict[str, Any]
+    ) -> tuple[dict[str, Any] | None, dict[str, Any]]:
+        if budget_boundary is None:
+            return values, {}
+        timeout, deadline_update = budget_boundary.model_dispatch_timeout(state)
+        if deadline_update:
+            return None, deadline_update
+        assert timeout is not None
+        values["_model_request_timeout_seconds"] = timeout
+        return values, {}
+
     def validate_and_start(
         state: SoftwareDeveloperState,
     ) -> dict[str, Any]:
@@ -116,10 +128,10 @@ def create_developer_workflow(
                 state.atomic_implementation_research
             ),
         }
-        if budget_boundary is not None:
-            deadline_update = budget_boundary.guard_dispatch(state)
-            if deadline_update:
-                return deadline_update
+        values, deadline_update = prepare_model_values(state, values)
+        if deadline_update:
+            return deadline_update
+        assert values is not None
         result = runtime.research_atomic_task(values)
         budget_update: dict[str, Any] = {}
         if budget_boundary is not None:
@@ -154,10 +166,10 @@ def create_developer_workflow(
             "file_content": transaction.working_content,
             "verification_feedback": state.verification_feedback or {},
         }
-        if budget_boundary is not None:
-            deadline_update = budget_boundary.guard_dispatch(state)
-            if deadline_update:
-                return deadline_update
+        values, deadline_update = prepare_model_values(state, values)
+        if deadline_update:
+            return deadline_update
+        assert values is not None
         if transaction.existed or transaction.task_ids:
             model_output = runtime.propose_existing_file_edit(values)
         else:

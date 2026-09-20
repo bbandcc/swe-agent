@@ -11,7 +11,7 @@ from typing import Generic, TypeVar
 
 from langchain_core.messages import AIMessage
 
-from agent.runtime.budget import UsageRecord, UsageStatus
+from agent.runtime.budget import BudgetErrorCode, UsageRecord, UsageStatus
 from agent.runtime.config import TokenPricing
 
 T = TypeVar("T")
@@ -45,12 +45,17 @@ class ModelCallResult(Generic[T]):
     usage: UsageMeasurement
     response_digest: str
     error: str | None = None
+    error_code: BudgetErrorCode | None = None
 
     def __post_init__(self) -> None:
         if not _DIGEST.fullmatch(self.response_digest):
             raise ValueError("response_digest must be a SHA-256 hex digest.")
         if self.error is not None and not self.error.strip():
             raise ValueError("error must be non-empty or None.")
+        if self.error_code is not None and not isinstance(
+            self.error_code, BudgetErrorCode
+        ):
+            raise ValueError("error_code must be BudgetErrorCode or None.")
 
 
 def capture_model_result(
@@ -77,7 +82,58 @@ def capture_model_failure(
         usage=measure_usage(raw_message, pricing),
         response_digest=_response_digest(raw_message),
         error=str(error) or type(error).__name__,
+        error_code=BudgetErrorCode.MODEL_OUTPUT_INVALID,
     )
+
+
+def capture_model_exception(
+    error_code: BudgetErrorCode,
+) -> ModelCallResult[None]:
+    """Convert a known transport boundary failure into safe durable metadata."""
+    if error_code not in {
+        BudgetErrorCode.MODEL_REQUEST_TIMEOUT,
+        BudgetErrorCode.MODEL_TRANSPORT_ERROR,
+    }:
+        raise ValueError("error_code must identify a model transport failure.")
+    response_digest = hashlib.sha256(
+        error_code.value.encode("utf-8")
+    ).hexdigest()
+    return ModelCallResult(
+        value=None,
+        usage=UsageMeasurement(UsageStatus.UNKNOWN),
+        response_digest=response_digest,
+        error=error_code.value,
+        error_code=error_code,
+    )
+
+
+def classify_model_exception(error: BaseException) -> BudgetErrorCode | None:
+    """Classify only provider timeout/transport failures; let other errors rise."""
+    import anthropic
+    import httpx
+    import openai
+
+    if isinstance(
+        error,
+        (
+            TimeoutError,
+            httpx.TimeoutException,
+            openai.APITimeoutError,
+            anthropic.APITimeoutError,
+        ),
+    ):
+        return BudgetErrorCode.MODEL_REQUEST_TIMEOUT
+    if isinstance(
+        error,
+        (
+            OSError,
+            httpx.TransportError,
+            openai.APIConnectionError,
+            anthropic.APIConnectionError,
+        ),
+    ):
+        return BudgetErrorCode.MODEL_TRANSPORT_ERROR
+    return None
 
 
 def measure_usage(
