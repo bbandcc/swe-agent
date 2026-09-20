@@ -270,11 +270,10 @@ def create_architect_workflow(
         return tool_node.invoke(state, config)
 
     def route_after_tool_dispatch(state: SoftwareArchitectState) -> str:
-        if (
-            state.runtime_error_code is not None
-            and state.durable_call_result is None
-        ):
-            return "end"
+        if state.runtime_error_code is not None:
+            if budget_boundary is None or state.durable_call_result is None:
+                return "end"
+            return "settle"
         return "settle" if state.durable_call_result is not None else "record"
 
     def route_model_to_settle(state: SoftwareArchitectState) -> str:

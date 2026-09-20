@@ -9,7 +9,8 @@ from decimal import Decimal
 from pathlib import Path
 from unittest.mock import patch
 
-from langchain_core.messages import AIMessage
+from langchain_core.messages import AIMessage, HumanMessage
+from langchain_core.tools import tool
 from langgraph.checkpoint.sqlite import SqliteSaver
 from langgraph.constants import END, START
 from langgraph.graph import StateGraph
@@ -65,6 +66,53 @@ from tests.runtime._config_support import RunConfigTestCase
 
 
 class SecretFinalSealTests(RunConfigTestCase):
+    def test_architect_secret_filter_only_stops_after_secret_model_error(self) -> None:
+        canary = "S3_ARCHITECT_SECRET"
+        calls = {"check": 0, "conduct": 0, "extract": 0, "tool": 0}
+
+        def plan_next_step(_values):
+            raise RuntimeError(f"architect provider leaked {canary}")
+
+        def check_research_step(_values):
+            calls["check"] += 1
+            return ResearchEvaluation(reasoning="ok", is_valid=True)
+
+        def conduct_research(_values):
+            calls["conduct"] += 1
+            return AIMessage(content="done")
+
+        def extract_implementation_plan(_values):
+            calls["extract"] += 1
+            return ImplementationPlan(tasks=[])
+
+        @tool
+        def inspect_file(path: str) -> str:
+            """Record whether a tool was invoked."""
+            calls["tool"] += 1
+            return path
+
+        runtime = ArchitectRuntime(
+            plan_next_step=plan_next_step,
+            check_research_step=check_research_step,
+            conduct_research=conduct_research,
+            extract_implementation_plan=extract_implementation_plan,
+            load_codebase_structure=lambda: "app.py",
+        )
+        result = create_architect_workflow(
+            runtime,
+            research_tools=[inspect_file],
+            secret_filter=KnownSecretFilter((canary,)),
+        ).invoke(
+            {"implementation_research_scratchpad": [HumanMessage(content="task")]}
+        )
+
+        self.assertEqual(calls, {"check": 0, "conduct": 0, "extract": 0, "tool": 0})
+        self.assertEqual(
+            result["runtime_error_code"],
+            BudgetErrorCode.SENSITIVE_DATA_DETECTED,
+        )
+        self.assertNotIn(canary, repr(result))
+
     def test_node_exception_canary_is_safe_in_wal_checkpoint(self) -> None:
         canary = "S3_FINAL_SECRET"
         with tempfile.TemporaryDirectory() as directory:

@@ -13,7 +13,7 @@
 - S3.2 production 技术冻结点：`5850b8370c49f868e90aeffe9e6042f85eaa522c`；D1/S1a、D2/S2b 已冻结，D3/S2c Seal blocker 已通过本地验收。
 - S3.2 的配置、身份、SQLite checkpoint、预算边界、start/resume 和现有图接入均保持冻结；D3/S2c 已将单一 JUnit XML 可信报告、稳定 case identity、保守 acceptance policy 和 owned temporary evidence 生命周期接入生产验收链路。D4/S3.2a 已补齐模型请求时限、单次外部尝试边界、普通模型响应结算和部分请求身份范围；D6/S3.3a Final Seal 已完成本地实现与验证，当前等待外部审核，尚未标记为冻结；S3 尚未全部完成，当前不能进入 S4。
 - D2/S2b Final Seal 已收窄 library/CLI 的异常边界；`RunSummary.warnings` 只输出 preflight warning code，unexpected `RuntimeError`、`KeyboardInterrupt` 和 `SystemExit` 不被入口吞掉。
-- 最新 Codex 本地验证：unittest 244 tests OK / 6 skipped；pytest 238 passed / 6 skipped / 169 subtests passed；Python compile、11 个 prompt render、start/resume 两套 CLI help、`git diff --check` 均通过。6 个 skip 仅为当前 Windows 普通 symlink 权限限制。
+- 最新 Codex 本地验证：unittest 245 tests OK / 6 skipped；pytest 239 passed / 6 skipped / 169 subtests passed；Python compile、11 个 prompt render、start/resume 两套 CLI help、`git diff --check` 均通过。6 个 skip 仅为当前 Windows 普通 symlink 权限限制。
 - 没有 GitHub CI 或独立外部测试证据，不作相应声明。
 - 剩余能力：完整 secret-safe state persistence（当前只覆盖 RunConfig 中已知凭据）、EventSink/RunRecord/artifact、workspace locking/policy、write/verification recovery 等仍未实现；provider 正向 retry/独立 attempt 语义未实现，当前 durable 只允许单次外部尝试；当前模型 `request_digest` 只代表有界语义输入，身份范围明确为 `PARTIAL`，不能据此安全重放最终 rendered request；exactly-once 不承诺。JUnit XML 是当前唯一可信报告格式，未配置或报告缺失/畸形时保守返回证据不足；多框架 parser registry、扩展 repair 和 S4 均未实现。runner 只改写精确匹配的 `--junitxml/--junit-xml` destination 到 owned temporary output，workspace report_path 保持原 bytes/mtime；owned temp cleanup 失败返回结构化 `EXECUTION_ERROR`。pytest 对其它 workspace 文件的副作用留给 D5，本轮未实现 artifact spool/recovery。
 - 后续技术切片继续按 MASTER_PLAN §5.2 执行；保留现有 S1/S2/S3 历史编号，不重新开启或重命名 S1。
@@ -533,7 +533,8 @@ pending-write/verification recovery 仍未实现，本轮不进入 S3.3/D6 或 S
 
 ### 固定范围
 
-- 基线：`78ba587e5b9394b6b3fc67b532175852e5e12697`。
+- 初始基线：`8985bda668622c7dcfc3d9ac66a692677d315eae`。
+- Final Seal 基线：`78ba587e5b9394b6b3fc67b532175852e5e12697`。
 - 只增加 process-local `KnownSecretFilter`，来源限定为 `RunConfig` 中的已知
   API key；使用固定 redaction marker，过滤器和原始凭据不进入 graph state 或
   SQLite checkpoint。
@@ -553,20 +554,23 @@ pending-write/verification recovery 仍未实现，本轮不进入 S3.3/D6 或 S
   copy 与 edit proposal 中的 canary 拒绝，确认 bytes/mtime 不变且返回结构化
   `SENSITIVE_DATA_DETECTED`。
 - [x] 在 node wrapper 内处理含已知凭据的异常，保留无凭据 RuntimeError 原样传播，
-  并保持 KeyboardInterrupt/SystemExit 传播；以真实 SQLite checkpoint 运行编译
-  parent/Architect/ToolNode/Developer 链路，受控开启 WAL 并在连接保持打开时扫描
-  database、WAL/SHM、最终 state 与 CLI JSON，确认已知 canary 不出现。
+  并保持 KeyboardInterrupt/SystemExit 传播；完整 parent/Architect/ToolNode/Developer
+  canary 链路单独验证最终 state、SQLite 数据库与 CLI JSON 不出现已知 canary。
+- [x] 独立验证 node-raises canary：受控开启 WAL 并保持 SQLite 连接打开，分别扫描
+  database、WAL/SHM 与最终 state，确认异常秘密不进入持久化文件。
 - [x] 在 start/resume 打开 SQLite 或运行 preflight 前检查 run/thread/task/workspace
   identity；敏感 identity 结构化拒绝，不使用脱敏 identity 继续执行。
 - [x] 将敏感编辑错误映射为 durable `SENSITIVE_DATA_DETECTED`，阻止 child/parent
   后续 reserve、dispatch、post verification 与 repair，确认文件 bytes/mtime 不变。
+- [x] 通过仅注入 `secret_filter` 的 Architect 公共 seam 验证首个模型异常后立即 END，
+  后续 model/tool 调用为零并保留结构化 `SENSITIVE_DATA_DETECTED`。
 - [x] 完成全量 unittest/pytest、compile、11 个 prompt render、两套 CLI help 和
   `git diff --check`。
 
 ### 当前状态
 
 D6/S3.3a Final Seal 已完成本地实现与验收，等待外部审核，当前不宣称技术冻结。
-最新验证为 unittest 244 tests OK、6 skipped；pytest 238 passed、6 skipped、169
+最新验证为 unittest 245 tests OK、6 skipped；pytest 239 passed、6 skipped、169
 subtests passed。6 个 skip 仅来自当前 Windows 账户缺少普通 symlink 创建权限；
 Python compile、11 个 prompt render、start/resume 两套 CLI help 和 `git diff --check`
 均通过。没有 GitHub CI 或独立外部测试证据。覆盖范围只承诺 `RunConfig` 中已知凭据，
