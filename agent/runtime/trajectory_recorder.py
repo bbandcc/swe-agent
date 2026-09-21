@@ -47,9 +47,14 @@ class EventRecorder:
             )
         result = self.sink.append_once(event)
         if not result.ok:
+            error_code = result.error_code or EventSinkErrorCode.IO_ERROR.value
+            message = result.message or "The audit event could not be appended."
+            if self.secret_filter is not None:
+                error_code = self.secret_filter.redact_text(str(error_code))
+                message = self.secret_filter.redact_text(str(message))
             raise AuditIncompleteError(
-                result.error_code or EventSinkErrorCode.IO_ERROR.value,
-                result.message or "The audit event could not be appended.",
+                str(error_code),
+                str(message),
             )
         return result
 

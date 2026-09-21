@@ -632,3 +632,31 @@ S3.3b，不改变 D6a 的已验收边界。
   pending-write/hash recovery、事件驱动重放或 exactly-once；这些限制不能由 RunRecord 掩盖。
 - workspace revision 仍记录为 `UNKNOWN`，事件与 checkpoint 没有跨介质事务；事件落后或领先
   checkpoint 时，恢复仍只依据 checkpoint 状态。
+
+## D6/S3.3b Final secret-safety Seal
+
+### 固定范围
+
+- 基线：`48e34233b13d44c2b6a6587c4aa08ad51a6a3890`。
+- 只封闭 EventRecorder 和 durable `_run/_finish_audit/_audit_failure` 审计失败路径的已知 secret
+  边界；不修改 RunSummary v2、事件身份/sequence、D1-D4 或 S3.3a 契约。
+- 不进入 S3.3c，不实现 artifact/spool、recovery、locking/policy、S4 或新增依赖。
+
+### 验收事实
+
+- EventRecorder 在抛出 `AuditIncompleteError` 前对外部 `AppendResult.error_code/message` 做
+  `KnownSecretFilter` 确定性脱敏，避免 secret-bearing sink error 作为 LangGraph raw pending write。
+- durable audit failure 返回的 `message`、`error_code`、`audit_error_code` 以及 terminal
+  record/event 中的错误字段均经过同一已知 secret 边界；`audit_incomplete=true`，CLI exit 保持 2。
+- 真实 SQLite/checkpointer 回归覆盖 lifecycle start 成功后 graph node sink error、terminal
+  `_finish_audit` sink error、数据库及适用 WAL/SHM 文件扫描、最终 result/summary 无 canary，且
+  node sink failure 后不继续执行后续副作用。
+- 本轮本地验收完成：unittest 266 tests OK / 6 skipped；pytest 260 passed / 6 skipped /
+  169 subtests passed；Python compile、11 个 prompt render、两套 CLI help 与
+  `git diff --check` 均通过。无 GitHub CI 或独立外部测试证据，不将本地结果外推为外部验收。
+
+### 已知边界
+
+- 过滤范围仍只覆盖 `RunConfig` 中已知凭据；无法识别未配置的秘密或任意隐私。
+- EventSink/RunRecord 继续是审计旁路，checkpoint 仍是恢复依据；不承诺跨介质 exactly-once、
+  多进程 append、完整日志 artifact 或 D5/S3.3c 能力。

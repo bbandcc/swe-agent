@@ -54,7 +54,7 @@ from agent.architect.graph import (
 from agent.common.entities import ImplementationPlan
 from agent.editing import EditResult, EditStatus
 from agent.verification import VerificationCheckStatus, VerificationResult
-from tests.runtime._config_support import RunConfigTestCase
+from tests.runtime._config_support import RunConfigTestCase, model_settings
 
 
 def event(
@@ -431,6 +431,167 @@ class DurableAuditIntegrationTests(RunConfigTestCase):
             self.assertEqual(run_exit_code(result.summary), 2)
             self.assertEqual(calls["factory"], 1)
             self.assertEqual(calls["invoke"], 0)
+
+    def test_node_audit_failure_redacts_sink_error_before_sqlite_checkpoint(self) -> None:
+        canary = "S3_AUDIT_NODE_SECRET"
+
+        class Sink:
+            def __init__(self) -> None:
+                self.calls: list[str] = []
+
+            def append_once(self, event):
+                self.calls.append(f"{event.event_type}:{event.phase}")
+                if len(self.calls) == 1:
+                    return AppendResult(
+                        AppendStatus.APPENDED,
+                        event.idempotency_key,
+                        sequence=1,
+                    )
+                return AppendResult(
+                    AppendStatus.ERROR,
+                    event.idempotency_key,
+                    error_code=f"sink-code-{canary}",
+                    message=f"sink failed while writing {canary}",
+                )
+
+        calls = {"node": 0}
+        sink = Sink()
+
+        class State(DurableBudgetState):
+            value: int = 0
+
+        def factory(config, run_id, saver, clock):
+            recorder = EventRecorder(
+                sink,
+                run_id=run_id,
+                thread_id="thread-audit",
+                task_id="task-audit",
+                secret_filter=KnownSecretFilter((canary,)),
+                clock=clock,
+            )
+            builder = StateGraph(State)
+
+            def finish(state):
+                calls["node"] += 1
+                return {"value": state.value + 1}
+
+            builder.add_node(
+                "finish",
+                recorder.wrap_node(
+                    finish,
+                    event_type="tool",
+                    node_name="finish",
+                ),
+            )
+            builder.add_edge(START, "finish")
+            builder.add_edge("finish", END)
+            return builder.compile(checkpointer=saver)
+
+        with tempfile.TemporaryDirectory() as directory:
+            root = Path(directory)
+            config = self.make_config(
+                root,
+                model=model_settings(canary),
+                verification_specs=(),
+                max_cost_usd=None,
+            )
+            result = start_run(
+                config,
+                self.request(config),
+                {"value": 0},
+                graph_factory=factory,
+                event_sink=sink,
+            )
+
+            self.assertEqual(result.status, DurableRunStatus.FAILED)
+            self.assertTrue(result.audit_incomplete)
+            self.assertEqual(run_exit_code(result.summary), 2)
+            self.assertEqual(calls["node"], 0)
+            self.assertEqual(sink.calls, ["run:start", "tool:start"])
+            for value in (
+                result.message,
+                result.error_code,
+                result.audit_error_code,
+                repr(result.summary),
+            ):
+                self.assertNotIn(canary, value or "")
+            database = config.runtime_root / "checkpoints.sqlite"
+            self.assertTrue(database.exists())
+            for path in config.runtime_root.rglob("*"):
+                if path.is_file():
+                    self.assertNotIn(canary.encode(), path.read_bytes(), path.name)
+
+    def test_terminal_audit_failure_redacts_sink_error_in_library_result(self) -> None:
+        canary = "S3_AUDIT_FINISH_SECRET"
+
+        class Sink:
+            def __init__(self) -> None:
+                self.calls = 0
+
+            def append_once(self, event):
+                self.calls += 1
+                if self.calls == 1:
+                    return AppendResult(
+                        AppendStatus.APPENDED,
+                        event.idempotency_key,
+                        sequence=1,
+                    )
+                return AppendResult(
+                    AppendStatus.ERROR,
+                    event.idempotency_key,
+                    error_code=f"finish-code-{canary}",
+                    message=f"terminal audit failed: {canary}",
+                )
+
+        calls = {"node": 0}
+        sink = Sink()
+
+        class State(DurableBudgetState):
+            value: int = 0
+
+        def factory(config, run_id, saver, clock):
+            builder = StateGraph(State)
+
+            def finish(state):
+                calls["node"] += 1
+                return {"value": state.value + 1}
+
+            builder.add_node("finish", finish)
+            builder.add_edge(START, "finish")
+            builder.add_edge("finish", END)
+            return builder.compile(checkpointer=saver)
+
+        with tempfile.TemporaryDirectory() as directory:
+            root = Path(directory)
+            config = self.make_config(
+                root,
+                model=model_settings(canary),
+                verification_specs=(),
+                max_cost_usd=None,
+            )
+            result = start_run(
+                config,
+                self.request(config),
+                {"value": 0},
+                graph_factory=factory,
+                event_sink=sink,
+            )
+
+            self.assertEqual(result.status, DurableRunStatus.COMPLETED)
+            self.assertTrue(result.audit_incomplete)
+            self.assertEqual(run_exit_code(result.summary), 2)
+            self.assertEqual(calls["node"], 1)
+            self.assertEqual(sink.calls, 2)
+            for value in (
+                result.message,
+                result.error_code,
+                result.audit_error_code,
+                repr(result.summary),
+            ):
+                self.assertNotIn(canary, value or "")
+            for path in config.runtime_root.rglob("*"):
+                if path.is_file():
+                    self.assertNotIn(canary.encode(), path.read_bytes(), path.name)
 
     def test_record_failure_marks_summary_audit_incomplete(self) -> None:
         class State(DurableBudgetState):

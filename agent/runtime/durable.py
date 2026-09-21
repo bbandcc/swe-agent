@@ -384,13 +384,16 @@ def _run(
             )
         )
     except EventSinkError as error:
+        safe_code, safe_message = _safe_audit_parts(
+            secret_filter, error.code, error
+        )
         return DurableRunResult(
             DurableRunStatus.FAILED,
             error_code="audit_error",
-            message=secret_filter.redact_text(str(error)),
+            message=safe_message,
             run_id=request.identity.run_id,
             audit_incomplete=True,
-            audit_error_code=error.code.value,
+            audit_error_code=safe_code,
         )
     observed_clock = _ObservedClock(clock)
     started_at = observed_clock()
@@ -476,14 +479,17 @@ def _run(
                     status="started",
                 )
             except AuditIncompleteError as error:
+                safe_code, safe_message = _safe_audit_parts(
+                    secret_filter, error.code, error
+                )
                 return DurableRunResult(
                     DurableRunStatus.FAILED,
                     error_code="audit_error",
-                    message=secret_filter.redact_text(str(error)),
+                    message=safe_message,
                     preflight=preflight,
                     run_id=request.identity.run_id,
                     audit_incomplete=True,
-                    audit_error_code=error.code,
+                    audit_error_code=safe_code,
                 )
 
             if resume:
@@ -603,22 +609,28 @@ def _run(
                 secret_filter=secret_filter,
             )
         except AuditIncompleteError as error:
+            safe_code, safe_message = _safe_audit_parts(
+                secret_filter, error.code, error
+            )
             return DurableRunResult(
                 DurableRunStatus.FAILED,
                 error_code="audit_error",
-                message=secret_filter.redact_text(str(error)),
+                message=safe_message,
                 run_id=request.identity.run_id,
                 audit_incomplete=True,
-                audit_error_code=error.code,
+                audit_error_code=safe_code,
             )
         except EventSinkError as error:
+            safe_code, safe_message = _safe_audit_parts(
+                secret_filter, error.code, error
+            )
             return DurableRunResult(
                 DurableRunStatus.FAILED,
                 error_code="audit_error",
-                message=secret_filter.redact_text(str(error)),
+                message=safe_message,
                 run_id=request.identity.run_id,
                 audit_incomplete=True,
-                audit_error_code=error.code.value,
+                audit_error_code=safe_code,
             )
         except sqlite3.Error as error:
             return DurableRunResult(
@@ -729,7 +741,11 @@ def _finish_audit(
 ) -> DurableRunResult:
     """Append terminal audit facts and publish the small run record."""
     try:
-        terminal_code = result.error_code
+        terminal_code = (
+            secret_filter.redact_text(str(result.error_code))
+            if result.error_code
+            else None
+        )
         event = RunEvent.create(
             run_id=request.identity.run_id,
             thread_id=request.identity.thread_id,
@@ -768,6 +784,7 @@ def _finish_audit(
                 result,
                 code=append.error_code or "audit_error",
                 message=append.message,
+                secret_filter=secret_filter,
             )
         record = RunRecord(
             schema_version=1,
@@ -780,7 +797,7 @@ def _finish_audit(
             runtime_status=result.status.value,
             workflow_outcome=_state_value(result.state, "outcome"),
             verification_status=_state_value(result.state, "verification_status"),
-            error_code=result.error_code,
+            error_code=terminal_code,
             budget=_budget_record(result.state),
             started_at=started_at,
             finished_at=finished_at,
@@ -800,6 +817,7 @@ def _finish_audit(
                 result,
                 code=written.error_code or "audit_error",
                 message=written.message,
+                secret_filter=secret_filter,
             )
         return replace(result, record_ref=written.record_ref)
     except (AuditIncompleteError, EventSinkError, OSError, ValueError) as error:
@@ -807,6 +825,7 @@ def _finish_audit(
             result,
             code=getattr(error, "code", "audit_error"),
             message=str(error),
+            secret_filter=secret_filter,
         )
 
 
@@ -815,14 +834,34 @@ def _audit_failure(
     *,
     code: object,
     message: str,
+    secret_filter: KnownSecretFilter,
 ) -> DurableRunResult:
-    normalized = code.value if isinstance(code, Enum) else str(code)
+    normalized, safe_message = _safe_audit_parts(secret_filter, code, message)
+    existing_code = (
+        secret_filter.redact_text(str(result.error_code))
+        if result.error_code
+        else "audit_error"
+    )
+    existing_message = secret_filter.redact_text(result.message)
     return replace(
         result,
-        error_code=result.error_code or "audit_error",
-        message=result.message or message,
+        error_code=existing_code,
+        message=existing_message or safe_message,
         audit_incomplete=True,
         audit_error_code=normalized,
+    )
+
+
+def _safe_audit_parts(
+    secret_filter: KnownSecretFilter,
+    code: object,
+    message: object,
+) -> tuple[str, str]:
+    """Keep sink failures safe before they can reach graph/checkpoint state."""
+    normalized = code.value if isinstance(code, Enum) else str(code)
+    return (
+        secret_filter.redact_text(normalized),
+        secret_filter.redact_text(str(message)),
     )
 
 
