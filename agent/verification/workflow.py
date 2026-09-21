@@ -15,6 +15,7 @@ from agent.runtime.budget import BudgetErrorCode, BudgetSnapshot
 from agent.verification.contracts import (
     VerificationCheckStatus,
     VerificationResult,
+    VerificationSummary,
     VerificationSpec,
     VerificationStatus,
 )
@@ -32,8 +33,8 @@ MAX_REPAIR_ATTEMPTS = 2
 
 class _VerificationState(Protocol):
     budget: BudgetSnapshot | None
-    baseline_verification: tuple[VerificationResult, ...]
-    post_verification: tuple[VerificationResult, ...]
+    baseline_verification: tuple[VerificationSummary, ...]
+    post_verification: tuple[VerificationSummary, ...]
     verification_status: VerificationStatus
     repair_attempts: int
     developer_status: DeveloperStatus
@@ -52,13 +53,18 @@ class VerificationController:
         runner: VerificationRunner | None,
         workspace_root: str | Path,
         *,
+        runtime_root: str | Path | None = None,
         clock: Callable[[], float] = time.time,
         secret_filter: KnownSecretFilter | None = None,
     ) -> None:
         self._specs = tuple(specs)
         self._runner = runner
         if self._specs and self._runner is None:
-            self._runner = VerificationRunner(workspace_root)
+            self._runner = VerificationRunner(
+                workspace_root,
+                runtime_root=runtime_root,
+                secret_filter=secret_filter,
+            )
         self._clock = clock
         self._secret_filter = secret_filter
 
@@ -145,6 +151,16 @@ class VerificationController:
                 "outcome": WorkflowOutcome.FAILED,
                 "acceptance": _insufficient_acceptance(),
             }
+        if _has_evidence_problem(results):
+            return {
+                "post_verification": results,
+                "verification_status": VerificationStatus.EVIDENCE_INSUFFICIENT,
+                "verification_message": (
+                    "Post-edit verification evidence is incomplete."
+                ),
+                "acceptance": _insufficient_acceptance(),
+                "outcome": WorkflowOutcome.FAILED,
+            }
         status = classify_verification(state.baseline_verification, results)
         acceptance = evaluate_acceptance(state.baseline_verification, results)
         if (
@@ -212,9 +228,9 @@ class VerificationController:
 
     def _run_checks(
         self, state: _VerificationState
-    ) -> tuple[tuple[VerificationResult, ...], bool]:
+    ) -> tuple[tuple[VerificationSummary, ...], bool]:
         assert self._runner is not None
-        results: list[VerificationResult] = []
+        results: list[VerificationSummary] = []
         budget = getattr(state, "budget", None)
         deadline = budget.deadline_at if budget is not None else None
         for index, spec in enumerate(self._specs):
@@ -234,6 +250,10 @@ class VerificationController:
             result = self._runner.run(effective)
             if self._secret_filter is not None:
                 result = self._secret_filter.sanitize(result).value
+            if isinstance(result, VerificationResult):
+                result = VerificationSummary.from_result(result)
+            elif not isinstance(result, VerificationSummary):
+                raise TypeError("Verification runner must return verification evidence.")
             results.append(result)
             if deadline is not None and self._clock() >= deadline:
                 results.extend(
@@ -244,15 +264,15 @@ class VerificationController:
         return tuple(results), False
 
 
-def _deadline_result(spec: VerificationSpec) -> VerificationResult:
-    return VerificationResult.create(
+def _deadline_result(spec: VerificationSpec) -> VerificationSummary:
+    return VerificationSummary.from_result(VerificationResult.create(
         name=spec.name,
         argv=spec.argv,
         cwd=spec.cwd,
         status=VerificationCheckStatus.TIMEOUT,
         exit_code=None,
         message="Run deadline elapsed before this verification check started.",
-    )
+    ))
 
 
 def _deadline_error_update() -> dict[str, object]:
@@ -281,6 +301,8 @@ def _has_execution_problem(results: Sequence[VerificationResult]) -> bool:
 
 
 def _has_evidence_problem(results: Sequence[VerificationResult]) -> bool:
+    if any(result.artifact_error_code is not None for result in results):
+        return True
     if any(result.report is None for result in results):
         return True
     return classify_verification(results, results) is VerificationStatus.EVIDENCE_INSUFFICIENT
@@ -295,8 +317,13 @@ def _result_feedback(result: VerificationResult) -> dict[str, object]:
         "exit_code": result.exit_code,
         "stdout": result.stdout,
         "stderr": result.stderr,
+        "stdout_preview": result.stdout,
+        "stderr_preview": result.stderr,
+        "stdout_digest": result.stdout_digest,
+        "stderr_digest": result.stderr_digest,
         "stdout_truncated": result.stdout_truncated,
         "stderr_truncated": result.stderr_truncated,
+        "artifact_error_code": result.artifact_error_code,
         "failure_id": result.failure_id,
         "message": result.message,
         "report_schema": result.report.report_schema if result.report else None,

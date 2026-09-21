@@ -7,6 +7,7 @@ from agent.verification.contracts import (
     VerificationCheckStatus,
     VerificationReport,
     VerificationResult,
+    VerificationSummary,
     VerificationSpec,
     VerificationStatus,
 )
@@ -26,6 +27,7 @@ __all__ = [
     "VerificationReport",
     "REPORT_SCHEMA",
     "VerificationResult",
+    "VerificationSummary",
     "VerificationRunner",
     "VerificationSpec",
     "VerificationStatus",

@@ -8,9 +8,19 @@ import subprocess
 import tempfile
 import threading
 import time
+from dataclasses import dataclass
 from pathlib import Path
 from typing import BinaryIO
 
+from agent.artifacts import (
+    DEFAULT_ARTIFACT_QUOTA_BYTES,
+    ArtifactErrorCode,
+    ArtifactRef,
+    ArtifactStore,
+    ArtifactStoreError,
+    ArtifactWriter,
+)
+from agent.runtime.secrets import KnownSecretFilter
 from agent.verification.contracts import (
     VerificationCheckStatus,
     VerificationReport,
@@ -29,21 +39,40 @@ _MAX_REPORT_BYTES = 4 * 1024 * 1024
 class VerificationRunner:
     """Execute argv checks without a shell and return bounded diagnostics."""
 
-    def __init__(self, workspace_root: str | Path) -> None:
+    def __init__(
+        self,
+        workspace_root: str | Path,
+        *,
+        runtime_root: str | Path | None = None,
+        artifact_store: ArtifactStore | None = None,
+        secret_filter: KnownSecretFilter | None = None,
+        artifact_quota_bytes: int = DEFAULT_ARTIFACT_QUOTA_BYTES,
+    ) -> None:
         self._resolver = WorkspacePathResolver(workspace_root)
+        self._secret_filter = secret_filter
+        self._artifact_store = artifact_store or (
+            ArtifactStore(runtime_root, max_bytes=artifact_quota_bytes)
+            if runtime_root is not None
+            else None
+        )
 
     def run(self, spec: VerificationSpec) -> VerificationResult:
         started_at = time.monotonic()
         validation_error = _validate_spec(spec)
         if validation_error is not None:
-            return _execution_error(spec, validation_error, started_at)
+            return self._safe_result(
+                _execution_error(spec, validation_error, started_at)
+            )
 
         resolution = self._resolver.resolve_directory(spec.cwd)
         if not resolution.ok or resolution.path is None:
-            return _execution_error(
-                spec,
-                resolution.message or "The verification cwd is outside the workspace.",
-                started_at,
+            return self._safe_result(
+                _execution_error(
+                    spec,
+                    resolution.message
+                    or "The verification cwd is outside the workspace.",
+                    started_at,
+                )
             )
 
         report_path: Path | None = None
@@ -55,21 +84,25 @@ class VerificationRunner:
                 spec.report_path, must_exist=False
             )
             if not report_resolution.ok:
-                return _execution_error(
-                    spec,
-                    report_resolution.message
-                    or "The verification report path is outside the workspace.",
-                    started_at,
+                return self._safe_result(
+                    _execution_error(
+                        spec,
+                        report_resolution.message
+                        or "The verification report path is outside the workspace.",
+                        started_at,
+                    )
                 )
             assert report_resolution.path is not None
             try:
                 report_path, owned_report_dir = _owned_report_path(spec.report_path)
                 report_before = _report_signature(report_path)
             except OSError as error:
-                return _execution_error(
-                    spec,
-                    f"Verification report output could not be allocated: {error}",
-                    started_at,
+                return self._safe_result(
+                    _execution_error(
+                        spec,
+                        f"Verification report output could not be allocated: {error}",
+                        started_at,
+                    )
                 )
             effective_argv = _rewrite_report_argv(
                 spec.argv,
@@ -83,15 +116,19 @@ class VerificationRunner:
                 message = "Verification report output could not be redirected."
                 if cleanup_error is not None:
                     message += f" Temporary report cleanup failed: {cleanup_error}"
-                return _execution_error(
-                    spec,
-                    message,
-                    started_at,
+                return self._safe_result(
+                    _execution_error(
+                        spec,
+                        message,
+                        started_at,
+                    )
                 )
 
         process: subprocess.Popen[bytes] | None = None
         process_tree: ProcessTree | None = None
         result: VerificationResult | None = None
+        stdout_capture: _BoundedOutput | None = None
+        stderr_capture: _BoundedOutput | None = None
         cleanup_errors: list[str] = []
         try:
             process = subprocess.Popen(
@@ -108,8 +145,18 @@ class VerificationRunner:
             )
             process_tree = ProcessTree(process)
 
-            stdout_capture = _BoundedOutput(spec.max_output_bytes)
-            stderr_capture = _BoundedOutput(spec.max_output_bytes)
+            stdout_capture = _BoundedOutput(
+                spec.max_output_bytes,
+                artifact_store=self._artifact_store,
+                artifact_kind="verification_stdout",
+                secret_filter=self._secret_filter,
+            )
+            stderr_capture = _BoundedOutput(
+                spec.max_output_bytes,
+                artifact_store=self._artifact_store,
+                artifact_kind="verification_stderr",
+                secret_filter=self._secret_filter,
+            )
             assert process.stdout is not None and process.stderr is not None
             readers = (
                 threading.Thread(
@@ -151,13 +198,33 @@ class VerificationRunner:
                 status = VerificationCheckStatus.EXECUTION_ERROR
                 message = "Verification output pipes did not close after process exit."
 
-            stdout, stdout_truncated, stdout_digest = stdout_capture.result()
-            stderr, stderr_truncated, stderr_digest = stderr_capture.result()
+            stdout_result = stdout_capture.result()
+            stderr_result = stderr_capture.result()
+            stdout = stdout_result.preview
+            stderr = stderr_result.preview
+            stdout_truncated = stdout_result.truncated
+            stderr_truncated = stderr_result.truncated
+            stdout_digest = stdout_result.digest
+            stderr_digest = stderr_result.digest
             capture_error = stdout_capture.error or stderr_capture.error
             if capture_error is not None:
                 status = VerificationCheckStatus.EXECUTION_ERROR
                 message = (
                     f"Verification output could not be captured: {capture_error}"
+                )
+            artifact_errors = tuple(
+                item
+                for item in (
+                    stdout_result.artifact_error,
+                    stderr_result.artifact_error,
+                )
+                if item is not None
+            )
+            if artifact_errors:
+                message = _append_message(
+                    message,
+                    "Verification artifact evidence is incomplete: "
+                    + "; ".join(error.message for error in artifact_errors),
                 )
 
             report = None
@@ -186,6 +253,11 @@ class VerificationRunner:
                 stderr_truncated=stderr_truncated,
                 stdout_digest=stdout_digest,
                 stderr_digest=stderr_digest,
+                stdout_artifact=stdout_result.artifact,
+                stderr_artifact=stderr_result.artifact,
+                artifact_error_code=(
+                    artifact_errors[0].code.value if artifact_errors else None
+                ),
                 message=message,
                 report=report,
                 allowed_failure_case_ids=spec.allowed_failure_case_ids,
@@ -202,6 +274,9 @@ class VerificationRunner:
                 started_at,
             )
         finally:
+            for capture in (stdout_capture, stderr_capture):
+                if capture is not None:
+                    capture.abort()
             try:
                 if process_tree is not None:
                     try:
@@ -224,14 +299,24 @@ class VerificationRunner:
                     )
 
         if cleanup_errors:
-            return _execution_error(
-                spec,
-                "Verification evidence cleanup failed: "
-                + "; ".join(cleanup_errors),
-                started_at,
+            return self._safe_result(
+                _execution_error(
+                    spec,
+                    "Verification evidence cleanup failed: "
+                    + "; ".join(cleanup_errors),
+                    started_at,
+                )
             )
         assert result is not None
-        return result
+        return self._safe_result(result)
+
+    def _safe_result(self, result: VerificationResult) -> VerificationResult:
+        if self._secret_filter is None:
+            return result
+        sanitized = self._secret_filter.sanitize(result).value
+        if not isinstance(sanitized, VerificationResult):
+            raise TypeError("Secret filter must preserve VerificationResult type.")
+        return sanitized
 
 
 def _validate_spec(spec: VerificationSpec) -> str | None:
@@ -250,8 +335,30 @@ def _validate_spec(spec: VerificationSpec) -> str | None:
     return None
 
 
+@dataclass(frozen=True, slots=True)
+class _ArtifactFailure:
+    code: ArtifactErrorCode
+    message: str
+
+
+@dataclass(frozen=True, slots=True)
+class _CaptureResult:
+    preview: str
+    truncated: bool
+    digest: str
+    artifact: ArtifactRef | None
+    artifact_error: _ArtifactFailure | None
+
+
 class _BoundedOutput:
-    def __init__(self, limit: int) -> None:
+    def __init__(
+        self,
+        limit: int,
+        *,
+        artifact_store: ArtifactStore | None = None,
+        artifact_kind: str | None = None,
+        secret_filter: KnownSecretFilter | None = None,
+    ) -> None:
         content_budget = limit - len(_TRUNCATION_MARKER)
         self._limit = limit
         self._head_limit = content_budget // 2
@@ -262,29 +369,82 @@ class _BoundedOutput:
         self._truncated = False
         self._digest = hashlib.sha256()
         self.error: str | None = None
+        self._secret_stream = (
+            secret_filter.stream() if secret_filter is not None else None
+        )
+        self._artifact_writer: ArtifactWriter | None = None
+        self._artifact: ArtifactRef | None = None
+        self._artifact_error: _ArtifactFailure | None = None
+        if artifact_store is not None and artifact_kind is not None:
+            try:
+                self._artifact_writer = artifact_store.open_stream(
+                    kind=artifact_kind,
+                    media_type="text/plain; charset=utf-8",
+                )
+            except ArtifactStoreError as error:
+                self._artifact_error = _ArtifactFailure(error.code, str(error))
 
     def consume(self, stream: BinaryIO) -> None:
         try:
             try:
                 while chunk := stream.read(8192):
                     self._digest.update(chunk)
-                    self._append(chunk)
+                    if self._secret_stream is not None:
+                        chunk = self._secret_stream.feed(chunk)
+                    self._consume_chunk(chunk)
+                if self._secret_stream is not None:
+                    self._consume_chunk(self._secret_stream.finish())
             except (OSError, ValueError) as error:
                 self.error = f"{type(error).__name__}: {error}"
         finally:
             stream.close()
+            if self._artifact_writer is not None:
+                published = self._artifact_writer.finalize(
+                    redacted=(
+                        self._secret_stream.redacted
+                        if self._secret_stream is not None
+                        else False
+                    ),
+                    truncated=False,
+                )
+                self._artifact = published.ref
+                if published.error_code is not None and self._artifact_error is None:
+                    try:
+                        code = ArtifactErrorCode(published.error_code)
+                    except ValueError:
+                        code = ArtifactErrorCode.WRITE_FAILED
+                    self._artifact_error = _ArtifactFailure(code, published.message)
 
-    def result(self) -> tuple[str, bool, str]:
+    def result(self) -> _CaptureResult:
         bounded = (
             self._head + _TRUNCATION_MARKER + self._tail
             if self._truncated
             else bytes(self._buffer)
         )
-        return (
-            bounded.decode("utf-8", errors="replace"),
-            self._truncated,
-            self._digest.hexdigest(),
+        return _CaptureResult(
+            preview=bounded.decode("utf-8", errors="replace"),
+            truncated=self._truncated,
+            digest=self._digest.hexdigest(),
+            artifact=self._artifact,
+            artifact_error=self._artifact_error,
         )
+
+    def abort(self) -> None:
+        if self._artifact_writer is not None and self._artifact is None:
+            published = self._artifact_writer.abort()
+            if published.error_code is not None and self._artifact_error is None:
+                try:
+                    code = ArtifactErrorCode(published.error_code)
+                except ValueError:
+                    code = ArtifactErrorCode.CLEANUP_FAILED
+                self._artifact_error = _ArtifactFailure(code, published.message)
+
+    def _consume_chunk(self, chunk: bytes) -> None:
+        if not chunk:
+            return
+        self._append(chunk)
+        if self._artifact_writer is not None:
+            self._artifact_writer.write(chunk)
 
     def _append(self, chunk: bytes) -> None:
         if not self._truncated:

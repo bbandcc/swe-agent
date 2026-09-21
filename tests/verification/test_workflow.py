@@ -186,6 +186,59 @@ class VerificationWorkflowTests(unittest.TestCase):
         )
         self.assertEqual(update["outcome"], WorkflowOutcome.FAILED)
 
+    def test_artifact_failure_cannot_be_accepted_as_verified(self) -> None:
+        spec = VerificationSpec("artifact-check", ("unused",))
+        report = VerificationReport(
+            check_id=spec.name,
+            report_schema=REPORT_SCHEMA,
+            cases=(
+                VerificationCase(
+                    check_id=spec.name,
+                    case_id="target",
+                    status=VerificationCaseStatus.PASS,
+                ),
+            ),
+        )
+
+        class Runner:
+            def __init__(self) -> None:
+                self.calls = 0
+
+            def run(self, configured: VerificationSpec) -> VerificationResult:
+                self.calls += 1
+                return VerificationResult.create(
+                    name=configured.name,
+                    argv=configured.argv,
+                    cwd=configured.cwd,
+                    status=VerificationCheckStatus.PASS,
+                    exit_code=0,
+                    report=report,
+                    artifact_error_code=(
+                        "artifact_quota_exceeded" if self.calls == 2 else None
+                    ),
+                )
+
+        runner = Runner()
+        controller = VerificationController((spec,), runner, ".")
+        baseline = controller.run_baseline(AgentState())
+        baseline.update(
+            {
+                "developer_status": DeveloperStatus.COMPLETED,
+                "outcome": WorkflowOutcome.PENDING,
+            }
+        )
+        state = AgentState(
+            **baseline,
+        )
+        post = controller.run_post(state)
+
+        self.assertEqual(runner.calls, 2)
+        self.assertEqual(
+            post["verification_status"], VerificationStatus.EVIDENCE_INSUFFICIENT
+        )
+        self.assertFalse(post["acceptance"].accepted)
+        self.assertEqual(post["outcome"], WorkflowOutcome.FAILED)
+
     def test_expired_deadline_starts_no_post_verification_process(self) -> None:
         class Runner:
             def __init__(self) -> None:

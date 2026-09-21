@@ -4,7 +4,7 @@ from typing import Annotated, Any, Optional
 
 from langchain_core.messages import AnyMessage
 from langgraph.graph import END, START, StateGraph, add_messages
-from pydantic import BaseModel, Field
+from pydantic import BaseModel, Field, field_validator
 
 from agent.architect.graph import swe_architect
 from agent.common.entities import ImplementationPlan
@@ -17,6 +17,7 @@ from agent.verification import (
     VerificationResult,
     VerificationRunner,
     VerificationSpec,
+    VerificationSummary,
     VerificationStatus,
 )
 from agent.verification.workflow import VerificationController
@@ -48,10 +49,10 @@ class AgentState(DurableBudgetState):
     developer_status: DeveloperStatus = Field(DeveloperStatus.PENDING)
     developer_error_code: Optional[DeveloperErrorCode] = Field(None)
     developer_message: str = Field("")
-    baseline_verification: tuple[VerificationResult, ...] = Field(
+    baseline_verification: tuple[VerificationSummary, ...] = Field(
         default_factory=tuple
     )
-    post_verification: tuple[VerificationResult, ...] = Field(
+    post_verification: tuple[VerificationSummary, ...] = Field(
         default_factory=tuple
     )
     verification_status: VerificationStatus = Field(
@@ -63,6 +64,18 @@ class AgentState(DurableBudgetState):
     repair_attempts: int = Field(0, ge=0)
     outcome: WorkflowOutcome = Field(WorkflowOutcome.PENDING)
 
+    @field_validator("baseline_verification", "post_verification", mode="before")
+    @classmethod
+    def _checkpoint_safe_verification_summaries(cls, value):
+        if value is None:
+            return value
+        return tuple(
+            VerificationSummary.from_result(item)
+            if isinstance(item, VerificationResult)
+            else item
+            for item in value
+        )
+
 
 def create_workflow_graph(
     *,
@@ -72,6 +85,7 @@ def create_workflow_graph(
     verification_runner: VerificationRunner | None = None,
     durable_runtime: bool = False,
     workspace_root: Any = None,
+    runtime_root: Any = None,
     clock: Callable[[], float] = time.time,
     secret_filter: KnownSecretFilter | None = None,
     event_recorder: EventRecorder | None = None,
@@ -81,6 +95,7 @@ def create_workflow_graph(
         verification_specs,
         verification_runner,
         configured_workspace_root() if workspace_root is None else workspace_root,
+        runtime_root=runtime_root,
         clock=clock,
         secret_filter=secret_filter,
     )

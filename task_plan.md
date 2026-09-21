@@ -662,3 +662,40 @@ S3.3b，不改变 D6a 的已验收边界。
 - 过滤范围仍只覆盖 `RunConfig` 中已知凭据；无法识别未配置的秘密或任意隐私。
 - EventSink/RunRecord 继续是审计旁路，checkpoint 仍是恢复依据；不承诺跨介质 exactly-once、
   多进程 append、完整日志 artifact 或 D5/S3.3c 能力。
+
+## D6/S3.3c：验证日志 artifact 与安全摘要
+
+### 固定范围
+
+- 基线：`c2b57ddacd7bb805ce288d691fdb86c62a2ebaff`。
+- 只实现 verification stdout/stderr 的流式脱敏、完整 artifact、`ArtifactRef` 和 checkpoint-safe
+  `VerificationSummary`；保持 D3 acceptance、baseline/post、repair 次数和现有 EventSink 契约。
+- 不实现模型/工具 raw response artifact、patch artifact、write/verification recovery、locking、
+  telemetry、S4 或新依赖。
+
+### 实施阶段
+
+- [x] 建立 schema v1 `ArtifactRef`/`ArtifactStore` 和 `KnownSecretFilter` streaming seam；artifact
+  只写 `runtime_root/artifacts`，使用 hash-only 文件名、临时文件、flush/fsync 和 atomic replace。
+- [x] 将 runner 的 stdout/stderr pipe drain 接入脱敏 spool、原始完整 digest、bounded preview 和
+  结构化 artifact failure；preview 截断不影响 artifact，timeout 后仍完成可获得输出的 drain。
+- [x] 让图状态使用 checkpoint-safe `VerificationSummary`，并将 artifact refs、digest 和 truncation
+  摘要接入 verification `RunEvent`；repair feedback 只保留 bounded preview，不暴露 runtime 路径。
+- [x] 补齐长 stdout/stderr、跨 chunk secret、timeout、quota/publish/cleanup fault、临时文件清理、
+  真实 SQLite checkpoint 无 raw log/canary，以及 D3 baseline/post/evidence 回归。
+- [x] 完成全量 unittest/pytest、compile、11 个 prompt render、两套 CLI help 和 diff check。
+
+### 当前状态
+
+S3.3c 本地实现与验收完成：unittest 277 tests OK / 6 skipped；pytest 271 passed / 6 skipped /
+169 subtests passed；Python compile、11 个 prompt render、两套 CLI help 和 `git diff --check` 通过。
+SQLite/runtime 文件扫描确认 known canary 未进入 checkpoint、event、record 或脱敏 artifact。没有运行
+GitHub CI 或独立外部测试，不将本地结果外推为外部验收。
+
+### 已知边界
+
+- secret filter 只覆盖 `RunConfig` 中已知凭据；artifact 是脱敏后的完整 verification 输出，不是通用
+  隐私检测，也不接 model/tool raw response、源码 patch 或 recovery。
+- quota 按单个输出 artifact 执行；磁盘、写入、发布、清理失败会标记 evidence incomplete，不能被
+  D3 acceptance 当作可信成功。artifact 与 checkpoint/event 没有跨介质事务，不承诺 exactly-once、
+  workspace locking、verification replay 或 S4 能力。

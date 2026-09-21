@@ -24,6 +24,7 @@ from agent.editing import (
 )
 from agent.outcome import WorkflowOutcome
 from agent.runtime.boundary import DurableCallResult
+from agent.artifacts import ArtifactRef
 from agent.runtime.budget import (
     BudgetController,
     BudgetErrorCode,
@@ -54,6 +55,7 @@ from agent.verification import (
     VerificationCheckStatus,
     VerificationReport,
     VerificationResult,
+    VerificationSummary,
     VerificationStatus,
 )
 
@@ -151,6 +153,8 @@ def checkpoint_serializer() -> JsonPlusSerializer:
             VerificationReport,
             VerificationStatus,
             VerificationResult,
+            VerificationSummary,
+            ArtifactRef,
             WorkflowOutcome,
         ]
     )

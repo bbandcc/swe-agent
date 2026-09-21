@@ -201,6 +201,11 @@ class EventRecorder:
                     "attempt": _state_attr(state, "repair_attempts", 0),
                 }
             )
+        artifact_refs = (
+            _verification_artifact_refs(checks)
+            if event_type == "verification"
+            else ()
+        )
         return RunEvent.create(
             run_id=self.run_id,
             thread_id=self.thread_id,
@@ -216,6 +221,7 @@ class EventRecorder:
             usage=usage,
             summary=summary,
             error=error,
+            artifact_refs=artifact_refs,
         )
 
     def _subjects(
@@ -318,9 +324,33 @@ def _verification_evidence(checks: Any) -> list[dict[str, Any]]:
                 "check_id": name,
                 "status": status,
                 "failure_id": getattr(check, "failure_id", None),
+                "stdout_digest": getattr(check, "stdout_digest", None),
+                "stderr_digest": getattr(check, "stderr_digest", None),
+                "stdout_truncated": bool(
+                    getattr(check, "stdout_truncated", False)
+                ),
+                "stderr_truncated": bool(
+                    getattr(check, "stderr_truncated", False)
+                ),
+                "artifact_error_code": getattr(
+                    check, "artifact_error_code", None
+                ),
             }
         )
     return evidence
+
+
+def _verification_artifact_refs(checks: Any) -> tuple[str, ...]:
+    if not isinstance(checks, Sequence) or isinstance(checks, (str, bytes, bytearray)):
+        return ()
+    refs: list[str] = []
+    for check in checks:
+        for name in ("stdout_artifact", "stderr_artifact"):
+            ref = getattr(check, name, None)
+            path = getattr(ref, "path", None)
+            if isinstance(path, str) and path:
+                refs.append(path)
+    return tuple(refs)
 
 
 def _tool_identity(state: Any, call_id: str | None) -> tuple[str | None, str | None]:

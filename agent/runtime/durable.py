@@ -47,6 +47,7 @@ from agent.runtime.trajectory import (
     write_run_record,
 )
 from agent.verification import AcceptanceResult
+from agent.verification import VerificationRunner
 from agent.workspace import WorkspaceRootError, workspace_root_scope
 
 GraphFactory = Callable[[RunConfig, str, SqliteSaver, Callable[[], float]], Any]
@@ -721,7 +722,13 @@ def create_durable_workflow(
         architect=architect,
         developer=developer,
         verification_specs=config.verification_specs,
+        verification_runner=VerificationRunner(
+            config.workspace_root,
+            runtime_root=config.runtime_root,
+            secret_filter=secret_filter,
+        ),
         workspace_root=config.workspace_root,
+        runtime_root=config.runtime_root,
         durable_runtime=True,
         clock=clock,
         secret_filter=secret_filter,

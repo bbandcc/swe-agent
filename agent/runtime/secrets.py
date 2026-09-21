@@ -45,6 +45,78 @@ class SecretFilterResult:
         self.code_bearing = code_bearing
 
 
+class KnownSecretStream:
+    """Incremental bytes redactor with overlap across chunk boundaries."""
+
+    def __init__(self, secret_filter: "KnownSecretFilter") -> None:
+        self._secrets = tuple(
+            secret.encode("utf-8") for secret in secret_filter._secrets
+        )
+        self._marker = secret_filter.marker.encode("utf-8")
+        self._pending = b""
+        self._redacted = False
+        self._finished = False
+
+    @property
+    def redacted(self) -> bool:
+        return self._redacted
+
+    def feed(self, chunk: bytes) -> bytes:
+        if self._finished:
+            raise RuntimeError("Secret stream is already finished.")
+        if not isinstance(chunk, (bytes, bytearray, memoryview)):
+            raise TypeError("Secret stream chunks must be bytes-like.")
+        if not self._secrets:
+            return bytes(chunk)
+        return self._process(bytes(chunk), final=False)
+
+    def finish(self) -> bytes:
+        if self._finished:
+            return b""
+        self._finished = True
+        if not self._secrets:
+            return b""
+        return self._process(b"", final=True)
+
+    def _process(self, chunk: bytes, *, final: bool) -> bytes:
+        combined = self._pending + chunk
+        if final:
+            process = combined
+            self._pending = b""
+        else:
+            # Keep a suffix that may still become the beginning of a secret.
+            # Merely retaining ``max_secret_len - 1`` characters is not enough:
+            # for ``SE`` + ``CRET`` the first character would otherwise be
+            # emitted before the complete secret is visible.  Move the emit
+            # boundary back when a complete secret crosses it.
+            overlap = max(len(self._secrets[0]) - 1, 0)
+            safe_end = max(len(combined) - overlap, 0)
+            changed = True
+            while changed:
+                changed = False
+                for secret in self._secrets:
+                    start = combined.find(secret)
+                    while start >= 0 and start < safe_end:
+                        end = start + len(secret)
+                        if end > safe_end:
+                            safe_end = start
+                            changed = True
+                            break
+                        start = combined.find(secret, start + 1)
+                    if changed:
+                        break
+            if safe_end <= 0:
+                self._pending = combined
+                return b""
+            process = combined[:safe_end]
+            self._pending = combined[safe_end:]
+        redacted = process
+        for secret in self._secrets:
+            redacted = redacted.replace(secret, self._marker)
+        self._redacted = self._redacted or redacted != process
+        return redacted
+
+
 class KnownSecretFilter:
     """Replace only explicitly configured secrets in process-local values.
 
@@ -97,6 +169,10 @@ class KnownSecretFilter:
         if not isinstance(value, str):
             raise TypeError("value must be a string.")
         return bool(self._secrets) and self.redact_text(value) != value
+
+    def stream(self) -> KnownSecretStream:
+        """Create a process-local redactor for bytes read in chunks."""
+        return KnownSecretStream(self)
 
     def sanitize(
         self, value: Any, *, code_bearing: bool = False
@@ -273,6 +349,7 @@ class KnownSecretFilter:
 
 __all__ = [
     "KnownSecretFilter",
+    "KnownSecretStream",
     "REDACTION_MARKER",
     "SENSITIVE_DATA_MESSAGE",
     "SecretFilterResult",

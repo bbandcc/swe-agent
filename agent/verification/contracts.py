@@ -9,6 +9,8 @@ from dataclasses import dataclass
 from enum import Enum
 from pathlib import Path
 
+from agent.artifacts import ArtifactRef
+
 
 class VerificationCheckStatus(str, Enum):
     PASS = "pass"
@@ -153,6 +155,11 @@ class VerificationResult:
     message: str = ""
     report: VerificationReport | None = None
     allowed_failure_case_ids: tuple[str, ...] = ()
+    stdout_digest: str | None = None
+    stderr_digest: str | None = None
+    stdout_artifact: ArtifactRef | None = None
+    stderr_artifact: ArtifactRef | None = None
+    artifact_error_code: str | None = None
 
     def __post_init__(self) -> None:
         object.__setattr__(self, "argv", _sequence_tuple(self.argv, "argv"))
@@ -166,6 +173,24 @@ class VerificationResult:
                 raise ValueError("report must be VerificationReport or None.")
             if self.report.check_id != self.name:
                 raise ValueError("Verification report check_id must match result name.")
+        for name in ("stdout_artifact", "stderr_artifact"):
+            artifact = getattr(self, name)
+            if artifact is not None and not isinstance(artifact, ArtifactRef):
+                raise ValueError(f"{name} must be ArtifactRef or None.")
+        for name in ("stdout_digest", "stderr_digest"):
+            digest = getattr(self, name)
+            if digest is not None and (
+                not isinstance(digest, str) or not digest.strip()
+            ):
+                raise ValueError(f"{name} must be a string or None.")
+
+    @property
+    def artifact_refs(self) -> tuple[ArtifactRef, ...]:
+        return tuple(
+            reference
+            for reference in (self.stdout_artifact, self.stderr_artifact)
+            if reference is not None
+        )
 
     @classmethod
     def create(
@@ -186,6 +211,9 @@ class VerificationResult:
         message: str = "",
         report: VerificationReport | None = None,
         allowed_failure_case_ids: tuple[str, ...] = (),
+        stdout_artifact: ArtifactRef | None = None,
+        stderr_artifact: ArtifactRef | None = None,
+        artifact_error_code: str | None = None,
     ) -> "VerificationResult":
         failure_id = None
         if status is not VerificationCheckStatus.PASS:
@@ -220,6 +248,102 @@ class VerificationResult:
             message=message,
             report=report,
             allowed_failure_case_ids=allowed_failure_case_ids,
+            stdout_digest=stdout_digest,
+            stderr_digest=stderr_digest,
+            stdout_artifact=stdout_artifact,
+            stderr_artifact=stderr_artifact,
+            artifact_error_code=artifact_error_code,
+        )
+
+
+@dataclass(frozen=True, slots=True)
+class VerificationSummary:
+    """Checkpoint-safe verification evidence with bounded diagnostics only."""
+
+    name: str
+    argv: tuple[str, ...]
+    cwd: str
+    status: VerificationCheckStatus
+    exit_code: int | None
+    stdout_preview: str = ""
+    stderr_preview: str = ""
+    duration_seconds: float = 0.0
+    stdout_truncated: bool = False
+    stderr_truncated: bool = False
+    stdout_digest: str | None = None
+    stderr_digest: str | None = None
+    failure_id: str | None = None
+    message: str = ""
+    report: VerificationReport | None = None
+    allowed_failure_case_ids: tuple[str, ...] = ()
+    stdout_artifact: ArtifactRef | None = None
+    stderr_artifact: ArtifactRef | None = None
+    artifact_error_code: str | None = None
+
+    def __post_init__(self) -> None:
+        object.__setattr__(self, "argv", _sequence_tuple(self.argv, "argv"))
+        object.__setattr__(
+            self,
+            "allowed_failure_case_ids",
+            _string_tuple(self.allowed_failure_case_ids, "allowed_failure_case_ids"),
+        )
+        if not isinstance(self.status, VerificationCheckStatus):
+            try:
+                object.__setattr__(
+                    self, "status", VerificationCheckStatus(self.status)
+                )
+            except (TypeError, ValueError) as error:
+                raise ValueError("Verification summary status is invalid.") from error
+        if self.report is not None:
+            if not isinstance(self.report, VerificationReport):
+                raise ValueError("report must be VerificationReport or None.")
+            if self.report.check_id != self.name:
+                raise ValueError("Verification report check_id must match result name.")
+        for name in ("stdout_artifact", "stderr_artifact"):
+            artifact = getattr(self, name)
+            if artifact is not None and not isinstance(artifact, ArtifactRef):
+                raise ValueError(f"{name} must be ArtifactRef or None.")
+
+    @property
+    def stdout(self) -> str:
+        """Compatibility view used by the existing repair feedback renderer."""
+        return self.stdout_preview
+
+    @property
+    def stderr(self) -> str:
+        return self.stderr_preview
+
+    @property
+    def artifact_refs(self) -> tuple[ArtifactRef, ...]:
+        """Return verification artifact references without exposing contents."""
+        return tuple(
+            reference
+            for reference in (self.stdout_artifact, self.stderr_artifact)
+            if reference is not None
+        )
+
+    @classmethod
+    def from_result(cls, result: VerificationResult) -> "VerificationSummary":
+        return cls(
+            name=result.name,
+            argv=result.argv,
+            cwd=result.cwd,
+            status=result.status,
+            exit_code=result.exit_code,
+            stdout_preview=result.stdout,
+            stderr_preview=result.stderr,
+            duration_seconds=result.duration_seconds,
+            stdout_truncated=result.stdout_truncated,
+            stderr_truncated=result.stderr_truncated,
+            stdout_digest=result.stdout_digest,
+            stderr_digest=result.stderr_digest,
+            failure_id=result.failure_id,
+            message=result.message,
+            report=result.report,
+            allowed_failure_case_ids=result.allowed_failure_case_ids,
+            stdout_artifact=result.stdout_artifact,
+            stderr_artifact=result.stderr_artifact,
+            artifact_error_code=result.artifact_error_code,
         )
 
 

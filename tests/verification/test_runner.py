@@ -1,4 +1,5 @@
 import io
+import hashlib
 import math
 import sys
 import tempfile
@@ -8,6 +9,8 @@ from pathlib import Path
 from unittest.mock import patch
 
 import agent.verification.runner as runner_module
+from agent.artifacts import ArtifactErrorCode, ArtifactStore
+from agent.runtime import KnownSecretFilter, REDACTION_MARKER
 from agent.verification import (
     VerificationCheckStatus,
     VerificationRunner,
@@ -83,6 +86,153 @@ class VerificationRunnerTests(unittest.TestCase):
             self.assertIn("truncated", failed.stdout)
             self.assertIn("TAIL", failed.stderr)
             self.assertIsNotNone(failed.failure_id)
+
+    def test_streamed_artifacts_are_redacted_complete_and_hashed(self) -> None:
+        canary = "S3_STREAM_CANARY"
+        with tempfile.TemporaryDirectory() as directory:
+            root = Path(directory)
+            runtime_root = root / "runtime"
+            executable = getattr(sys, "_base_executable", sys.executable)
+            code = (
+                "import sys,time; "
+                f"sys.stdout.buffer.write(b'prefix {canary[:7]}'); sys.stdout.flush(); "
+                "time.sleep(0.03); "
+                f"sys.stdout.buffer.write(b'{canary[7:]} ' + b'X' * 400); "
+                "sys.stdout.flush(); "
+                f"sys.stderr.buffer.write(b'error {canary[:4]}'); sys.stderr.flush(); "
+                "time.sleep(0.03); "
+                f"sys.stderr.buffer.write(b'{canary[4:]} ' + b'Y' * 400); "
+                "sys.stderr.flush()"
+            )
+            result = VerificationRunner(
+                root,
+                runtime_root=runtime_root,
+                secret_filter=KnownSecretFilter((canary,)),
+            ).run(
+                VerificationSpec(
+                    name="artifact-output",
+                    argv=(executable, "-c", code),
+                    max_output_bytes=128,
+                )
+            )
+
+            self.assertEqual(result.status, VerificationCheckStatus.PASS)
+            self.assertTrue(result.stdout_truncated)
+            self.assertTrue(result.stderr_truncated)
+            self.assertIn(REDACTION_MARKER, result.stdout)
+            self.assertIn(REDACTION_MARKER, result.stderr)
+            self.assertNotIn(canary, result.stdout)
+            self.assertNotIn(canary, result.stderr)
+            for reference in (result.stdout_artifact, result.stderr_artifact):
+                self.assertIsNotNone(reference)
+                assert reference is not None
+                self.assertFalse(reference.truncated)
+                self.assertTrue(reference.redacted)
+                payload = (runtime_root / reference.relative_path).read_bytes()
+                self.assertNotIn(canary.encode("utf-8"), payload)
+                self.assertEqual(reference.size, len(payload))
+                self.assertEqual(reference.sha256, hashlib.sha256(payload).hexdigest())
+                self.assertGreater(len(payload), len(result.stdout.encode("utf-8")))
+
+            raw_stdout = (
+                f"prefix {canary} ".encode("utf-8") + b"X" * 400
+            )
+            self.assertEqual(
+                result.stdout_digest,
+                hashlib.sha256(raw_stdout).hexdigest(),
+            )
+
+    def test_timeout_still_publishes_drained_artifacts(self) -> None:
+        with tempfile.TemporaryDirectory() as directory:
+            root = Path(directory)
+            runtime_root = root / "runtime"
+            executable = getattr(sys, "_base_executable", sys.executable)
+            result = VerificationRunner(
+                root, runtime_root=runtime_root
+            ).run(
+                VerificationSpec(
+                    name="timeout-artifact",
+                    argv=(
+                        executable,
+                        "-c",
+                        "import sys,time; "
+                        "sys.stdout.write('before-timeout'); sys.stdout.flush(); "
+                        "time.sleep(5)",
+                    ),
+                    timeout_seconds=0.1,
+                )
+            )
+
+            self.assertEqual(result.status, VerificationCheckStatus.TIMEOUT)
+            self.assertIsNotNone(result.stdout_artifact)
+            assert result.stdout_artifact is not None
+            self.assertIn(
+                b"before-timeout",
+                (runtime_root / result.stdout_artifact.relative_path).read_bytes(),
+            )
+
+    def test_artifact_quota_is_structured_evidence_failure(self) -> None:
+        with tempfile.TemporaryDirectory() as directory:
+            root = Path(directory)
+            result = VerificationRunner(
+                root,
+                runtime_root=root / "runtime",
+                artifact_quota_bytes=8,
+            ).run(
+                VerificationSpec(
+                    name="quota",
+                    argv=(sys.executable, "-c", "print('output larger than quota')"),
+                )
+            )
+
+            self.assertEqual(result.status, VerificationCheckStatus.PASS)
+            self.assertEqual(
+                result.artifact_error_code,
+                ArtifactErrorCode.QUOTA_EXCEEDED.value,
+            )
+            self.assertIsNone(result.stdout_artifact)
+            self.assertIn("incomplete", result.message.lower())
+
+    def test_artifact_cleanup_failure_is_structured(self) -> None:
+        with tempfile.TemporaryDirectory() as directory:
+            store = ArtifactStore(Path(directory), max_bytes=1)
+            with patch(
+                "agent.artifacts.Path.unlink",
+                side_effect=OSError("cleanup failed"),
+            ):
+                result = store.put_bytes(
+                    kind="verification_stdout",
+                    data=b"too large",
+                    media_type="text/plain",
+                )
+
+            self.assertEqual(
+                result.error_code,
+                ArtifactErrorCode.CLEANUP_FAILED.value,
+            )
+
+    def test_artifact_publish_failure_is_structured(self) -> None:
+        with tempfile.TemporaryDirectory() as directory:
+            root = Path(directory)
+            with patch(
+                "agent.artifacts.os.replace",
+                side_effect=OSError("publish failed"),
+            ):
+                result = VerificationRunner(
+                    root, runtime_root=root / "runtime"
+                ).run(
+                    VerificationSpec(
+                        name="publish-failure",
+                        argv=(sys.executable, "-c", "print('ok')"),
+                    )
+                )
+
+            self.assertEqual(result.status, VerificationCheckStatus.PASS)
+            self.assertEqual(
+                result.artifact_error_code,
+                ArtifactErrorCode.PUBLISH_FAILED.value,
+            )
+            self.assertIsNone(result.stdout_artifact)
 
     def test_reports_timeout_without_treating_it_as_test_failure(self) -> None:
         with tempfile.TemporaryDirectory() as directory:

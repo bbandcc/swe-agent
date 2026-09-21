@@ -66,6 +66,36 @@ from agent.verification import (
 
 
 class KnownSecretFilterTests(unittest.TestCase):
+    def test_stream_redacts_secret_split_across_chunks(self) -> None:
+        secret_filter = KnownSecretFilter(("CANARY-123",))
+        stream = secret_filter.stream()
+
+        output = b"".join(
+            (
+                stream.feed(b"prefix CANARY-"),
+                stream.feed(b"123 suffix"),
+                stream.finish(),
+            )
+        )
+
+        self.assertEqual(
+            output,
+            f"prefix {REDACTION_MARKER} suffix".encode("utf-8"),
+        )
+        self.assertTrue(stream.redacted)
+        self.assertNotIn(b"CANARY-123", output)
+
+    def test_stream_redacts_when_first_chunk_is_only_secret_prefix(self) -> None:
+        secret_filter = KnownSecretFilter(("SECRET",))
+        stream = secret_filter.stream()
+
+        output = b"".join(
+            (stream.feed(b"SE"), stream.feed(b"CRET"), stream.finish())
+        )
+
+        self.assertEqual(output, REDACTION_MARKER.encode("utf-8"))
+        self.assertTrue(stream.redacted)
+
     def test_diagnostic_message_is_redacted_without_code_rejection(self) -> None:
         secret_filter = KnownSecretFilter(("CANARY-123",))
 
