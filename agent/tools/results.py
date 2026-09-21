@@ -36,3 +36,13 @@ def tool_error(path: str, error_code: str, message: str) -> dict[str, object]:
         "error_code": error_code,
         "message": message,
     }
+
+
+def tool_access_denied(error_code: str, message: str) -> dict[str, object]:
+    """Return a policy denial without echoing the protected path."""
+    return {
+        "ok": False,
+        "path": None,
+        "error_code": error_code,
+        "message": message,
+    }

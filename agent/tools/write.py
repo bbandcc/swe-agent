@@ -6,8 +6,17 @@ from pathlib import Path
 from langchain_core.tools import tool
 
 from agent.editing import EditOperation, EditProposal, EditStatus, WorkspaceEditor
-from agent.tools.results import tool_error, tool_rejection, tool_success
-from agent.workspace import default_workspace_resolver
+from agent.tools.results import (
+    tool_access_denied,
+    tool_error,
+    tool_rejection,
+    tool_success,
+)
+from agent.workspace import (
+    WorkspaceAccessPolicy,
+    current_workspace_access_policy,
+    default_workspace_resolver,
+)
 
 
 def _is_link_or_junction(path: Path) -> bool:
@@ -16,7 +25,13 @@ def _is_link_or_junction(path: Path) -> bool:
     )
 
 
-def _safe_tree(directory: Path, display_root: str) -> str:
+def _safe_tree(
+    directory: Path,
+    display_root: str,
+    *,
+    workspace_root: Path,
+    access_policy: WorkspaceAccessPolicy | None,
+) -> str:
     lines = [display_root]
     for root, directories, files in os.walk(directory, followlinks=False):
         root_path = Path(root)
@@ -24,11 +39,17 @@ def _safe_tree(directory: Path, display_root: str) -> str:
             name
             for name in directories
             if not _is_link_or_junction(root_path / name)
+            and not _is_protected(
+                root_path / name, workspace_root, access_policy
+            )
         )
         files = sorted(
             name
             for name in files
             if not _is_link_or_junction(root_path / name)
+            and not _is_protected(
+                root_path / name, workspace_root, access_policy
+            )
         )
         relative = root_path.relative_to(directory)
         depth = len(relative.parts)
@@ -36,6 +57,20 @@ def _safe_tree(directory: Path, display_root: str) -> str:
             lines.append(f"{'  ' * depth}{relative.name}/")
         lines.extend(f"{'  ' * (depth + 1)}{name}" for name in files)
     return "\n".join(lines)
+
+
+def _is_protected(
+    path: Path,
+    workspace_root: Path,
+    access_policy: WorkspaceAccessPolicy | None,
+) -> bool:
+    if access_policy is None:
+        return False
+    try:
+        relative = path.relative_to(workspace_root).as_posix()
+    except ValueError:
+        return True
+    return access_policy.is_protected(relative)
 
 
 @tool(parse_docstring=True)
@@ -50,7 +85,10 @@ def create_file(path: str, content: str) -> dict[str, object]:
     root = resolver.resolve_directory(".")
     if not root.ok or root.path is None:
         return tool_rejection(root)
-    result = WorkspaceEditor(root.path).apply(
+    result = WorkspaceEditor(
+        root.path,
+        access_policy=current_workspace_access_policy(),
+    ).apply(
         EditProposal(
             task_id="tool.create_file",
             path=path,
@@ -92,7 +130,24 @@ def get_files_structure(directory: str = ".") -> dict[str, object]:
     resolution = default_workspace_resolver().resolve_directory(directory)
     if not resolution.ok or resolution.path is None:
         return tool_rejection(resolution)
-    content = _safe_tree(resolution.path, resolution.relative_path or ".")
+    access_policy = current_workspace_access_policy()
+    relative = resolution.relative_path or directory
+    if access_policy is not None:
+        decision = access_policy.check_read(relative)
+        if not decision.allowed:
+            return tool_access_denied(
+                decision.error_code.value,
+                decision.message,
+            )
+    workspace_root = default_workspace_resolver().resolve_directory(".")
+    if not workspace_root.ok or workspace_root.path is None:
+        return tool_rejection(workspace_root)
+    content = _safe_tree(
+        resolution.path,
+        resolution.relative_path or ".",
+        workspace_root=workspace_root.path,
+        access_policy=access_policy,
+    )
     return tool_success(resolution.relative_path or ".", content)
 
 

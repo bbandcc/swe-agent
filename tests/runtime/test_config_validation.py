@@ -13,6 +13,7 @@ from agent.runtime import (
     TokenPricing,
     semantic_config_digest,
 )
+from agent.workspace import WorkspaceAccessPolicy
 from agent.verification import VerificationSpec
 from tests.runtime._config_support import (
     RunConfigTestCase,
@@ -22,6 +23,14 @@ from tests.runtime._config_support import (
 
 
 class RunConfigValidationTests(RunConfigTestCase):
+    def test_rejects_unsafe_access_policy_paths(self) -> None:
+        with tempfile.TemporaryDirectory() as directory:
+            root = Path(directory)
+            for path in ("../outside", "/absolute", "C:\\outside"):
+                with self.subTest(path=path):
+                    with self.assertRaises(ValueError):
+                        WorkspaceAccessPolicy(hidden_paths=(path,))
+
     def test_constructs_one_canonical_validated_config(self) -> None:
         with tempfile.TemporaryDirectory() as directory:
             root = Path(directory)

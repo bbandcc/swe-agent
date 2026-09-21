@@ -11,6 +11,9 @@ from collections.abc import Iterator
 _RUN_WORKSPACE_ROOT: ContextVar[Path | None] = ContextVar(
     "swe_agent_run_workspace_root", default=None
 )
+_RUN_ACCESS_POLICY: ContextVar[object | None] = ContextVar(
+    "swe_agent_run_access_policy", default=None
+)
 
 
 class WorkspacePathErrorCode(str, Enum):
@@ -277,11 +280,41 @@ def configured_workspace_root() -> Path:
     return Path(os.environ.get("SWE_AGENT_WORKSPACE", "./workspace_repo"))
 
 
+def current_workspace_access_policy():
+    """Return the trusted policy bound to the current graph invocation."""
+    policy = _RUN_ACCESS_POLICY.get()
+    if policy is not None:
+        return policy
+    # Keep the fixed .git/credential protection active for legacy, non-durable
+    # graph callers too.  Per-run configured paths are still supplied only by
+    # the trusted RunConfig/context scope.
+    from agent.workspace.policy import WorkspaceAccessPolicy
+
+    return WorkspaceAccessPolicy.default()
+
+
 @contextmanager
-def workspace_root_scope(root: str | Path) -> Iterator[None]:
-    """Bind default tools to one explicit run workspace without global mutation."""
-    token = _RUN_WORKSPACE_ROOT.set(Path(root))
+def workspace_access_scope(policy) -> Iterator[None]:
+    """Bind one immutable access policy without mutating process globals."""
+    token = _RUN_ACCESS_POLICY.set(policy)
     try:
         yield
     finally:
-        _RUN_WORKSPACE_ROOT.reset(token)
+        _RUN_ACCESS_POLICY.reset(token)
+
+
+@contextmanager
+def workspace_root_scope(root: str | Path, *, access_policy=None) -> Iterator[None]:
+    """Bind default tools to one explicit run workspace without global mutation."""
+    root_token = _RUN_WORKSPACE_ROOT.set(Path(root))
+    policy_token = (
+        _RUN_ACCESS_POLICY.set(access_policy)
+        if access_policy is not None
+        else None
+    )
+    try:
+        yield
+    finally:
+        if policy_token is not None:
+            _RUN_ACCESS_POLICY.reset(policy_token)
+        _RUN_WORKSPACE_ROOT.reset(root_token)

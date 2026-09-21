@@ -18,8 +18,10 @@ from agent.editing.staging import stage_transaction
 from agent.editing.text import make_diff, sha256
 from agent.workspace import (
     PathResolution,
+    WorkspaceAccessPolicy,
     WorkspacePathErrorCode,
     WorkspacePathResolver,
+    current_workspace_access_policy,
 )
 from agent.runtime.secrets import KnownSecretFilter, SENSITIVE_DATA_MESSAGE
 
@@ -32,9 +34,11 @@ class WorkspaceEditor:
         root: str | Path,
         *,
         secret_filter: KnownSecretFilter | None = None,
+        access_policy: WorkspaceAccessPolicy | None = None,
     ) -> None:
         self._resolver = WorkspacePathResolver(root)
         self._secret_filter = secret_filter
+        self._access_policy = access_policy
 
     def snapshot(self, path: str) -> WorkspaceSnapshot:
         """Read one UTF-8 file through the same boundary used for writes."""
@@ -51,6 +55,14 @@ class WorkspaceEditor:
         target = resolution.path
         assert target is not None
         relative_path = resolution.relative_path or path
+        denied = self._access_denied(relative_path, write=False)
+        if denied is not None:
+            return WorkspaceSnapshot(
+                path=relative_path,
+                exists=False,
+                error_code=denied.error_code,
+                message=denied.message,
+            )
         if not target.exists():
             return WorkspaceSnapshot(path=relative_path, exists=False)
         try:
@@ -97,6 +109,9 @@ class WorkspaceEditor:
         target = resolution.path
         assert target is not None
         relative_path = resolution.relative_path or path
+        denied = self._access_denied(relative_path, write=True)
+        if denied is not None:
+            return TransactionResult(edit_result=denied)
         if not target.exists():
             return TransactionResult(
                 transaction=WorkspaceTransaction(
@@ -176,6 +191,9 @@ class WorkspaceEditor:
 
     def commit(self, transaction: WorkspaceTransaction) -> EditResult:
         """Recheck the baseline and replace or create the target exactly once."""
+        denied = self._access_denied(transaction.path, write=True)
+        if denied is not None:
+            return denied
         if self._has_sensitive_code(transaction.original_content) or self._has_sensitive_code(
             transaction.working_content
         ):
@@ -283,6 +301,37 @@ class WorkspaceEditor:
                 value, code_bearing=True
             ).code_bearing
         )
+
+    def _access_denied(self, path: str, *, write: bool) -> EditResult | None:
+        policy = self._access_policy or current_workspace_access_policy()
+        decision = (
+            policy.check_write(path)
+            if write
+            else policy.check_read(path)
+        )
+        if decision.allowed:
+            return None
+        code = (
+            EditErrorCode.WRITE_DENIED
+            if write
+            else EditErrorCode.READ_DENIED
+        )
+        return EditResult(
+            status=EditStatus.REJECTED,
+            path=path,
+            error_code=code,
+            message=decision.message,
+        )
+
+    def check_write(self, path: str) -> EditResult | None:
+        """Authorize a plan target without reading or creating the file."""
+        resolution = self._resolver.resolve_file(
+            path, must_exist=False, allow_absolute=False
+        )
+        if not resolution.ok:
+            return _rejected_from_resolution(path, resolution)
+        relative_path = resolution.relative_path or path
+        return self._access_denied(relative_path, write=True)
 
     def apply(self, proposal: EditProposal) -> EditResult:
         """Convenience interface for a one-proposal file transaction."""

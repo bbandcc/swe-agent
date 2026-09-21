@@ -48,6 +48,21 @@ class DeveloperEditExecutor:
         """Return the canonical comparison key for one plan-controlled path."""
         return canonical_plan_path(plan_path)
 
+    def check_write(self, plan_path: str) -> EditResult | None:
+        """Authorize a plan target before Developer model work begins."""
+        relative_path = _workspace_relative_path(plan_path)
+        if relative_path is None:
+            return EditResult(
+                status=EditStatus.REJECTED,
+                path=plan_path,
+                error_code=EditErrorCode.PATH_INVALID,
+                message=(
+                    "The implementation plan path must stay inside "
+                    "workspace_repo."
+                ),
+            )
+        return self._editor.check_write(relative_path)
+
     def begin(self, plan_path: str) -> TransactionResult:
         relative_path = _workspace_relative_path(plan_path)
         if relative_path is None:

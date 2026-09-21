@@ -22,7 +22,12 @@ from agent.verification import (
 )
 from agent.verification.workflow import VerificationController
 from agent.verification.config import configured_verification_specs
-from agent.workspace import configured_workspace_root
+from agent.workspace import (
+    WorkspaceAccessPolicy,
+    configured_workspace_access_policy,
+    configured_workspace_root,
+    workspace_access_scope,
+)
 from agent.runtime.boundary import DurableBudgetState
 from agent.runtime.identity import RunIdentity
 from agent.runtime.revision import AgentCodeRevision
@@ -89,6 +94,7 @@ def create_workflow_graph(
     clock: Callable[[], float] = time.time,
     secret_filter: KnownSecretFilter | None = None,
     event_recorder: EventRecorder | None = None,
+    access_policy: WorkspaceAccessPolicy | None = None,
 ):
     """Create the parent workflow with injectable compiled child graphs."""
     verification = VerificationController(
@@ -140,11 +146,19 @@ def create_workflow_graph(
     ):
         wrapped = secret_filter.wrap_node(node) if secret_filter is not None else node
         if event_recorder is not None and event_type is not None:
-            return event_recorder.wrap_node(
+            wrapped = event_recorder.wrap_node(
                 wrapped,
                 event_type=event_type,
                 node_name=node_name or event_type,
             )
+        if access_policy is not None:
+            original = wrapped
+
+            def policy_wrapped(*args, **kwargs):
+                with workspace_access_scope(access_policy):
+                    return original(*args, **kwargs)
+
+            wrapped = policy_wrapped
         return wrapped
 
     graph_builder = StateGraph(AgentState)
@@ -225,13 +239,20 @@ def create_production_workflow_graph(
     architect: Any = None,
     developer: Any = None,
     verification_runner: VerificationRunner | None = None,
+    access_policy: WorkspaceAccessPolicy | None = None,
 ):
     """Build the production graph from trusted external verification config."""
+    trusted_policy = (
+        configured_workspace_access_policy()
+        if access_policy is None
+        else access_policy
+    )
     return create_workflow_graph(
         architect=architect,
         developer=developer,
         verification_specs=configured_verification_specs(),
         verification_runner=verification_runner,
+        access_policy=trusted_policy,
     )
 
 

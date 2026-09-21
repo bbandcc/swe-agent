@@ -14,6 +14,7 @@ from agent.developer.graph import DeveloperRuntime, create_developer_workflow
 from agent.developer.state import DeveloperErrorCode, DeveloperStatus
 from agent.editing import EditErrorCode, EditStatus, WorkspaceEditor
 from agent.developer.editing import DeveloperEditExecutor
+from agent.workspace import WorkspaceAccessPolicy
 
 
 def search_replace_block(old_text: str, new_text: str) -> str:
@@ -38,6 +39,30 @@ def implementation_plan(path: str = "./workspace_repo/app.py") -> Implementation
 
 
 class DeveloperWorkflowTests(unittest.TestCase):
+    def test_protected_plan_target_is_rejected_before_model_work(self) -> None:
+        with tempfile.TemporaryDirectory() as directory:
+            root = Path(directory)
+            executor = DeveloperEditExecutor(
+                WorkspaceEditor(root, access_policy=WorkspaceAccessPolicy())
+            )
+            runtime = DeveloperRuntime(
+                edit_executor=lambda: executor,
+                load_codebase_structure=lambda: self.fail("workspace was scanned"),
+                research_atomic_task=lambda _: self.fail("research was called"),
+                propose_existing_file_edit=lambda _: self.fail("edit was called"),
+                propose_new_file=lambda _: self.fail("create was called"),
+            )
+            result = create_developer_workflow(
+                runtime, research_tools=[]
+            ).invoke({"implementation_plan": implementation_plan(".git/config")})
+
+            self.assertEqual(result["developer_status"], DeveloperStatus.FAILED)
+            self.assertEqual(
+                result["last_edit_result"].error_code,
+                EditErrorCode.WRITE_DENIED,
+            )
+            self.assertEqual(result["current_task_idx"], 0)
+
     def test_advances_only_after_edit_is_applied(self) -> None:
         with tempfile.TemporaryDirectory() as directory:
             root = Path(directory)

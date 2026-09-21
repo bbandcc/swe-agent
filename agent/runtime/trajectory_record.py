@@ -44,14 +44,17 @@ class RunRecord:
     last_event_sequence: int | None
     audit_status: AuditStatus
     agent_revision: Mapping[str, Any]
-    workspace_revision_start: str = "UNKNOWN"
-    workspace_revision_end: str = "UNKNOWN"
+    workspace_revision_start: Mapping[str, Any] | str = "UNKNOWN"
+    workspace_revision_end: Mapping[str, Any] | str = "UNKNOWN"
     audit_error_code: str | None = None
     record_ref: str | None = None
 
     def __post_init__(self) -> None:
-        if self.schema_version != RECORD_SCHEMA_VERSION:
+        if self.schema_version not in {1, RECORD_SCHEMA_VERSION}:
             raise ValueError("Unsupported run record schema version.")
+        # Accept records constructed by the pre-revision public seam, but
+        # publish the current schema whenever they are written.
+        object.__setattr__(self, "schema_version", RECORD_SCHEMA_VERSION)
         for name in (
             "run_id",
             "thread_id",
@@ -90,7 +93,13 @@ class RunRecord:
         if not isinstance(self.agent_revision, Mapping):
             raise ValueError("agent_revision must be a mapping.")
         for name in ("workspace_revision_start", "workspace_revision_end"):
-            _require_text(getattr(self, name), name)
+            value = getattr(self, name)
+            if isinstance(value, str):
+                _require_text(value, name)
+            elif isinstance(value, Mapping):
+                object.__setattr__(self, name, _bounded_json_value(value))
+            else:
+                raise ValueError(f"{name} must be a mapping or UNKNOWN string.")
         if self.record_ref is not None:
             _require_text(self.record_ref, "record_ref")
         object.__setattr__(self, "budget", _bounded_json_value(self.budget))
@@ -189,8 +198,8 @@ class RunRecord:
             "audit_status": self.audit_status.value,
             "audit_error_code": self.audit_error_code,
             "agent_revision": _json_value(self.agent_revision),
-            "workspace_revision_start": self.workspace_revision_start,
-            "workspace_revision_end": self.workspace_revision_end,
+            "workspace_revision_start": _json_value(self.workspace_revision_start),
+            "workspace_revision_end": _json_value(self.workspace_revision_end),
             "record_ref": self.record_ref,
         }
 

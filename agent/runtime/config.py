@@ -19,9 +19,11 @@ from agent.verification import VerificationSpec
 from agent.verification.contracts import is_pytest_junitxml_producer
 from agent.verification.config import configured_verification_specs
 from agent.workspace import (
+    WorkspaceAccessPolicy,
     WorkspaceRootError,
     canonical_path_key,
     canonicalize_root_path,
+    parse_configured_paths,
 )
 
 DEFAULT_RUNTIME_ROOT = "./.swe-agent-runtime"
@@ -108,6 +110,9 @@ class RunConfig:
     pricing: TokenPricing | None = None
     model_request_timeout_seconds: float = DEFAULT_MODEL_REQUEST_TIMEOUT_SECONDS
     model_retry_policy: ModelRetryPolicy = field(default_factory=ModelRetryPolicy)
+    access_policy: WorkspaceAccessPolicy = field(
+        default_factory=WorkspaceAccessPolicy.default
+    )
 
     def __post_init__(self) -> None:
         workspace = _validated_root(self.workspace_root, must_exist=True)
@@ -142,6 +147,11 @@ class RunConfig:
             raise RunConfigError(
                 RunConfigErrorCode.INVALID_VALUE,
                 "model_retry_policy must be ModelRetryPolicy.",
+            )
+        if not isinstance(self.access_policy, WorkspaceAccessPolicy):
+            raise RunConfigError(
+                RunConfigErrorCode.INVALID_VALUE,
+                "access_policy must be WorkspaceAccessPolicy.",
             )
 
         try:
@@ -226,6 +236,16 @@ def load_run_config(environ: Mapping[str, str]) -> RunConfig:
             "SWE_AGENT_MAX_COST_USD",
         )
         pricing = _load_pricing(environ)
+        access_policy = WorkspaceAccessPolicy(
+            hidden_paths=parse_configured_paths(
+                environ.get("SWE_AGENT_HIDDEN_PATHS", ""),
+                "SWE_AGENT_HIDDEN_PATHS",
+            ),
+            oracle_paths=parse_configured_paths(
+                environ.get("SWE_AGENT_ORACLE_PATHS", ""),
+                "SWE_AGENT_ORACLE_PATHS",
+            ),
+        )
     except RunConfigError:
         raise
     except (TypeError, ValueError) as error:
@@ -250,6 +270,7 @@ def load_run_config(environ: Mapping[str, str]) -> RunConfig:
         pricing=pricing,
         model_request_timeout_seconds=model_request_timeout,
         model_retry_policy=ModelRetryPolicy(max_attempts=model_max_attempts),
+        access_policy=access_policy,
     )
 
 

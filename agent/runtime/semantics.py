@@ -9,13 +9,11 @@ from typing import Any
 
 from agent.runtime.config import RunConfig
 
-# Version 3 records the S3.3c verification-summary/artifact checkpoint
-# semantics in addition to the model request timeout and single-attempt retry
-# policy.  A v2 checkpoint may contain the old VerificationResult shape, so it
-# must fail closed at resume preflight instead of being treated as complete
-# evidence. Future semantic field or encoding changes must increment this
-# version again.
-SEMANTIC_CONFIG_SCHEMA_VERSION = 3
+# Version 4 binds the trusted workspace read/write policy to checkpoint
+# identity.  A checkpoint from an earlier policy/schema cannot be resumed
+# under a potentially different authorization boundary. Future semantic field
+# or encoding changes must increment this version again.
+SEMANTIC_CONFIG_SCHEMA_VERSION = 4
 
 
 def semantic_config_digest(config: RunConfig) -> str:
@@ -77,6 +75,7 @@ def _semantic_config_payload(config: RunConfig) -> dict[str, Any]:
             ),
         },
         "pricing": pricing,
+        "workspace_access_policy": config.access_policy.to_digest_dict(),
     }
 
 

@@ -11,6 +11,7 @@ from agent.runtime.config import (
     TokenPricing,
     load_run_config,
 )
+from agent.workspace import WorkspaceAccessErrorCode, WorkspaceAccessPolicy
 from agent.runtime.semantics import semantic_config_digest
 from agent.runtime.identity import (
     CheckpointLookup,
@@ -32,6 +33,10 @@ from agent.runtime.revision import (
     AgentRevisionReason,
     AgentRevisionStatus,
     detect_agent_code_revision,
+    WorkspaceRevision,
+    WorkspaceRevisionReason,
+    WorkspaceRevisionStatus,
+    detect_workspace_revision,
 )
 from agent.runtime.budget import (
     BudgetController,
@@ -115,6 +120,8 @@ __all__ = [
     "RunConfigErrorCode",
     "TokenPricing",
     "load_run_config",
+    "WorkspaceAccessPolicy",
+    "WorkspaceAccessErrorCode",
     "semantic_config_digest",
     "AgentCodeRevision",
     "AgentRevisionReason",
@@ -131,6 +138,10 @@ __all__ = [
     "StartRequest",
     "WorkspaceIdentity",
     "detect_agent_code_revision",
+    "WorkspaceRevision",
+    "WorkspaceRevisionReason",
+    "WorkspaceRevisionStatus",
+    "detect_workspace_revision",
     "preflight_resume",
     "preflight_start",
     "BudgetController",

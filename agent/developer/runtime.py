@@ -15,6 +15,7 @@ from agent.tools.codemap import codemap_tools
 from agent.tools.search import search_tools
 from agent.tools.write import get_files_structure
 from agent.workspace import configured_workspace_root
+from agent.workspace import WorkspaceAccessPolicy
 from helpers.prompts import markdown_to_prompt_template
 from agent.runtime.calls import (
     ModelCallResult,
@@ -97,6 +98,7 @@ def durable_developer_runtime(
     model_request_timeout_seconds: float = DEFAULT_MODEL_REQUEST_TIMEOUT_SECONDS,
     model_retry_policy: ModelRetryPolicy | None = None,
     secret_filter: KnownSecretFilter | None = None,
+    access_policy: WorkspaceAccessPolicy | None = None,
 ) -> DeveloperRuntime:
     """Build explicit Developer calls with raw usage accounting."""
     research_prompt = markdown_to_prompt_template(
@@ -153,7 +155,11 @@ def durable_developer_runtime(
 
     return DeveloperRuntime(
         edit_executor=lambda: DeveloperEditExecutor(
-            WorkspaceEditor(workspace_root, secret_filter=secret_filter)
+            WorkspaceEditor(
+                workspace_root,
+                secret_filter=secret_filter,
+                access_policy=access_policy,
+            )
         ),
         load_codebase_structure=_load_codebase_structure,
         research_atomic_task=lambda values: invoke_message(

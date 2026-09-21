@@ -38,7 +38,11 @@ from agent.runtime.identity import (
     preflight_resume,
     preflight_start,
 )
-from agent.runtime.revision import AgentCodeRevision
+from agent.runtime.revision import (
+    AgentCodeRevision,
+    WorkspaceRevision,
+    detect_workspace_revision,
+)
 from agent.runtime.semantics import semantic_config_digest
 from agent.runtime.secrets import KnownSecretFilter, SENSITIVE_DATA_MESSAGE
 from agent.runtime.trajectory import (
@@ -48,6 +52,7 @@ from agent.runtime.trajectory import (
     EventSink,
     EventSinkError,
     JsonlEventSink,
+    RECORD_SCHEMA_VERSION,
     RunRecord,
     RunEvent,
     write_run_record,
@@ -403,6 +408,7 @@ def _run(
             message="The workspace is already admitted by another process.",
             run_id=request.identity.run_id,
         )
+    workspace_revision_start = detect_workspace_revision(config.workspace_root)
     try:
         audit_sink = (
             event_sink
@@ -498,6 +504,7 @@ def _run(
                     started_at=started_at,
                     finished_at=observed_clock.latest_or(started_at),
                     secret_filter=secret_filter,
+                    workspace_revision_start=workspace_revision_start,
                 )
 
             recorder = EventRecorder(
@@ -549,6 +556,7 @@ def _run(
                         started_at=started_at,
                         finished_at=observed_clock.latest_or(started_at),
                         secret_filter=secret_filter,
+                        workspace_revision_start=workspace_revision_start,
                     )
                 graph_input = None
             else:
@@ -574,6 +582,7 @@ def _run(
                         started_at=started_at,
                         finished_at=observed_clock.latest_or(started_at),
                         secret_filter=secret_filter,
+                        workspace_revision_start=workspace_revision_start,
                     )
                 graph_input = {
                     **safe_initial,
@@ -586,7 +595,10 @@ def _run(
                         deadline_at=started_at + config.timeout_seconds,
                     ),
                 }
-            with workspace_root_scope(config.workspace_root):
+            with workspace_root_scope(
+                config.workspace_root,
+                access_policy=config.access_policy,
+            ):
                 result = graph.invoke(
                     graph_input,
                     thread_config,
@@ -622,6 +634,7 @@ def _run(
                     started_at=started_at,
                     finished_at=observed_clock.latest_or(started_at),
                     secret_filter=secret_filter,
+                    workspace_revision_start=workspace_revision_start,
                 )
             status = (
                 DurableRunStatus.PAUSED
@@ -642,6 +655,7 @@ def _run(
                 started_at=started_at,
                 finished_at=observed_clock.latest_or(started_at),
                 secret_filter=secret_filter,
+                workspace_revision_start=workspace_revision_start,
             )
         except AuditIncompleteError as error:
             safe_code, safe_message = _safe_audit_parts(
@@ -740,6 +754,7 @@ def create_durable_workflow(
         budget_boundary=boundary,
         secret_filter=secret_filter,
         event_recorder=event_recorder,
+        access_policy=config.access_policy,
     )
     developer = create_developer_workflow(
         durable_developer_runtime(
@@ -750,6 +765,7 @@ def create_durable_workflow(
             model_request_timeout_seconds=config.model_request_timeout_seconds,
             model_retry_policy=config.model_retry_policy,
             secret_filter=secret_filter,
+            access_policy=config.access_policy,
         ),
         budget_boundary=boundary,
         secret_filter=secret_filter,
@@ -770,6 +786,7 @@ def create_durable_workflow(
         clock=clock,
         secret_filter=secret_filter,
         event_recorder=event_recorder,
+        access_policy=config.access_policy,
     ).compile(checkpointer=saver).with_config({"tags": ["agent-durable-v1"]})
 
 
@@ -782,6 +799,7 @@ def _finish_audit(
     started_at: float,
     finished_at: float,
     secret_filter: KnownSecretFilter,
+    workspace_revision_start: WorkspaceRevision | None = None,
 ) -> DurableRunResult:
     """Append terminal audit facts and publish the small run record."""
     try:
@@ -830,8 +848,11 @@ def _finish_audit(
                 message=append.message,
                 secret_filter=secret_filter,
             )
+        workspace_revision_end = detect_workspace_revision(
+            config.workspace_root
+        )
         record = RunRecord(
-            schema_version=1,
+            schema_version=RECORD_SCHEMA_VERSION,
             run_id=request.identity.run_id,
             thread_id=request.identity.thread_id,
             task_id=request.identity.task_id,
@@ -848,8 +869,12 @@ def _finish_audit(
             last_event_sequence=getattr(sink, "last_sequence", append.sequence),
             audit_status=AuditStatus.COMPLETE,
             agent_revision=_revision_record(request.agent_revision),
-            workspace_revision_start="UNKNOWN",
-            workspace_revision_end="UNKNOWN",
+            workspace_revision_start=_workspace_revision_record(
+                workspace_revision_start
+            ),
+            workspace_revision_end=_workspace_revision_record(
+                workspace_revision_end
+            ),
         )
         written = write_run_record(
             config.runtime_root,
@@ -950,6 +975,12 @@ def _revision_record(revision: AgentCodeRevision) -> dict[str, Any]:
         "status": revision.status.value,
         "reason": revision.reason.value if revision.reason else None,
     }
+
+
+def _workspace_revision_record(
+    revision: WorkspaceRevision | None,
+) -> dict[str, Any] | str:
+    return revision.to_dict() if revision is not None else "UNKNOWN"
 
 
 def _enum_value(value: object) -> object:

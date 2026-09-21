@@ -10,7 +10,16 @@ from agent.workspace.paths import (
     canonicalize_root_path,
     configured_workspace_root,
     default_workspace_resolver,
+    current_workspace_access_policy,
+    workspace_access_scope,
     workspace_root_scope,
+)
+from agent.workspace.policy import (
+    AccessDecision,
+    WorkspaceAccessErrorCode,
+    WorkspaceAccessPolicy,
+    configured_workspace_access_policy,
+    parse_configured_paths,
 )
 
 __all__ = [
@@ -23,5 +32,12 @@ __all__ = [
     "canonicalize_root_path",
     "configured_workspace_root",
     "default_workspace_resolver",
+    "current_workspace_access_policy",
+    "workspace_access_scope",
     "workspace_root_scope",
+    "AccessDecision",
+    "WorkspaceAccessErrorCode",
+    "WorkspaceAccessPolicy",
+    "configured_workspace_access_policy",
+    "parse_configured_paths",
 ]

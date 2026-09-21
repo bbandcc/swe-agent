@@ -5,8 +5,13 @@ from pathlib import Path
 from langchain_core.tools import tool
 from tree_sitter_languages import get_language, get_parser
 
-from agent.tools.results import tool_error, tool_rejection, tool_success
-from agent.workspace import default_workspace_resolver
+from agent.tools.results import (
+    tool_access_denied,
+    tool_error,
+    tool_rejection,
+    tool_success,
+)
+from agent.workspace import current_workspace_access_policy, default_workspace_resolver
 
 _LANGUAGE_BY_SUFFIX = {
     ".py": "python",
@@ -151,6 +156,16 @@ def _resolve_file(file_path: str):
     return default_workspace_resolver().resolve_file(file_path)
 
 
+def _read_denial(resolution):
+    policy = current_workspace_access_policy()
+    if policy is None or not resolution.ok:
+        return None
+    decision = policy.check_read(resolution.relative_path or resolution.requested_path)
+    if decision.allowed:
+        return None
+    return tool_access_denied(decision.error_code.value, decision.message)
+
+
 @tool(parse_docstring=True)
 def get_code_definitions(file_path: str) -> dict[str, object]:
     """Extract function and class signatures from one source file.
@@ -161,6 +176,9 @@ def get_code_definitions(file_path: str) -> dict[str, object]:
     resolution = _resolve_file(file_path)
     if not resolution.ok or resolution.path is None:
         return tool_rejection(resolution)
+    denied = _read_denial(resolution)
+    if denied is not None:
+        return denied
     try:
         content = _definitions(
             resolution.path, resolution.relative_path or file_path
@@ -187,6 +205,9 @@ def get_function_implementation(
     resolution = _resolve_file(file_path)
     if not resolution.ok or resolution.path is None:
         return tool_rejection(resolution)
+    denied = _read_denial(resolution)
+    if denied is not None:
+        return denied
     try:
         content = _function_implementation(
             resolution.path,
@@ -219,6 +240,9 @@ def get_code_definitions_multi(file_paths: list[str]) -> dict[str, object]:
     for resolution in resolutions:
         if not resolution.ok:
             return tool_rejection(resolution)
+        denied = _read_denial(resolution)
+        if denied is not None:
+            return denied
     contents: list[str] = []
     for resolution in resolutions:
         assert resolution.path is not None
@@ -258,6 +282,9 @@ def get_raw_file_content(file_path: str) -> dict[str, object]:
     resolution = _resolve_file(file_path)
     if not resolution.ok or resolution.path is None:
         return tool_rejection(resolution)
+    denied = _read_denial(resolution)
+    if denied is not None:
+        return denied
     try:
         content = resolution.path.read_text(encoding="utf-8")
     except UnicodeDecodeError:

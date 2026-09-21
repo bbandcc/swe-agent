@@ -21,6 +21,7 @@ from agent.runtime import BudgetSnapshot, DurableBudgetBoundary, DurableCallResu
 from agent.runtime.budget import BudgetErrorCode
 from agent.runtime.secrets import KnownSecretFilter
 from agent.runtime.trajectory import EventRecorder
+from agent.workspace import WorkspaceAccessPolicy, workspace_access_scope
 
 
 class SoftwareArchitectInput(TypedDict):
@@ -93,6 +94,7 @@ def create_architect_workflow(
     budget_boundary: DurableBudgetBoundary | None = None,
     secret_filter: KnownSecretFilter | None = None,
     event_recorder: EventRecorder | None = None,
+    access_policy: WorkspaceAccessPolicy | None = None,
 ):
     runtime = runtime or default_architect_runtime()
     tools = list(
@@ -293,6 +295,14 @@ def create_architect_workflow(
         node_name: str | None = None,
     ):
         wrapped = secret_filter.wrap_node(node) if secret_filter is not None else node
+        if access_policy is not None:
+            original = wrapped
+
+            def policy_wrapped(*args, **kwargs):
+                with workspace_access_scope(access_policy):
+                    return original(*args, **kwargs)
+
+            wrapped = policy_wrapped
         if event_recorder is not None and event_type is not None:
             return event_recorder.wrap_node(
                 wrapped,

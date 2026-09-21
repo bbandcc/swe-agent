@@ -13,7 +13,8 @@ from pathlib import Path
 from typing import Any, Protocol
 
 EVENT_SCHEMA_VERSION = 1
-RECORD_SCHEMA_VERSION = 1
+# Version 2 records structured workspace revision evidence at run start/end.
+RECORD_SCHEMA_VERSION = 2
 EVENTS_FILENAME = "events.jsonl"
 RECORDS_DIRECTORY = "records"
 _MAX_SUMMARY_TEXT = 512

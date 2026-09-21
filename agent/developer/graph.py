@@ -34,6 +34,7 @@ from agent.tools.search import search_tools
 from agent.runtime import DurableBudgetBoundary
 from agent.runtime.secrets import KnownSecretFilter
 from agent.runtime.trajectory import EventRecorder
+from agent.workspace import WorkspaceAccessPolicy, workspace_access_scope
 
 
 def create_developer_workflow(
@@ -43,6 +44,7 @@ def create_developer_workflow(
     budget_boundary: DurableBudgetBoundary | None = None,
     secret_filter: KnownSecretFilter | None = None,
     event_recorder: EventRecorder | None = None,
+    access_policy: WorkspaceAccessPolicy | None = None,
 ):
     runtime = runtime or default_developer_runtime()
     tools = list(
@@ -77,6 +79,15 @@ def create_developer_workflow(
                 "developer_error_code": DeveloperErrorCode.INVALID_PLAN,
                 "developer_message": duplicate_error,
             }
+        check_write = getattr(runtime.edit_executor(), "check_write", None)
+        if callable(check_write) and state.active_implementation_plan is not None:
+            for task in state.active_implementation_plan.tasks:
+                denied = check_write(task.file_path)
+                if denied is not None:
+                    return {
+                        **result,
+                        **failed_edit(denied),
+                    }
         return result
 
     def prepare_for_implementation(
@@ -351,6 +362,14 @@ def create_developer_workflow(
         node_name: str | None = None,
     ):
         wrapped = secret_filter.wrap_node(node) if secret_filter is not None else node
+        if access_policy is not None:
+            original = wrapped
+
+            def policy_wrapped(*args, **kwargs):
+                with workspace_access_scope(access_policy):
+                    return original(*args, **kwargs)
+
+            wrapped = policy_wrapped
         if event_recorder is not None and event_type is not None:
             return event_recorder.wrap_node(
                 wrapped,

@@ -57,6 +57,8 @@ class RunConfigLoadingTests(RunConfigTestCase):
                 "SWE_AGENT_RUN_TIMEOUT_SECONDS": "600",
                 "SWE_AGENT_MAX_STEPS": "30",
                 "SWE_AGENT_MAX_COST_USD": "1.25",
+                "SWE_AGENT_HIDDEN_PATHS": json.dumps(["private"]),
+                "SWE_AGENT_ORACLE_PATHS": json.dumps(["oracle/expected.txt"]),
                 "AGENT_MODEL_INPUT_COST_PER_MILLION_USD": "0.10",
                 "AGENT_MODEL_OUTPUT_COST_PER_MILLION_USD": "0.20",
                 "AGENT_MODEL_PRICING_SOURCE": "configured-test",
@@ -73,6 +75,10 @@ class RunConfigLoadingTests(RunConfigTestCase):
             self.assertEqual(config.max_steps, 30)
             self.assertEqual(config.max_cost_usd, Decimal("1.25"))
             self.assertEqual(config.pricing.source, "configured-test")
+            self.assertEqual(config.access_policy.hidden_paths, ("private",))
+            self.assertEqual(
+                config.access_policy.oracle_paths, ("oracle/expected.txt",)
+            )
 
     def test_rejects_partial_environment_pricing(self) -> None:
         with tempfile.TemporaryDirectory() as directory:

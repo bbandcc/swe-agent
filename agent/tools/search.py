@@ -7,8 +7,18 @@ from pathlib import Path
 
 from langchain_core.tools import tool
 
-from agent.tools.results import tool_error, tool_rejection, tool_success
-from agent.workspace import WorkspacePathResolver, default_workspace_resolver
+from agent.tools.results import (
+    tool_access_denied,
+    tool_error,
+    tool_rejection,
+    tool_success,
+)
+from agent.workspace import (
+    WorkspaceAccessPolicy,
+    WorkspacePathResolver,
+    current_workspace_access_policy,
+    default_workspace_resolver,
+)
 
 
 @dataclass(frozen=True, slots=True)
@@ -48,6 +58,9 @@ def _search_directory(
     directory: Path,
     search_term: str,
     context: int,
+    *,
+    workspace_root: Path,
+    access_policy: WorkspaceAccessPolicy | None,
 ) -> _DirectorySearchResult:
     output: list[str] = []
     warnings: list[str] = []
@@ -58,12 +71,17 @@ def _search_directory(
             name
             for name in directories
             if not _is_link_or_junction(root_path / name)
+            and not _is_protected(
+                root_path / name, workspace_root, access_policy
+            )
         ]
         for name in files:
             if not name.endswith(".py"):
                 continue
             file_path = root_path / name
             if _is_link_or_junction(file_path):
+                continue
+            if _is_protected(file_path, workspace_root, access_policy):
                 continue
             resolved_file = resolver.resolve_file(str(file_path))
             if not resolved_file.ok or resolved_file.path is None:
@@ -99,6 +117,20 @@ def _search_directory(
     )
 
 
+def _is_protected(
+    path: Path,
+    workspace_root: Path,
+    access_policy: WorkspaceAccessPolicy | None,
+) -> bool:
+    if access_policy is None:
+        return False
+    try:
+        relative = path.relative_to(workspace_root).as_posix()
+    except ValueError:
+        return True
+    return access_policy.is_protected(relative)
+
+
 @tool(parse_docstring=True)
 def search_keyword_in_directory(
     directory: str, search_term: str, context: int = 2
@@ -122,8 +154,25 @@ def search_keyword_in_directory(
     resolution = resolver.resolve_directory(directory)
     if not resolution.ok or resolution.path is None:
         return tool_rejection(resolution)
+    access_policy = current_workspace_access_policy()
+    relative = resolution.relative_path or directory
+    if access_policy is not None:
+        decision = access_policy.check_read(relative)
+        if not decision.allowed:
+            return tool_access_denied(
+                decision.error_code.value,
+                decision.message,
+            )
+    workspace_root = resolver.resolve_directory(".")
+    if not workspace_root.ok or workspace_root.path is None:
+        return tool_rejection(workspace_root)
     result = _search_directory(
-        resolver, resolution.path, search_term, context
+        resolver,
+        resolution.path,
+        search_term,
+        context,
+        workspace_root=workspace_root.path,
+        access_policy=access_policy,
     )
     return tool_success(
         resolution.relative_path or ".",
