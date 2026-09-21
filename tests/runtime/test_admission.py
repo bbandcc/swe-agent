@@ -207,16 +207,48 @@ class AdmissionLockTests(RunConfigTestCase):
             workspace = root / "workspace"
             workspace.mkdir()
             runtime = root / "runtime"
+            alternate_runtime = root / "alternate-runtime"
             first = WorkspaceAdmissionLock(runtime, self._identity(workspace, "thread-a"))
             second = WorkspaceAdmissionLock(runtime, self._identity(workspace, "thread-b"))
+            alternate = WorkspaceAdmissionLock(
+                alternate_runtime, self._identity(workspace, "thread-a")
+            )
 
             self.assertEqual(first.acquire(), AdmissionStatus.ACQUIRED)
             self.assertEqual(second.acquire(), AdmissionStatus.BUSY)
             self.assertNotIn("thread-a", first.lock_path.name)
             self.assertEqual(first.lock_path.parent, runtime / "locks")
+            self.assertNotEqual(first.workspace_lock_path, first.runtime_lock_path)
+            self.assertNotIn("thread-a", first.workspace_lock_path.name)
             self.assertEqual(len(first.key.workspace_key), 64)
+            self.assertEqual(len(first.key.runtime_thread_key), 64)
             self.assertEqual(len(first.key.stable_key), 64)
             self.assertNotEqual(first.key.stable_key, second.key.stable_key)
+            self.assertEqual(first.key.workspace_key, alternate.key.workspace_key)
+            self.assertNotEqual(
+                first.key.runtime_thread_key,
+                alternate.key.runtime_thread_key,
+            )
+            first.release()
+            self.assertEqual(second.acquire(), AdmissionStatus.ACQUIRED)
+            second.release()
+
+    def test_runtime_thread_scope_blocks_different_workspaces(self) -> None:
+        with tempfile.TemporaryDirectory() as directory:
+            root = Path(directory)
+            first_workspace = root / "workspace-a"
+            second_workspace = root / "workspace-b"
+            first_workspace.mkdir()
+            second_workspace.mkdir()
+            runtime = root / "runtime"
+            first = WorkspaceAdmissionLock(
+                runtime, self._identity(first_workspace, "same-thread")
+            )
+            second = WorkspaceAdmissionLock(
+                runtime, self._identity(second_workspace, "same-thread")
+            )
+            self.assertEqual(first.acquire(), AdmissionStatus.ACQUIRED)
+            self.assertEqual(second.acquire(), AdmissionStatus.BUSY)
             first.release()
             self.assertEqual(second.acquire(), AdmissionStatus.ACQUIRED)
             second.release()
@@ -241,12 +273,15 @@ class AdmissionLockTests(RunConfigTestCase):
             root = Path(directory)
             workspace = root / "workspace"
             workspace.mkdir()
-            runtime = root / "runtime"
+            runtime = root / "runtime-a"
+            alternate_runtime = root / "runtime-b"
 
             holder = self._spawn_lock(workspace, runtime, "holder", 0.1)
             self.assertEqual(holder.stdout.readline().strip(), "acquired")
             self._wait_process(holder)
-            next_process = self._spawn_lock(workspace, runtime, "next", 0.1)
+            next_process = self._spawn_lock(
+                workspace, alternate_runtime, "next", 0.1
+            )
             self.assertEqual(next_process.stdout.readline().strip(), "acquired")
             self._wait_process(next_process)
 
@@ -255,9 +290,18 @@ class AdmissionLockTests(RunConfigTestCase):
             crashed.terminate()
             crashed.wait(timeout=10)
             crashed.communicate(timeout=10)
-            recovered = self._spawn_lock(workspace, runtime, "recovered", 0.1)
-            self.assertEqual(recovered.stdout.readline().strip(), "acquired")
-            self._wait_process(recovered)
+            recovered_workspace = self._spawn_lock(
+                workspace, alternate_runtime, "recovered", 0.1
+            )
+            self.assertEqual(recovered_workspace.stdout.readline().strip(), "acquired")
+            self._wait_process(recovered_workspace)
+            other_workspace = root / "other-workspace"
+            other_workspace.mkdir()
+            recovered_runtime = self._spawn_lock(
+                other_workspace, runtime, "crashed", 0.1
+            )
+            self.assertEqual(recovered_runtime.stdout.readline().strip(), "acquired")
+            self._wait_process(recovered_runtime)
 
     def test_durable_busy_result_happens_before_graph_factory(self) -> None:
         with tempfile.TemporaryDirectory() as directory:
@@ -431,6 +475,115 @@ class AdmissionLockTests(RunConfigTestCase):
             self.assertEqual(second_result["factory"], 0)
             self.assertEqual(marker.read_text(encoding="utf-8"), "thread-a\n")
 
+    def test_real_subprocesses_same_workspace_different_runtime_are_exclusive(self) -> None:
+        with tempfile.TemporaryDirectory() as directory:
+            root = Path(directory)
+            workspace = root / "workspace"
+            workspace.mkdir()
+            runtime_a = root / "runtime-a"
+            runtime_b = root / "runtime-b"
+            marker = workspace / "side-effects.txt"
+            command = [
+                sys.executable,
+                "-c",
+                _DURABLE_PROCESS,
+                str(workspace),
+                str(runtime_a),
+                str(marker),
+            ]
+            first = subprocess.Popen(
+                [*command, "thread-a", "20.0"],
+                cwd=Path(__file__).resolve().parents[2],
+                stdout=subprocess.PIPE,
+                stderr=subprocess.PIPE,
+                text=True,
+            )
+            try:
+                self.assertEqual(first.stdout.readline().strip(), "factory")
+                second = subprocess.Popen(
+                    [
+                        sys.executable,
+                        "-c",
+                        _DURABLE_PROCESS,
+                        str(workspace),
+                        str(runtime_b),
+                        str(marker),
+                        "thread-b",
+                        "0.0",
+                    ],
+                    cwd=Path(__file__).resolve().parents[2],
+                    stdout=subprocess.PIPE,
+                    stderr=subprocess.PIPE,
+                    text=True,
+                )
+                second_result = self._read_json_output(second)
+                first_result = self._read_json_output(first)
+            finally:
+                if first.poll() is None:
+                    first.terminate()
+                    first.wait(timeout=10)
+
+            self.assertEqual(first_result["status"], "completed")
+            self.assertEqual(second_result["status"], "rejected")
+            self.assertEqual(second_result["error"], AdmissionErrorCode.BUSY.value)
+            self.assertEqual(second_result["factory"], 0)
+            self.assertEqual(marker.read_text(encoding="utf-8"), "thread-a\n")
+
+    def test_real_subprocesses_same_runtime_thread_block_different_workspaces(self) -> None:
+        with tempfile.TemporaryDirectory() as directory:
+            root = Path(directory)
+            first_workspace = root / "workspace-a"
+            second_workspace = root / "workspace-b"
+            first_workspace.mkdir()
+            second_workspace.mkdir()
+            runtime = root / "runtime"
+            first_marker = first_workspace / "side-effects.txt"
+            second_marker = second_workspace / "side-effects.txt"
+            command = [sys.executable, "-c", _DURABLE_PROCESS]
+            first = subprocess.Popen(
+                [
+                    *command,
+                    str(first_workspace),
+                    str(runtime),
+                    str(first_marker),
+                    "same-thread",
+                    "20.0",
+                ],
+                cwd=Path(__file__).resolve().parents[2],
+                stdout=subprocess.PIPE,
+                stderr=subprocess.PIPE,
+                text=True,
+            )
+            try:
+                self.assertEqual(first.stdout.readline().strip(), "factory")
+                second = subprocess.Popen(
+                    [
+                        *command,
+                        str(second_workspace),
+                        str(runtime),
+                        str(second_marker),
+                        "same-thread",
+                        "0.0",
+                    ],
+                    cwd=Path(__file__).resolve().parents[2],
+                    stdout=subprocess.PIPE,
+                    stderr=subprocess.PIPE,
+                    text=True,
+                )
+                second_result = self._read_json_output(second)
+                first_result = self._read_json_output(first)
+            finally:
+                if first.poll() is None:
+                    first.terminate()
+                    first.wait(timeout=10)
+
+            self.assertEqual(first_result["status"], "completed")
+            self.assertEqual(second_result["status"], "rejected")
+            self.assertEqual(second_result["error"], AdmissionErrorCode.BUSY.value)
+            self.assertEqual(second_result["factory"], 0)
+            self.assertEqual(first_marker.read_text(encoding="utf-8"), "same-thread\n")
+            self.assertFalse(second_marker.exists())
+
     @unittest.skipUnless(os.name == "nt", "Windows path case semantics")
     def test_windows_case_variant_has_same_workspace_key(self) -> None:
         with tempfile.TemporaryDirectory() as directory:
@@ -461,6 +614,46 @@ class AdmissionLockTests(RunConfigTestCase):
                 WorkspaceAdmissionLock(link, self._identity(workspace))
             self.assertEqual(context.exception.code, AdmissionErrorCode.INVALID)
             self.assertEqual(list(external.iterdir()), [])
+
+    def test_rejects_final_lock_file_symlink_without_touching_target(self) -> None:
+        with tempfile.TemporaryDirectory() as directory:
+            root = Path(directory)
+            workspace = root / "workspace"
+            workspace.mkdir()
+            runtime = root / "runtime"
+            external = root / "external.lock"
+            external.write_bytes(b"keep")
+            lock = WorkspaceAdmissionLock(runtime, self._identity(workspace))
+            lock.workspace_lock_path.parent.mkdir(parents=True, exist_ok=True)
+            try:
+                lock.workspace_lock_path.symlink_to(external)
+            except OSError as error:
+                self.skipTest(f"file symlinks are unavailable: {error}")
+            with self.assertRaises(AdmissionLockError) as context:
+                lock.acquire()
+            self.assertEqual(context.exception.code, AdmissionErrorCode.INVALID)
+            self.assertEqual(external.read_bytes(), b"keep")
+            self.assertFalse(lock.runtime_lock_path.exists())
+
+    def test_rejects_runtime_lock_file_symlink_without_touching_target(self) -> None:
+        with tempfile.TemporaryDirectory() as directory:
+            root = Path(directory)
+            workspace = root / "workspace"
+            workspace.mkdir()
+            runtime = root / "runtime"
+            external = root / "external.lock"
+            external.write_bytes(b"keep")
+            lock = WorkspaceAdmissionLock(runtime, self._identity(workspace))
+            lock.runtime_lock_path.parent.mkdir(parents=True, exist_ok=True)
+            try:
+                lock.runtime_lock_path.symlink_to(external)
+            except OSError as error:
+                self.skipTest(f"file symlinks are unavailable: {error}")
+            with self.assertRaises(AdmissionLockError) as context:
+                lock.acquire()
+            self.assertEqual(context.exception.code, AdmissionErrorCode.INVALID)
+            self.assertEqual(external.read_bytes(), b"keep")
+            self.assertFalse(lock.workspace_lock_path.exists())
 
     @unittest.skipUnless(os.name == "nt", "junctions are a Windows path type")
     def test_rejects_lock_directory_junction_without_writing_outside(self) -> None:
