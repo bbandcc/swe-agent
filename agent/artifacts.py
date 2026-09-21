@@ -11,6 +11,8 @@ from enum import Enum
 from pathlib import Path
 from typing import BinaryIO
 
+from agent.workspace import WorkspaceRootError, canonical_path_key, canonicalize_root_path
+
 ARTIFACT_SCHEMA_VERSION = 1
 ARTIFACTS_DIRECTORY = "artifacts"
 DEFAULT_ARTIFACT_QUOTA_BYTES = 64 * 1024 * 1024
@@ -125,7 +127,19 @@ class ArtifactStore:
     ) -> None:
         if isinstance(max_bytes, bool) or not isinstance(max_bytes, int) or max_bytes < 0:
             raise ValueError("Artifact quota must be a non-negative integer.")
-        self.runtime_root = Path(runtime_root)
+        try:
+            # Keep one canonical value for every later containment check.  An
+            # absent root is allowed and will be created on first write, while
+            # a root entry that is itself a link remains invalid.
+            self.runtime_root = canonicalize_root_path(
+                runtime_root,
+                must_exist=False,
+            )
+        except WorkspaceRootError as error:
+            raise ArtifactStoreError(
+                ArtifactErrorCode.INVALID,
+                "The artifact runtime root is invalid.",
+            ) from error
         self.max_bytes = max_bytes
 
     def open_stream(
@@ -147,14 +161,41 @@ class ArtifactStore:
                 ArtifactErrorCode.INVALID,
                 "Artifact quota must be a non-negative integer.",
             )
-        directory = self.runtime_root / ARTIFACTS_DIRECTORY
+        directory = self._artifacts_directory()
+        descriptor: int | None = None
+        temporary_path: Path | None = None
         try:
             directory.mkdir(parents=True, exist_ok=True)
+            self._assert_contained(directory, require_directory=True)
             descriptor, temporary = tempfile.mkstemp(
                 prefix=".verification-", suffix=".tmp", dir=directory
             )
+            temporary_path = Path(temporary)
+            self._assert_contained(temporary_path)
             handle = os.fdopen(descriptor, "wb")
+        except ArtifactStoreError:
+            if descriptor is not None:
+                try:
+                    os.close(descriptor)
+                except OSError:
+                    pass
+            if temporary_path is not None:
+                try:
+                    temporary_path.unlink(missing_ok=True)
+                except OSError:
+                    pass
+            raise
         except (OSError, ValueError) as error:
+            if descriptor is not None:
+                try:
+                    os.close(descriptor)
+                except OSError:
+                    pass
+            if temporary_path is not None:
+                try:
+                    temporary_path.unlink(missing_ok=True)
+                except OSError:
+                    pass
             raise ArtifactStoreError(
                 ArtifactErrorCode.OPEN_FAILED,
                 "Unable to open an artifact spool.",
@@ -164,9 +205,64 @@ class ArtifactStore:
             kind=kind,
             media_type=media_type,
             quota=quota,
-            temporary=Path(temporary),
+            temporary=temporary_path,
             handle=handle,
         )
+
+    def _artifacts_directory(self) -> Path:
+        """Create/check the owned directory without following a link entry."""
+        directory = self.runtime_root / ARTIFACTS_DIRECTORY
+        if _is_link_or_junction(directory):
+            raise ArtifactStoreError(
+                ArtifactErrorCode.INVALID,
+                "The artifact directory must not be a symlink or junction.",
+            )
+        self._assert_contained(self.runtime_root)
+        return directory
+
+    def _assert_contained(
+        self,
+        path: Path,
+        *,
+        require_directory: bool = False,
+    ) -> Path:
+        """Return a resolved path only when it stays under runtime_root."""
+        if _is_link_or_junction(self.runtime_root):
+            raise ArtifactStoreError(
+                ArtifactErrorCode.INVALID,
+                "The artifact runtime root must not be a symlink or junction.",
+            )
+        if _is_link_or_junction(path) and path != self.runtime_root:
+            raise ArtifactStoreError(
+                ArtifactErrorCode.INVALID,
+                "Artifact paths must not contain symlinks or junctions.",
+            )
+        try:
+            resolved_root = self.runtime_root.resolve(strict=False)
+            resolved = path.resolve(strict=False)
+        except (OSError, RuntimeError) as error:
+            raise ArtifactStoreError(
+                ArtifactErrorCode.INVALID,
+                "Artifact path could not be resolved safely.",
+            ) from error
+        if canonical_path_key(resolved_root) != canonical_path_key(self.runtime_root):
+            raise ArtifactStoreError(
+                ArtifactErrorCode.INVALID,
+                "The artifact runtime root changed to an unsafe path.",
+            )
+        try:
+            resolved.relative_to(resolved_root)
+        except ValueError as error:
+            raise ArtifactStoreError(
+                ArtifactErrorCode.INVALID,
+                "Artifact paths must stay inside runtime_root.",
+            ) from error
+        if require_directory and (not resolved.exists() or not resolved.is_dir()):
+            raise ArtifactStoreError(
+                ArtifactErrorCode.INVALID,
+                "The artifact directory is not a directory.",
+            )
+        return resolved
 
     def put_bytes(
         self,
@@ -245,11 +341,12 @@ class ArtifactWriter:
         digest = self._digest.hexdigest()
         target = self._store.runtime_root / ARTIFACTS_DIRECTORY / f"{digest}.artifact"
         try:
+            self._store._assert_contained(target)
             self._handle.flush()
             os.fsync(self._handle.fileno())
             self._handle.close()
             os.replace(self._temporary, target)
-        except (OSError, ValueError) as error:
+        except (ArtifactStoreError, OSError, ValueError) as error:
             self._result = self._failure(
                 ArtifactErrorCode.PUBLISH_FAILED,
                 f"Verification artifact publish failed: {error}",
@@ -302,6 +399,16 @@ def _validate_kind(kind: str) -> None:
             ArtifactErrorCode.INVALID,
             "Artifact kind must be a safe identifier.",
         )
+
+
+def _is_link_or_junction(path: Path) -> bool:
+    """Mirror the workspace link check for runtime-owned paths."""
+    try:
+        return path.is_symlink() or (
+            hasattr(path, "is_junction") and path.is_junction()
+        )
+    except OSError:
+        return True
 
 
 __all__ = [

@@ -1,6 +1,8 @@
 import io
 import hashlib
 import math
+import os
+import subprocess
 import sys
 import tempfile
 import time
@@ -210,6 +212,56 @@ class VerificationRunnerTests(unittest.TestCase):
                 result.error_code,
                 ArtifactErrorCode.CLEANUP_FAILED.value,
             )
+
+    def test_rejects_external_artifacts_symlink_without_writing_outside(self) -> None:
+        with tempfile.TemporaryDirectory() as directory:
+            root = Path(directory)
+            runtime = root / "runtime"
+            external = root / "external"
+            runtime.mkdir()
+            external.mkdir()
+            link = runtime / "artifacts"
+            try:
+                link.symlink_to(external, target_is_directory=True)
+            except OSError as error:
+                self.skipTest(f"directory symlinks are unavailable: {error}")
+
+            result = ArtifactStore(runtime).put_bytes(
+                kind="verification_stdout",
+                data=b"must stay inside",
+                media_type="text/plain",
+            )
+
+            self.assertEqual(result.error_code, ArtifactErrorCode.INVALID.value)
+            self.assertEqual(list(external.iterdir()), [])
+
+    @unittest.skipUnless(os.name == "nt", "junctions are a Windows path type")
+    def test_rejects_external_artifacts_junction_without_writing_outside(self) -> None:
+        with tempfile.TemporaryDirectory() as directory:
+            root = Path(directory)
+            runtime = root / "runtime"
+            external = root / "external"
+            runtime.mkdir()
+            external.mkdir()
+            junction = runtime / "artifacts"
+            completed = subprocess.run(
+                ["cmd", "/c", "mklink", "/J", str(junction), str(external)],
+                capture_output=True,
+                text=True,
+            )
+            if completed.returncode != 0:
+                self.skipTest(
+                    f"junction creation unavailable: {completed.stderr.strip()}"
+                )
+
+            result = ArtifactStore(runtime).put_bytes(
+                kind="verification_stdout",
+                data=b"must stay inside",
+                media_type="text/plain",
+            )
+
+            self.assertEqual(result.error_code, ArtifactErrorCode.INVALID.value)
+            self.assertEqual(list(external.iterdir()), [])
 
     def test_artifact_publish_failure_is_structured(self) -> None:
         with tempfile.TemporaryDirectory() as directory:

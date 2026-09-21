@@ -9,10 +9,13 @@ from typing import Any
 
 from agent.runtime.config import RunConfig
 
-# Version 2 records the model request timeout and single-attempt retry policy
-# in the canonical payload. Future semantic field or encoding changes must
-# increment this version so old checkpoints fail closed at preflight.
-SEMANTIC_CONFIG_SCHEMA_VERSION = 2
+# Version 3 records the S3.3c verification-summary/artifact checkpoint
+# semantics in addition to the model request timeout and single-attempt retry
+# policy.  A v2 checkpoint may contain the old VerificationResult shape, so it
+# must fail closed at resume preflight instead of being treated as complete
+# evidence. Future semantic field or encoding changes must increment this
+# version again.
+SEMANTIC_CONFIG_SCHEMA_VERSION = 3
 
 
 def semantic_config_digest(config: RunConfig) -> str:

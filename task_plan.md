@@ -11,15 +11,15 @@
 ### 当前状态文件基线
 
 - S3.2 production 技术冻结点：`5850b8370c49f868e90aeffe9e6042f85eaa522c`；D1/S1a、D2/S2b 已冻结，D3/S2c Seal blocker 已通过本地验收。
-- S3.2 的配置、身份、SQLite checkpoint、预算边界、start/resume 和现有图接入均保持冻结；D3/S2c 已将单一 JUnit XML 可信报告、稳定 case identity、保守 acceptance policy 和 owned temporary evidence 生命周期接入生产验收链路。D4/S3.2a 已补齐模型请求时限、单次外部尝试边界、普通模型响应结算和部分请求身份范围；D6/S3.3a Final Seal 保持已验收事实，本轮 D6/S3.3b Final Seal 已完成公开审计契约、单进程 stale-index 协调、有界证据、checkpoint/event 独立性和模块拆分的本地验收；S3 尚未全部完成，当前不能进入 S4。
+- S3.2 的配置、身份、SQLite checkpoint、预算边界、start/resume 和现有图接入均保持冻结；D3/S2c 已将单一 JUnit XML 可信报告、稳定 case identity、保守 acceptance policy 和 owned temporary evidence 生命周期接入生产验收链路。D4/S3.2a 已补齐模型请求时限、单次外部尝试边界、普通模型响应结算和部分请求身份范围；D6/S3.3a、S3.3b 已完成本地验收，S3.3c 已补充 artifact 路径 containment 与 checkpoint 语义版本门槛；S3 尚未全部完成，当前不能进入 S4。
 - D2/S2b Final Seal 已收窄 library/CLI 的异常边界；`RunSummary.warnings` 只输出 preflight warning code，unexpected `RuntimeError`、`KeyboardInterrupt` 和 `SystemExit` 不被入口吞掉。
-- 最新 Codex 本地验证：unittest 264 tests OK / 6 skipped；pytest 258 passed / 6 skipped /
-  169 subtests passed；Python compile、11 个 prompt render、start/resume 两套 CLI help、
-  `git diff --check` 均通过。6 个 skip 仅为当前 Windows 普通 symlink 权限限制。
+- 最新 Codex 本地验证：unittest 280 tests OK / 7 skipped；pytest 273 passed / 7 skipped /
+  169 subtests passed；Python compile、11 个 prompt render、root/start/resume 三套 CLI help、
+  `git diff --check` 均通过。7 个 skip 仅为当前 Windows 普通 symlink 权限限制。
 - 没有 GitHub CI 或独立外部测试证据，不作相应声明。
-- 剩余能力：完整 secret-safe state persistence（当前只覆盖 RunConfig 中已知凭据）、verification artifact/spool、workspace locking/policy、write/verification recovery 等仍未实现；本轮 EventSink/RunRecord 只提供单进程本地 JSONL 与有界审计清单，不是完整日志或恢复系统。provider 正向 retry/独立 attempt 语义未实现，当前 durable 只允许单次外部尝试；当前模型 `request_digest` 只代表有界语义输入，身份范围明确为 `PARTIAL`，不能据此安全重放最终 rendered request；exactly-once 不承诺。JUnit XML 是当前唯一可信报告格式，未配置或报告缺失/畸形时保守返回证据不足；多框架 parser registry、扩展 repair 和 S4 均未实现。runner 只改写精确匹配的 `--junitxml/--junit-xml` destination 到 owned temporary output，workspace report_path 保持原 bytes/mtime；owned temp cleanup 失败返回结构化 `EXECUTION_ERROR`。pytest 对其它 workspace 文件的副作用留给 D5，本轮未实现 artifact spool/recovery。
+- 剩余能力：完整 secret-safe state persistence（当前只覆盖 RunConfig 中已知凭据）、workspace locking/policy、write/verification recovery 等仍未实现；本轮 EventSink/RunRecord 与 verification artifact 只提供单进程本地 JSONL、结构化记录和有界/脱敏日志，不是完整恢复系统。provider 正向 retry/独立 attempt 语义未实现，当前 durable 只允许单次外部尝试；当前模型 `request_digest` 只代表有界语义输入，身份范围明确为 `PARTIAL`，不能据此安全重放最终 rendered request；exactly-once 不承诺。JUnit XML 是当前唯一可信报告格式，未配置或报告缺失/畸形时保守返回证据不足；多框架 parser registry、扩展 repair 和 S4 均未实现。runner 只改写精确匹配的 `--junitxml/--junit-xml` destination 到 owned temporary output，workspace report_path 保持原 bytes/mtime；owned temp cleanup 失败返回结构化 `EXECUTION_ERROR`。pytest 对其它 workspace 文件的副作用留给 D5，本轮未实现 artifact recovery。
 - 后续技术切片继续按 MASTER_PLAN §5.2 执行；保留现有 S1/S2/S3 历史编号，不重新开启或重命名 S1。
-- MASTER_PLAN 对应：当前实现事实冻结在 S3.2、D1/S1a、D2/S2b、D3/S2c、D4/S3.2a、D6/S3.3a 和本轮 D6/S3.3b Final Seal；没有 GitHub CI 或独立外部测试证据。后续运行控制、轨迹和恢复要求继续按 §5.2 映射执行，本轮不推进 S3.3c 或 S4。
+- MASTER_PLAN 对应：当前实现事实覆盖 S3.2、D1/S1a、D2/S2b、D3/S2c、D4/S3.2a、D6/S3.3a、S3.3b 和本轮 S3.3c Final Seal；没有 GitHub CI 或独立外部测试证据。后续运行控制、轨迹和恢复要求继续按 §5.2 映射执行，本轮不进入 S3.5a 或 S4。
 
 ## 当前文档任务：独立 MASTER PLAN（2026-09-16）
 
@@ -687,10 +687,13 @@ S3.3b，不改变 D6a 的已验收边界。
 
 ### 当前状态
 
-S3.3c 本地实现与验收完成：unittest 277 tests OK / 6 skipped；pytest 271 passed / 6 skipped /
-169 subtests passed；Python compile、11 个 prompt render、两套 CLI help 和 `git diff --check` 通过。
-SQLite/runtime 文件扫描确认 known canary 未进入 checkpoint、event、record 或脱敏 artifact。没有运行
-GitHub CI 或独立外部测试，不将本地结果外推为外部验收。
+S3.3c 基础实现已完成；本轮封口补充了 runtime artifact 目录的 canonical containment、POSIX
+symlink/Windows junction 拒绝，以及 semantic config schema v3 对 `VerificationSummary` +
+artifact evidence checkpoint 语义的恢复门槛。真实 SQLite 回归证明旧 v2 暂停 checkpoint 在当前版本
+resume 时 fail closed，且不会进入 verification 节点；non-durable runner/public seam 保持兼容。
+本轮本地验证为 unittest 280 tests OK / 7 skipped、pytest 273 passed / 7 skipped / 169 subtests
+passed；compile、11 个 prompt render、root/start/resume CLI help、`git diff --check` 均通过。没有
+GitHub CI 或独立外部测试证据，不将本地结果外推为外部验收。
 
 ### 已知边界
 
@@ -699,3 +702,6 @@ GitHub CI 或独立外部测试，不将本地结果外推为外部验收。
 - quota 按单个输出 artifact 执行；磁盘、写入、发布、清理失败会标记 evidence incomplete，不能被
   D3 acceptance 当作可信成功。artifact 与 checkpoint/event 没有跨介质事务，不承诺 exactly-once、
   workspace locking、verification replay 或 S4 能力。
+- stdout/stderr digest 是脱敏前采集到的原始完整输出 digest；`ArtifactRef.sha256` 是脱敏后完整
+  artifact 内容的 digest。artifact 路径只允许 canonical `runtime_root` 下的 `artifacts` 目录，
+  预存 symlink/junction 会结构化拒绝；本轮不扩展 recovery/replay 或多进程锁。

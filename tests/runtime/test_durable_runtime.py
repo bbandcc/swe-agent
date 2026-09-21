@@ -3,6 +3,7 @@ import unittest
 import sqlite3
 from dataclasses import replace
 from pathlib import Path
+from unittest.mock import patch
 from pydantic import SecretStr
 
 from langchain_core.messages import AIMessage, HumanMessage
@@ -102,6 +103,45 @@ class TinyState(DurableBudgetState):
     run_config_digest: str | None = None
     agent_revision: AgentCodeRevision | None = None
     value: int = 0
+
+
+class LegacyVerificationState(DurableBudgetState):
+    run_identity: RunIdentity | None = None
+    run_config_digest: str | None = None
+    agent_revision: AgentCodeRevision | None = None
+    verification_result: VerificationResult | None = None
+
+
+class LegacyVerificationFactory:
+    """Real SQLite graph whose paused state contains the pre-S3.3c value."""
+
+    def __init__(self) -> None:
+        self.verification_calls = 0
+
+    def __call__(self, config, run_id, saver, clock):
+        builder = StateGraph(LegacyVerificationState)
+
+        def prepare(_state):
+            return {
+                "verification_result": VerificationResult(
+                    "legacy",
+                    ("python", "-m", "pytest"),
+                    ".",
+                    VerificationCheckStatus.PASS,
+                    0,
+                )
+            }
+
+        def verify(_state):
+            self.verification_calls += 1
+            return {}
+
+        builder.add_node("prepare", prepare)
+        builder.add_node("verify", verify)
+        builder.add_edge(START, "prepare")
+        builder.add_edge("prepare", "verify")
+        builder.add_edge("verify", END)
+        return builder.compile(checkpointer=saver, interrupt_after=["prepare"])
 
 
 class CountingFactory:
@@ -354,6 +394,45 @@ class GuardedDeadlineFactory:
 
 
 class DurableRuntimeTests(RunConfigTestCase):
+    def test_old_v2_checkpoint_fails_closed_before_verification(self) -> None:
+        with tempfile.TemporaryDirectory() as directory:
+            root = Path(directory)
+            config = self.make_config(root)
+            current_request = self.request(config)
+            with patch("agent.runtime.semantics.SEMANTIC_CONFIG_SCHEMA_VERSION", 2):
+                old_digest = semantic_config_digest(config)
+            old_request = StartRequest(
+                current_request.identity,
+                old_digest,
+                current_request.agent_revision,
+            )
+            factory = LegacyVerificationFactory()
+
+            with patch("agent.runtime.semantics.SEMANTIC_CONFIG_SCHEMA_VERSION", 2):
+                started = start_run(
+                    config,
+                    old_request,
+                    {"verification_result": None},
+                    graph_factory=factory,
+                    clock=lambda: 100.0,
+                )
+
+            resumed = resume_run(
+                config,
+                ResumeRequest(
+                    current_request.identity,
+                    semantic_config_digest(config),
+                    current_request.agent_revision,
+                ),
+                graph_factory=factory,
+                clock=lambda: 150.0,
+            )
+
+            self.assertEqual(started.status, DurableRunStatus.PAUSED)
+            self.assertEqual(resumed.status, DurableRunStatus.REJECTED)
+            self.assertEqual(resumed.error_code, "run_config_mismatch")
+            self.assertEqual(factory.verification_calls, 0)
+
     def test_checkpoint_tuple_fields_accept_sequences_but_reject_scalars(self) -> None:
         usage = UsageRecord.unknown("call")
         values = (
