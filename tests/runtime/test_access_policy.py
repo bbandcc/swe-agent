@@ -7,6 +7,8 @@ from pathlib import Path
 from unittest.mock import patch
 
 from langchain_core.messages import AIMessage
+from langgraph.constants import END, START
+from langgraph.graph import StateGraph
 
 from agent.architect.graph import create_architect_workflow
 from agent.architect.models import ResearchEvaluation, ResearchStep
@@ -19,6 +21,7 @@ from agent.common.entities import (
 )
 from agent.developer.graph import create_developer_workflow
 from agent.developer.runtime import DeveloperRuntime
+from agent.developer.state import DeveloperStatus
 from agent.editing import EditOperation, EditProposal, EditStatus, WorkspaceEditor
 from agent.developer.editing import DeveloperEditExecutor
 from agent.runtime import (
@@ -32,6 +35,7 @@ from agent.runtime import (
     preflight_resume,
     semantic_config_digest,
 )
+from agent.graph import AgentState, create_production_workflow_graph
 from agent.tools.codemap import (
     get_code_definitions,
     get_function_implementation,
@@ -41,7 +45,7 @@ from agent.tools.search import search_keyword_in_directory
 from agent.tools.write import get_files_structure
 from agent.tools.write import get_files_structure
 from agent.verification import VerificationCheckStatus, VerificationRunner, VerificationSpec
-from agent.workspace import workspace_root_scope
+from agent.workspace import current_workspace_access_policy, workspace_root_scope
 from tests.runtime._config_support import RunConfigTestCase
 
 
@@ -469,6 +473,48 @@ class WorkspaceAccessPolicyTests(RunConfigTestCase):
             self.assertNotIn("oracle", developer_tool_text)
             self.assertNotIn("expected.txt", developer_tool_text)
             self.assertEqual((root / "target.py").read_text(), "value = 2\n")
+
+    def test_parent_production_graph_invokes_compiled_children_inside_policy_scope(
+        self,
+    ) -> None:
+        policy = WorkspaceAccessPolicy(oracle_paths=("oracle",))
+        observed_policies = []
+
+        def compiled_child(role: str):
+            child = StateGraph(AgentState)
+
+            def invoke(state: AgentState):
+                observed_policies.append(current_workspace_access_policy())
+                if role == "architect":
+                    return {
+                        "implementation_plan": ImplementationPlan(
+                            status=PlanStatus.NO_CHANGES,
+                            no_change_reason="No changes needed.",
+                            tasks=[],
+                        )
+                    }
+                return {"developer_status": DeveloperStatus.NO_CHANGES}
+
+            child.add_node("invoke", invoke)
+            child.add_edge(START, "invoke")
+            child.add_edge("invoke", END)
+            return child.compile()
+
+        architect = compiled_child("architect")
+        developer = compiled_child("developer")
+        with patch.dict(
+            os.environ, {"SWE_AGENT_VERIFICATION_CHECKS": ""}, clear=False
+        ):
+            with patch("agent.graph.swe_architect", architect), patch(
+                "agent.graph.swe_developer", developer
+            ):
+                result = create_production_workflow_graph(
+                    access_policy=policy
+                ).compile().invoke({})
+
+        self.assertEqual(result["developer_status"], DeveloperStatus.NO_CHANGES)
+        self.assertEqual(result["outcome"], "no_changes")
+        self.assertEqual(observed_policies, [policy, policy])
 
 
 if __name__ == "__main__":

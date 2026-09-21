@@ -13,7 +13,7 @@
 - S3.2 production 技术冻结点：`5850b8370c49f868e90aeffe9e6042f85eaa522c`；D1/S1a、D2/S2b 已冻结，D3/S2c Seal blocker 已通过本地验收。
 - S3.2 的配置、身份、SQLite checkpoint、预算边界、start/resume 和现有图接入均保持冻结；D3/S2c 已将单一 JUnit XML 可信报告、稳定 case identity、保守 acceptance policy 和 owned temporary evidence 生命周期接入生产验收链路。D4/S3.2a 已补齐模型请求时限、单次外部尝试边界、普通模型响应结算和部分请求身份范围；D6/S3.3a、S3.3b、S3.3c 与 D7/S3.5a 已完成本地验收，本轮 D7/S3.5b Final Seal 补齐 protected path metadata 不可探测、compiled ToolNode policy 接线、严格 RunRecord v1/v2 persisted shape、旧 semantic v3 resume 预检和 clean→dirty revision lifecycle；S3 尚未全部完成，当前不能进入 S3.4a 或 S4。
 - D2/S2b Final Seal 已收窄 library/CLI 的异常边界；`RunSummary.warnings` 只输出 preflight warning code，unexpected `RuntimeError`、`KeyboardInterrupt` 和 `SystemExit` 不被入口吞掉。
-- 本轮最新 Codex 本地验证：unittest 318 tests OK / 10 skipped；pytest 308 passed / 10 skipped /
+- 本轮最新 Codex 本地验证：unittest 319 tests OK / 10 skipped；pytest 309 passed / 10 skipped /
   187 subtests passed；Python compile、11 个 prompt render、root/start/resume 三套 CLI help、
   `git diff --check` 均通过。10 个 skip 均为当前 Windows 链接能力或平台边界限制。
 - 没有 GitHub CI 或独立外部测试证据，不作相应声明。
@@ -799,7 +799,7 @@ preexisting hard link 在 open 后写入前结构化拒绝，外部 target bytes
 
 ### 当前状态
 
-D7/S3.5b Final Seal 本轮本地实现与验收完成：unittest 318 tests OK / 10 skipped；pytest 308 passed / 10 skipped /
+D7/S3.5b Final Seal 本轮本地实现与验收完成：unittest 319 tests OK / 10 skipped；pytest 309 passed / 10 skipped /
 187 subtests passed。新增 protected path metadata non-disclosure、compiled ToolNode policy、严格 RunRecord
 v1/v2 persisted shape、旧 semantic v3 resume 和 clean→dirty revision lifecycle 回归通过；旧
 S1/S2/S3.1/S3.2/D3-D7a 测试保持通过。compile、11 个 prompt render、root/start/resume CLI help 和
