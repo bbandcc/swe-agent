@@ -11,15 +11,15 @@
 ### 当前状态文件基线
 
 - S3.2 production 技术冻结点：`5850b8370c49f868e90aeffe9e6042f85eaa522c`；D1/S1a、D2/S2b 已冻结，D3/S2c Seal blocker 已通过本地验收。
-- S3.2 的配置、身份、SQLite checkpoint、预算边界、start/resume 和现有图接入均保持冻结；D3/S2c 已将单一 JUnit XML 可信报告、稳定 case identity、保守 acceptance policy 和 owned temporary evidence 生命周期接入生产验收链路。D4/S3.2a 已补齐模型请求时限、单次外部尝试边界、普通模型响应结算和部分请求身份范围；D6/S3.3a、S3.3b 已完成本地验收，S3.3c 已补充 artifact 路径 containment 与 checkpoint 语义版本门槛；S3 尚未全部完成，当前不能进入 S4。
+- S3.2 的配置、身份、SQLite checkpoint、预算边界、start/resume 和现有图接入均保持冻结；D3/S2c 已将单一 JUnit XML 可信报告、稳定 case identity、保守 acceptance policy 和 owned temporary evidence 生命周期接入生产验收链路。D4/S3.2a 已补齐模型请求时限、单次外部尝试边界、普通模型响应结算和部分请求身份范围；D6/S3.3a、S3.3b 已完成本地验收，S3.3c 已补充 artifact 路径 containment 与 checkpoint 语义版本门槛，D7/S3.5a 已接入合作进程独占准入；S3 尚未全部完成，当前不能进入 S4。
 - D2/S2b Final Seal 已收窄 library/CLI 的异常边界；`RunSummary.warnings` 只输出 preflight warning code，unexpected `RuntimeError`、`KeyboardInterrupt` 和 `SystemExit` 不被入口吞掉。
-- 最新 Codex 本地验证：unittest 280 tests OK / 7 skipped；pytest 273 passed / 7 skipped /
+- 最新 Codex 本地验证：unittest 291 tests OK / 8 skipped；pytest 283 passed / 8 skipped /
   169 subtests passed；Python compile、11 个 prompt render、root/start/resume 三套 CLI help、
-  `git diff --check` 均通过。7 个 skip 仅为当前 Windows 普通 symlink 权限限制。
+  `git diff --check` 均通过。8 个 skip 仅为当前 Windows 普通 symlink 权限限制。
 - 没有 GitHub CI 或独立外部测试证据，不作相应声明。
-- 剩余能力：完整 secret-safe state persistence（当前只覆盖 RunConfig 中已知凭据）、workspace locking/policy、write/verification recovery 等仍未实现；本轮 EventSink/RunRecord 与 verification artifact 只提供单进程本地 JSONL、结构化记录和有界/脱敏日志，不是完整恢复系统。provider 正向 retry/独立 attempt 语义未实现，当前 durable 只允许单次外部尝试；当前模型 `request_digest` 只代表有界语义输入，身份范围明确为 `PARTIAL`，不能据此安全重放最终 rendered request；exactly-once 不承诺。JUnit XML 是当前唯一可信报告格式，未配置或报告缺失/畸形时保守返回证据不足；多框架 parser registry、扩展 repair 和 S4 均未实现。runner 只改写精确匹配的 `--junitxml/--junit-xml` destination 到 owned temporary output，workspace report_path 保持原 bytes/mtime；owned temp cleanup 失败返回结构化 `EXECUTION_ERROR`。pytest 对其它 workspace 文件的副作用留给 D5，本轮未实现 artifact recovery。
+- 剩余能力：完整 secret-safe state persistence（当前只覆盖 RunConfig 中已知凭据）、read/write authorization policy、write/verification recovery 等仍未实现；D7 只提供 cooperative OS-process workspace admission，不阻止第三方直接写 workspace。本轮 EventSink/RunRecord 与 verification artifact 只提供单进程本地 JSONL、结构化记录和有界/脱敏日志，不是完整恢复系统。provider 正向 retry/独立 attempt 语义未实现，当前 durable 只允许单次外部尝试；当前模型 `request_digest` 只代表有界语义输入，身份范围明确为 `PARTIAL`，不能据此安全重放最终 rendered request；exactly-once 不承诺。JUnit XML 是当前唯一可信报告格式，未配置或报告缺失/畸形时保守返回证据不足；多框架 parser registry、扩展 repair 和 S4 均未实现。runner 只改写精确匹配的 `--junitxml/--junit-xml` destination 到 owned temporary output，workspace report_path 保持原 bytes/mtime；owned temp cleanup 失败返回结构化 `EXECUTION_ERROR`。pytest 对其它 workspace 文件的副作用留给 D5，本轮未实现 artifact recovery。
 - 后续技术切片继续按 MASTER_PLAN §5.2 执行；保留现有 S1/S2/S3 历史编号，不重新开启或重命名 S1。
-- MASTER_PLAN 对应：当前实现事实覆盖 S3.2、D1/S1a、D2/S2b、D3/S2c、D4/S3.2a、D6/S3.3a、S3.3b 和本轮 S3.3c Final Seal；没有 GitHub CI 或独立外部测试证据。后续运行控制、轨迹和恢复要求继续按 §5.2 映射执行，本轮不进入 S3.5a 或 S4。
+- MASTER_PLAN 对应：当前实现事实覆盖 S3.2、D1/S1a、D2/S2b、D3/S2c、D4/S3.2a、D6/S3.3a、S3.3b、S3.3c 和本轮 D7/S3.5a；没有 GitHub CI 或独立外部测试证据。后续运行控制、轨迹和恢复要求继续按 §5.2 映射执行，本轮不进入 S3.5b 或 S4。
 
 ## 当前文档任务：独立 MASTER PLAN（2026-09-16）
 
@@ -705,3 +705,37 @@ GitHub CI 或独立外部测试证据，不将本地结果外推为外部验收�
 - stdout/stderr digest 是脱敏前采集到的原始完整输出 digest；`ArtifactRef.sha256` 是脱敏后完整
   artifact 内容的 digest。artifact 路径只允许 canonical `runtime_root` 下的 `artifacts` 目录，
   预存 symlink/junction 会结构化拒绝；本轮不扩展 recovery/replay 或多进程锁。
+
+## D7/S3.5a：合作进程独占准入
+
+### 固定范围
+
+- 基线：`7adde51e2b549e198f826ad1010dc11b280db64d`。
+- 只增加 `WorkspaceAdmissionLock` 公开 seam 和 durable start/resume 准入集成；锁使用
+  POSIX `flock` 或 Windows `msvcrt.locking`，不把 SQLite 写锁或进程内线程锁当作进程互斥。
+- lock 文件位于受控 `runtime_root/locks`，文件名只使用 workspace hash；稳定诊断 key 同时绑定
+  canonical `WorkspaceIdentity` 与 thread identity，但实际锁作用域是整个 workspace，因此不同
+  thread 仍互斥。BUSY 在 SQLite preflight、graph factory 和编辑/verification side effect 前返回。
+
+### TDD 验收切片
+
+- [x] 补齐两个真实 durable subprocess、不同 workspace 并发、正常释放、强制终止后重入、CLI
+  BUSY JSON/exit 和 Windows canonical/link 边界回归。
+- [x] 运行全量 unittest/pytest、compile、11 个 prompt render、root/start/resume CLI help 和
+  `git diff --check`，确认现有 hash、checkpoint、event、artifact、budget 契约未改变。
+
+### 已知边界
+
+- 这是 cooperative-process serialization，只约束使用本 seam 的进程；不阻止第三方程序直接
+  写 workspace，不实现 S3.5b read/write policy、`.git` 保护、sandbox、worktree、租约服务或
+  分布式锁。残留 lock 文件可存在，但 OS 持有的 byte-range lock 会在进程退出时自动释放，
+  不会因文件残留永久 BUSY。
+
+### 当前状态
+
+D7/S3.5a 本地实现与验收完成：unittest 291 tests OK / 8 skipped；pytest 283 passed / 8 skipped /
+169 subtests passed。真实 Windows 进程锁覆盖同 workspace 不同 thread 的 BUSY、不同 workspace
+并行、正常释放、强制终止后重入，以及 durable graph side effect 只有 holder 执行；start/resume
+在 SQLite preflight 前返回 BUSY，CLI 映射为 JSON exit 2。Python compile、11 个 prompt render、
+root/start/resume CLI help 和 `git diff --check` 均通过。没有 GitHub CI 或独立外部测试证据；普通
+directory symlink 用例仍因当前账户权限跳过，junction 用例通过。

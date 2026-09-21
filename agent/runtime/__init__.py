@@ -77,6 +77,13 @@ from agent.runtime.artifacts import (
     ArtifactWriteResult,
     ArtifactWriter,
 )
+from agent.runtime.admission import (
+    AdmissionErrorCode,
+    AdmissionKey,
+    AdmissionLockError,
+    AdmissionStatus,
+    WorkspaceAdmissionLock,
+)
 from agent.runtime.trajectory import (
     EVENT_SCHEMA_VERSION,
     EVENTS_FILENAME,
@@ -160,6 +167,11 @@ __all__ = [
     "ArtifactStoreError",
     "ArtifactWriteResult",
     "ArtifactWriter",
+    "AdmissionErrorCode",
+    "AdmissionKey",
+    "AdmissionLockError",
+    "AdmissionStatus",
+    "WorkspaceAdmissionLock",
     "EVENT_SCHEMA_VERSION",
     "EVENTS_FILENAME",
     "RECORD_SCHEMA_VERSION",

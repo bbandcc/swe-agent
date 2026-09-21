@@ -17,6 +17,12 @@ from agent.developer.graph import create_developer_workflow
 from agent.developer.runtime import durable_developer_runtime
 from agent.graph import create_workflow_graph
 from agent.runtime.boundary import DurableBudgetBoundary
+from agent.runtime.admission import (
+    AdmissionErrorCode,
+    AdmissionLockError,
+    AdmissionStatus,
+    WorkspaceAdmissionLock,
+)
 from agent.runtime.budget import BudgetErrorCode, BudgetSnapshot
 from agent.runtime.checkpointing import (
     GraphCheckpointLookup,
@@ -375,6 +381,28 @@ def _run(
             message=secret_filter.redact_text(str(error)),
             run_id=request.identity.run_id,
         )
+    observed_clock = _ObservedClock(clock)
+    started_at = observed_clock()
+    try:
+        admission = WorkspaceAdmissionLock(
+            config.runtime_root,
+            request.identity,
+        )
+        admission_status = admission.acquire()
+    except AdmissionLockError as error:
+        return DurableRunResult(
+            DurableRunStatus.FAILED,
+            error_code=error.code.value,
+            message=secret_filter.redact_text(str(error)),
+            run_id=request.identity.run_id,
+        )
+    if admission_status is AdmissionStatus.BUSY:
+        return DurableRunResult(
+            DurableRunStatus.REJECTED,
+            error_code=AdmissionErrorCode.BUSY.value,
+            message="The workspace is already admitted by another process.",
+            run_id=request.identity.run_id,
+        )
     try:
         audit_sink = (
             event_sink
@@ -385,6 +413,7 @@ def _run(
             )
         )
     except EventSinkError as error:
+        admission.release()
         safe_code, safe_message = _safe_audit_parts(
             secret_filter, error.code, error
         )
@@ -396,18 +425,23 @@ def _run(
             audit_incomplete=True,
             audit_error_code=safe_code,
         )
-    observed_clock = _ObservedClock(clock)
-    started_at = observed_clock()
+    except BaseException:
+        admission.release()
+        raise
     database = config.runtime_root / "checkpoints.sqlite"
     try:
         connection = sqlite3.connect(database, check_same_thread=False)
     except (OSError, sqlite3.Error) as error:
+        admission.release()
         return DurableRunResult(
             DurableRunStatus.FAILED,
             error_code="sqlite_error",
             message=secret_filter.redact_text(str(error)),
             run_id=request.identity.run_id,
         )
+    except BaseException:
+        admission.release()
+        raise
     try:
         try:
             saver = SqliteSaver(connection, serde=checkpoint_serializer())
@@ -655,7 +689,10 @@ def _run(
                 run_id=request.identity.run_id,
             )
     finally:
-        connection.close()
+        try:
+            connection.close()
+        finally:
+            admission.release()
 
 
 def create_durable_workflow(
