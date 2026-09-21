@@ -275,8 +275,10 @@ class WorkspaceAdmissionLock:
                 flags |= nofollow
             descriptor = os.open(lock_path, flags, 0o600)
             handle = os.fdopen(descriptor, "r+b")
+            _validate_owned_lock_file(handle)
             handle.seek(0, os.SEEK_END)
             if handle.tell() == 0:
+                _validate_owned_lock_file(handle)
                 handle.write(b"\0")
                 handle.flush()
             handle.seek(0)
@@ -371,6 +373,21 @@ def _is_busy_error(error: OSError) -> bool:
 
 def _is_link_error(error: OSError) -> bool:
     return error.errno == getattr(errno, "ELOOP", object())
+
+
+def _validate_owned_lock_file(handle: BinaryIO) -> None:
+    try:
+        metadata = os.fstat(handle.fileno())
+    except OSError as error:
+        raise AdmissionLockError(
+            AdmissionErrorCode.IO_ERROR,
+            "Unable to inspect the admission lock file.",
+        ) from error
+    if metadata.st_nlink != 1:
+        raise AdmissionLockError(
+            AdmissionErrorCode.INVALID,
+            "The admission lock file must have exactly one hard link.",
+        )
 
 
 def _is_link_or_junction(path: Path) -> bool:

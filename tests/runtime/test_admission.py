@@ -655,6 +655,68 @@ class AdmissionLockTests(RunConfigTestCase):
             self.assertEqual(external.read_bytes(), b"keep")
             self.assertFalse(lock.workspace_lock_path.exists())
 
+    def test_rejects_workspace_lock_hard_link_without_touching_external(self) -> None:
+        with tempfile.TemporaryDirectory() as directory:
+            root = Path(directory)
+            workspace = root / "workspace"
+            workspace.mkdir()
+            runtime = root / "runtime"
+            external = root / "external-workspace.lock"
+            external.write_bytes(b"")
+            before = external.stat()
+            lock = WorkspaceAdmissionLock(runtime, self._identity(workspace))
+            lock.workspace_lock_path.parent.mkdir(parents=True, exist_ok=True)
+            try:
+                lock.workspace_lock_path.hardlink_to(external)
+            except (OSError, NotImplementedError) as error:
+                self.skipTest(f"hard links are unavailable: {error}")
+            with self.assertRaises(AdmissionLockError) as context:
+                lock.acquire()
+            self.assertEqual(context.exception.code, AdmissionErrorCode.INVALID)
+            after = external.stat()
+            self.assertEqual(external.read_bytes(), b"")
+            self.assertEqual(after.st_mtime_ns, before.st_mtime_ns)
+            self.assertFalse(lock.runtime_lock_path.exists())
+
+    def test_rejects_runtime_lock_hard_link_and_releases_workspace_lock(self) -> None:
+        with tempfile.TemporaryDirectory() as directory:
+            root = Path(directory)
+            first_workspace = root / "workspace-a"
+            second_workspace = root / "workspace-b"
+            first_workspace.mkdir()
+            second_workspace.mkdir()
+            runtime = root / "runtime"
+            alternate_runtime = root / "alternate-runtime"
+            external = root / "external-runtime.lock"
+            external.write_bytes(b"")
+            before = external.stat()
+            first = WorkspaceAdmissionLock(
+                runtime, self._identity(first_workspace, "first-thread")
+            )
+            second = WorkspaceAdmissionLock(
+                runtime, self._identity(second_workspace, "same-thread")
+            )
+            second.runtime_lock_path.parent.mkdir(parents=True, exist_ok=True)
+            try:
+                second.runtime_lock_path.hardlink_to(external)
+            except (OSError, NotImplementedError) as error:
+                self.skipTest(f"hard links are unavailable: {error}")
+            self.assertEqual(first.acquire(), AdmissionStatus.ACQUIRED)
+            with self.assertRaises(AdmissionLockError) as context:
+                second.acquire()
+            self.assertEqual(context.exception.code, AdmissionErrorCode.INVALID)
+            self.assertFalse(second.acquired)
+            after = external.stat()
+            self.assertEqual(external.read_bytes(), b"")
+            self.assertEqual(after.st_mtime_ns, before.st_mtime_ns)
+            first.release()
+
+            released = WorkspaceAdmissionLock(
+                alternate_runtime, self._identity(second_workspace, "same-thread")
+            )
+            self.assertEqual(released.acquire(), AdmissionStatus.ACQUIRED)
+            released.release()
+
     @unittest.skipUnless(os.name == "nt", "junctions are a Windows path type")
     def test_rejects_lock_directory_junction_without_writing_outside(self) -> None:
         with tempfile.TemporaryDirectory() as directory:

@@ -13,7 +13,7 @@
 - S3.2 production 技术冻结点：`5850b8370c49f868e90aeffe9e6042f85eaa522c`；D1/S1a、D2/S2b 已冻结，D3/S2c Seal blocker 已通过本地验收。
 - S3.2 的配置、身份、SQLite checkpoint、预算边界、start/resume 和现有图接入均保持冻结；D3/S2c 已将单一 JUnit XML 可信报告、稳定 case identity、保守 acceptance policy 和 owned temporary evidence 生命周期接入生产验收链路。D4/S3.2a 已补齐模型请求时限、单次外部尝试边界、普通模型响应结算和部分请求身份范围；D6/S3.3a、S3.3b 已完成本地验收，S3.3c 已补充 artifact 路径 containment 与 checkpoint 语义版本门槛，D7/S3.5a 已接入合作进程独占准入；S3 尚未全部完成，当前不能进入 S4。
 - D2/S2b Final Seal 已收窄 library/CLI 的异常边界；`RunSummary.warnings` 只输出 preflight warning code，unexpected `RuntimeError`、`KeyboardInterrupt` 和 `SystemExit` 不被入口吞掉。
-- 最新 Codex 本地验证：unittest 296 tests OK / 10 skipped；pytest 286 passed / 10 skipped /
+- 最新 Codex 本地验证：unittest 298 tests OK / 10 skipped；pytest 288 passed / 10 skipped /
   169 subtests passed；Python compile、11 个 prompt render、root/start/resume 三套 CLI help、
   `git diff --check` 均通过。10 个 skip 均为当前 Windows 链接能力或平台边界限制。
 - 没有 GitHub CI 或独立外部测试证据，不作相应声明。
@@ -732,16 +732,19 @@ GitHub CI 或独立外部测试证据，不将本地结果外推为外部验收�
 - 这是 cooperative-process serialization，只约束使用本 seam 的进程；不阻止第三方程序直接
   写 workspace，不实现 S3.5b read/write policy、`.git` 保护、sandbox、worktree、租约服务或
   分布式锁。workspace lock 位于进程共享的受控临时目录，runtime/thread lock 保留在
-  `runtime_root/locks`；两处目录和最终 lock file 都做 canonical containment/link 校验。残留
-  lock 文件可存在，但 OS 持有的 byte-range lock 会在进程退出时自动释放，不会因文件残留永久
-  BUSY。
+  `runtime_root/locks`；两处目录和最终 lock file 都做 canonical containment、symlink/junction
+  和 fd 级 hard-link count 校验。hard link 拒绝依赖平台提供的 inode/link-count 语义；平台不
+  支持创建 hard link 时只记录 skip，不扩大保证。workspace shared lock 只保证同一主机、同一
+  admission namespace 内使用本 seam 的 cooperative processes，不是 OS sandbox。残留 lock
+  文件可存在，但 OS 持有的 byte-range lock 会在进程退出时自动释放，不会因文件残留永久 BUSY。
 
 ### 当前状态
 
-D7/S3.5a 本地实现与验收完成：unittest 296 tests OK / 10 skipped；pytest 286 passed /
+D7/S3.5a 本地实现与验收完成：unittest 298 tests OK / 10 skipped；pytest 288 passed /
 10 skipped / 169 subtests passed。两层锁覆盖不同 runtime_root 的同 workspace、不同 workspace
 同 runtime/thread、不同 workspace/thread 并行、正常释放和强制终止后重入；start/resume 在
-SQLite preflight 前返回 BUSY，CLI 映射为 JSON exit 2。最终 lock file symlink/junction 在 open
-前结构化拒绝，外部 target 不被创建或修改。compile、11 个 prompt render、root/start/resume
-CLI help 和 `git diff --check` 通过；10 个 skip 均为当前 Windows 链接能力或平台边界限制。没有
-GitHub CI 或独立外部测试证据。
+SQLite preflight 前返回 BUSY，CLI 映射为 JSON exit 2。最终 lock file symlink/junction 及
+preexisting hard link 在 open 后写入前结构化拒绝，外部 target bytes/mtime 保持不变，第二把
+锁失败时第一把已取得的锁释放。compile、11 个 prompt render、root/start/resume CLI help 和
+`git diff --check` 通过；hard-link/link 能力受平台限制时如实记录 skip。没有 GitHub CI 或独立
+外部测试证据。
