@@ -12,6 +12,7 @@ from agent.runtime.trajectory_contracts import (
     AppendResult,
     AuditIncompleteError,
     EventSink,
+    EventSinkError,
     EventSinkErrorCode,
     RunEvent,
     _canonical_digest,
@@ -45,7 +46,17 @@ class EventRecorder:
             event = RunEvent.from_dict(
                 self.secret_filter.sanitize(event.to_dict()).value
             )
-        result = self.sink.append_once(event)
+        try:
+            result = self.sink.append_once(event)
+        except EventSinkError as error:
+            error_code = getattr(error.code, "value", error.code)
+            message = str(error)
+            if self.secret_filter is not None:
+                error_code = self.secret_filter.redact_text(str(error_code))
+                message = self.secret_filter.redact_text(message)
+            # Do not chain the original exception: LangGraph may persist the
+            # raised exception as a pending write before the caller sees it.
+            raise AuditIncompleteError(str(error_code), message) from None
         if not result.ok:
             error_code = result.error_code or EventSinkErrorCode.IO_ERROR.value
             message = result.message or "The audit event could not be appended."

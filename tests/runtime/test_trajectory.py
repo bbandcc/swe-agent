@@ -172,6 +172,21 @@ class TrajectoryContractTests(unittest.TestCase):
             self.assertEqual(sink.last_sequence, 0)
             self.assertEqual(sink.events, ())
 
+    def test_unexpected_sink_runtime_error_still_propagates(self) -> None:
+        class Sink:
+            def append_once(self, _event):
+                raise RuntimeError("unexpected sink programming failure")
+
+        recorder = EventRecorder(
+            Sink(),
+            run_id="run-1",
+            thread_id="thread-1",
+            task_id="task-1",
+        )
+
+        with self.assertRaisesRegex(RuntimeError, "unexpected sink programming failure"):
+            recorder.append(event())
+
     def test_secret_filter_redacts_event_summary_and_record_uses_safe_filename(self) -> None:
         canary = "S3_TRAJECTORY_CANARY"
         with tempfile.TemporaryDirectory() as directory:
@@ -454,7 +469,7 @@ class DurableAuditIntegrationTests(RunConfigTestCase):
                     message=f"sink failed while writing {canary}",
                 )
 
-        calls = {"node": 0}
+        calls = {"node": 0, "later": 0}
         sink = Sink()
 
         class State(DurableBudgetState):
@@ -475,6 +490,10 @@ class DurableAuditIntegrationTests(RunConfigTestCase):
                 calls["node"] += 1
                 return {"value": state.value + 1}
 
+            def later(_state):
+                calls["later"] += 1
+                return {}
+
             builder.add_node(
                 "finish",
                 recorder.wrap_node(
@@ -483,8 +502,10 @@ class DurableAuditIntegrationTests(RunConfigTestCase):
                     node_name="finish",
                 ),
             )
+            builder.add_node("later", later)
             builder.add_edge(START, "finish")
-            builder.add_edge("finish", END)
+            builder.add_edge("finish", "later")
+            builder.add_edge("later", END)
             return builder.compile(checkpointer=saver)
 
         with tempfile.TemporaryDirectory() as directory:
@@ -506,7 +527,100 @@ class DurableAuditIntegrationTests(RunConfigTestCase):
             self.assertEqual(result.status, DurableRunStatus.FAILED)
             self.assertTrue(result.audit_incomplete)
             self.assertEqual(run_exit_code(result.summary), 2)
-            self.assertEqual(calls["node"], 0)
+            self.assertEqual(calls, {"node": 0, "later": 0})
+            self.assertEqual(sink.calls, ["run:start", "tool:start"])
+            for value in (
+                result.message,
+                result.error_code,
+                result.audit_error_code,
+                repr(result.summary),
+            ):
+                self.assertNotIn(canary, value or "")
+            database = config.runtime_root / "checkpoints.sqlite"
+            self.assertTrue(database.exists())
+            for path in config.runtime_root.rglob("*"):
+                if path.is_file():
+                    self.assertNotIn(canary.encode(), path.read_bytes(), path.name)
+
+    def test_node_audit_exception_redacts_sink_error_before_sqlite_checkpoint(self) -> None:
+        canary = "S3_AUDIT_EXCEPTION_SECRET"
+
+        class Sink:
+            def __init__(self) -> None:
+                self.calls: list[str] = []
+
+            def append_once(self, event):
+                self.calls.append(f"{event.event_type}:{event.phase}")
+                if len(self.calls) == 1:
+                    return AppendResult(
+                        AppendStatus.APPENDED,
+                        event.idempotency_key,
+                        sequence=1,
+                    )
+                raise EventSinkError(
+                    EventSinkErrorCode.IO_ERROR,
+                    f"sink exception while writing {canary}",
+                )
+
+        calls = {"node": 0, "later": 0}
+        sink = Sink()
+
+        class State(DurableBudgetState):
+            value: int = 0
+
+        def factory(config, run_id, saver, clock):
+            recorder = EventRecorder(
+                sink,
+                run_id=run_id,
+                thread_id="thread-audit-exception",
+                task_id="task-audit-exception",
+                secret_filter=KnownSecretFilter((canary,)),
+                clock=clock,
+            )
+            builder = StateGraph(State)
+
+            def finish(state):
+                calls["node"] += 1
+                return {"value": state.value + 1}
+
+            def later(_state):
+                calls["later"] += 1
+                return {}
+
+            builder.add_node(
+                "finish",
+                recorder.wrap_node(
+                    finish,
+                    event_type="tool",
+                    node_name="finish",
+                ),
+            )
+            builder.add_node("later", later)
+            builder.add_edge(START, "finish")
+            builder.add_edge("finish", "later")
+            builder.add_edge("later", END)
+            return builder.compile(checkpointer=saver)
+
+        with tempfile.TemporaryDirectory() as directory:
+            root = Path(directory)
+            config = self.make_config(
+                root,
+                model=model_settings(canary),
+                verification_specs=(),
+                max_cost_usd=None,
+            )
+            result = start_run(
+                config,
+                self.request(config),
+                {"value": 0},
+                graph_factory=factory,
+                event_sink=sink,
+            )
+
+            self.assertEqual(result.status, DurableRunStatus.FAILED)
+            self.assertTrue(result.audit_incomplete)
+            self.assertEqual(run_exit_code(result.summary), 2)
+            self.assertEqual(calls, {"node": 0, "later": 0})
             self.assertEqual(sink.calls, ["run:start", "tool:start"])
             for value in (
                 result.message,

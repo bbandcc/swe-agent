@@ -645,13 +645,15 @@ S3.3b，不改变 D6a 的已验收边界。
 ### 验收事实
 
 - EventRecorder 在抛出 `AuditIncompleteError` 前对外部 `AppendResult.error_code/message` 做
-  `KnownSecretFilter` 确定性脱敏，避免 secret-bearing sink error 作为 LangGraph raw pending write。
+  `KnownSecretFilter` 确定性脱敏；对直接抛出的结构化 `EventSinkError` 也只转换为安全异常，
+  避免 secret-bearing sink error 作为 LangGraph raw pending write。普通 unexpected `RuntimeError`
+  继续传播。
 - durable audit failure 返回的 `message`、`error_code`、`audit_error_code` 以及 terminal
   record/event 中的错误字段均经过同一已知 secret 边界；`audit_incomplete=true`，CLI exit 保持 2。
 - 真实 SQLite/checkpointer 回归覆盖 lifecycle start 成功后 graph node sink error、terminal
-  `_finish_audit` sink error、数据库及适用 WAL/SHM 文件扫描、最终 result/summary 无 canary，且
-  node sink failure 后不继续执行后续副作用。
-- 本轮本地验收完成：unittest 266 tests OK / 6 skipped；pytest 260 passed / 6 skipped /
+  `_finish_audit` sink error；扫描实际生成的数据库和 runtime 文件（存在时包含 WAL/SHM），确认
+  最终 result/summary 无 canary，且 node sink failure 后不继续执行后续副作用。
+- 本轮本地验收完成：unittest 268 tests OK / 6 skipped；pytest 262 passed / 6 skipped /
   169 subtests passed；Python compile、11 个 prompt render、两套 CLI help 与
   `git diff --check` 均通过。无 GitHub CI 或独立外部测试证据，不将本地结果外推为外部验收。
 
