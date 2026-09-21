@@ -26,6 +26,7 @@ from agent.runtime.admission import (
 from agent.runtime.budget import BudgetErrorCode, BudgetSnapshot
 from agent.runtime.checkpointing import (
     GraphCheckpointLookup,
+    SqliteCheckpointLookup,
     checkpoint_serializer,
     mark_uncertain_dispatch,
 )
@@ -460,6 +461,42 @@ def _run(
                 run_id=request.identity.run_id,
             )
         try:
+            thread_config = _thread_config(
+                request.identity.thread_id, config.max_steps
+            )
+            # Read the root checkpoint through the public SqliteSaver API before
+            # constructing any graph. A stale semantic digest must therefore
+            # stop resume without model, verification, or graph-factory work.
+            preflight = (
+                preflight_resume(
+                    request,
+                    SqliteCheckpointLookup(saver, thread_config),
+                )
+                if resume
+                else None
+            )
+            if preflight is not None and not preflight.accepted:
+                base_result = DurableRunResult(
+                    DurableRunStatus.REJECTED,
+                    error_code=(
+                        preflight.error_code.value
+                        if preflight.error_code
+                        else None
+                    ),
+                    message=preflight.message,
+                    preflight=preflight,
+                    run_id=request.identity.run_id,
+                )
+                return _finish_audit(
+                    base_result,
+                    config=config,
+                    request=request,
+                    sink=audit_sink,
+                    started_at=started_at,
+                    finished_at=observed_clock.latest_or(started_at),
+                    secret_filter=secret_filter,
+                    workspace_revision_start=workspace_revision_start,
+                )
             factory = graph_factory or create_durable_workflow
             if graph_factory is None:
                 graph = factory(
@@ -475,15 +512,9 @@ def _run(
                 graph = factory(
                     config, request.identity.run_id, saver, observed_clock
                 )
-            thread_config = _thread_config(
-                request.identity.thread_id, config.max_steps
-            )
             lookup = GraphCheckpointLookup(graph, thread_config)
-            preflight = (
-                preflight_resume(request, lookup)
-                if resume
-                else preflight_start(request, lookup)
-            )
+            if preflight is None:
+                preflight = preflight_start(request, lookup)
             if not preflight.accepted:
                 base_result = DurableRunResult(
                     DurableRunStatus.REJECTED,

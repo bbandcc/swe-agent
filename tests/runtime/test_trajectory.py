@@ -27,6 +27,8 @@ from agent.runtime import (
     ResumeRequest,
     StartRequest,
     WorkspaceIdentity,
+    WorkspaceRevision,
+    WorkspaceRevisionReason,
     run_exit_code,
     EventRecorder,
     semantic_config_digest,
@@ -294,6 +296,108 @@ class TrajectoryContractTests(unittest.TestCase):
                 result.error_code,
                 EventSinkErrorCode.CORRUPT_RECORD.value,
             )
+
+    def test_v2_revision_shape_is_strict_and_legacy_v1_remains_readable(self) -> None:
+        unknown = WorkspaceRevision.unknown(
+            WorkspaceRevisionReason.NOT_GIT
+        ).to_dict()
+        record = RunRecord(
+            schema_version=2,
+            run_id="run-v2",
+            thread_id="thread-v2",
+            task_id="task-v2",
+            workspace_root="C:/workspace",
+            workspace_root_digest="a" * 64,
+            run_config_digest="b" * 64,
+            runtime_status="completed",
+            workflow_outcome="completed",
+            verification_status="verified",
+            error_code=None,
+            budget=None,
+            started_at=100.0,
+            finished_at=101.0,
+            last_event_sequence=1,
+            audit_status=AuditStatus.COMPLETE,
+            agent_revision={"status": "unknown"},
+            workspace_revision_start=unknown,
+            workspace_revision_end=unknown,
+        )
+        payload = record.to_dict()
+        self.assertEqual(RunRecord.from_dict(payload).schema_version, 2)
+
+        missing = dict(payload)
+        missing.pop("workspace_revision_end")
+        with self.assertRaises(ValueError):
+            RunRecord.from_dict(missing)
+
+        extra = dict(payload)
+        extra["workspace_revision_start"] = {
+            **unknown,
+            "unexpected": "field",
+        }
+        with self.assertRaises(ValueError):
+            RunRecord.from_dict(extra)
+
+        incomplete = dict(payload)
+        incomplete["workspace_revision_start"] = {
+            "status": "known",
+            "head": "a" * 40,
+            "dirty": False,
+            "status_digest": "b" * 64,
+            "diff_digest": None,
+            "reason": None,
+        }
+        with self.assertRaises(ValueError):
+            RunRecord.from_dict(incomplete)
+
+        legacy = dict(payload)
+        legacy["schema_version"] = 1
+        legacy.pop("workspace_revision_start")
+        legacy.pop("workspace_revision_end")
+        self.assertEqual(RunRecord.from_dict(legacy).schema_version, 1)
+
+    def test_corrupt_v2_revision_is_not_silently_overwritten(self) -> None:
+        unknown = WorkspaceRevision.unknown(
+            WorkspaceRevisionReason.NOT_GIT
+        ).to_dict()
+        record = RunRecord(
+            schema_version=2,
+            run_id="run-v2-write",
+            thread_id="thread-v2-write",
+            task_id="task-v2-write",
+            workspace_root="C:/workspace",
+            workspace_root_digest="a" * 64,
+            run_config_digest="b" * 64,
+            runtime_status="completed",
+            workflow_outcome="completed",
+            verification_status="verified",
+            error_code=None,
+            budget=None,
+            started_at=100.0,
+            finished_at=101.0,
+            last_event_sequence=1,
+            audit_status=AuditStatus.COMPLETE,
+            agent_revision={"status": "unknown"},
+            workspace_revision_start=unknown,
+            workspace_revision_end=unknown,
+        )
+        with tempfile.TemporaryDirectory() as directory:
+            written = write_run_record(directory, record)
+            assert written.path is not None
+            corrupt = dict(record.to_dict())
+            corrupt["workspace_revision_end"] = {
+                **unknown,
+                "unexpected": "field",
+            }
+            original = json.dumps(corrupt, sort_keys=True).encode() + b"\n"
+            written.path.write_bytes(original)
+            result = write_run_record(directory, record)
+            self.assertFalse(result.success)
+            self.assertEqual(
+                result.error_code,
+                EventSinkErrorCode.CORRUPT_RECORD.value,
+            )
+            self.assertEqual(written.path.read_bytes(), original)
 
 
 class DurableAuditIntegrationTests(RunConfigTestCase):

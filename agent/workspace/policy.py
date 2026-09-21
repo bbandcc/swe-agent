@@ -10,8 +10,9 @@ from __future__ import annotations
 import os
 from dataclasses import dataclass
 from enum import Enum
-from pathlib import PurePosixPath, PureWindowsPath
 from typing import Iterable
+
+from agent.workspace.paths import canonical_workspace_relative_path
 
 
 class WorkspaceAccessErrorCode(str, Enum):
@@ -72,7 +73,7 @@ class WorkspaceAccessPolicy:
         if normalized is None:
             return True
         if normalized == ".":
-            return False
+            return "." in self.configured_paths
         parts = tuple(normalized.split("/"))
         if any(part in _FIXED_PROTECTED_PREFIXES for part in parts):
             return True
@@ -84,7 +85,9 @@ class WorkspaceAccessPolicy:
         ):
             return True
         return any(
-            normalized == prefix or normalized.startswith(prefix + "/")
+            prefix == "."
+            or normalized == prefix
+            or normalized.startswith(prefix + "/")
             for prefix in self.configured_paths
         )
 
@@ -135,24 +138,12 @@ def _normalize_paths(value: Iterable[str], name: str) -> tuple[str, ...]:
 
 
 def _normalize_one(value: str, *, allow_dot: bool = False) -> str | None:
-    if not isinstance(value, str) or not value.strip() or "\x00" in value:
+    if not isinstance(value, str) or not value.strip():
         return None
-    normalized = value.replace("\\", "/")
-    posix = PurePosixPath(normalized)
-    windows = PureWindowsPath(normalized)
-    if (
-        not normalized
-        or posix.is_absolute()
-        or windows.is_absolute()
-        or windows.drive
-        or ".." in posix.parts
-    ):
-        return "." if allow_dot and normalized in {"", "."} else None
-    normalized = normalized.strip("/")
-    parts = [part for part in posix.parts if part not in {"", "."}]
-    if not parts:
-        return "." if allow_dot else None
-    return os.path.normcase("/".join(parts)).replace("\\", "/")
+    normalized = canonical_workspace_relative_path(value, allow_root=allow_dot)
+    if normalized == "." and not allow_dot:
+        return None
+    return normalized
 
 
 def parse_configured_paths(value: str, name: str) -> tuple[str, ...]:

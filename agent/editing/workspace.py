@@ -22,6 +22,7 @@ from agent.workspace import (
     WorkspacePathErrorCode,
     WorkspacePathResolver,
     current_workspace_access_policy,
+    has_single_regular_file_link,
 )
 from agent.runtime.secrets import KnownSecretFilter, SENSITIVE_DATA_MESSAGE
 
@@ -65,6 +66,13 @@ class WorkspaceEditor:
             )
         if not target.exists():
             return WorkspaceSnapshot(path=relative_path, exists=False)
+        if not has_single_regular_file_link(target):
+            return WorkspaceSnapshot(
+                path=relative_path,
+                exists=True,
+                error_code=EditErrorCode.READ_DENIED,
+                message="Workspace read access is denied for this file.",
+            )
         try:
             content_bytes = target.read_bytes()
         except OSError as error:
@@ -121,6 +129,15 @@ class WorkspaceEditor:
                     working_content="",
                     base_hash=None,
                     original_mode=None,
+                )
+            )
+        if not has_single_regular_file_link(target):
+            return TransactionResult(
+                edit_result=EditResult(
+                    status=EditStatus.REJECTED,
+                    path=relative_path,
+                    error_code=EditErrorCode.WRITE_DENIED,
+                    message="Workspace write access is denied for this file.",
                 )
             )
         try:
@@ -218,6 +235,13 @@ class WorkspaceEditor:
             return replace(result, task_ids=transaction.task_ids)
         target = resolution.path
         assert target is not None
+
+        if target.exists() and not has_single_regular_file_link(target):
+            return _transaction_error(
+                transaction,
+                EditErrorCode.WRITE_DENIED,
+                "Workspace write access is denied for this file.",
+            )
 
         current_bytes: bytes | None = None
         if transaction.existed:
@@ -331,7 +355,18 @@ class WorkspaceEditor:
         if not resolution.ok:
             return _rejected_from_resolution(path, resolution)
         relative_path = resolution.relative_path or path
-        return self._access_denied(relative_path, write=True)
+        denied = self._access_denied(relative_path, write=True)
+        if denied is not None:
+            return denied
+        if resolution.path is not None and resolution.path.exists():
+            if not has_single_regular_file_link(resolution.path):
+                return EditResult(
+                    status=EditStatus.REJECTED,
+                    path=relative_path,
+                    error_code=EditErrorCode.WRITE_DENIED,
+                    message="Workspace write access is denied for this file.",
+                )
+        return None
 
     def apply(self, proposal: EditProposal) -> EditResult:
         """Convenience interface for a one-proposal file transaction."""

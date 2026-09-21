@@ -117,8 +117,10 @@ class LegacyVerificationFactory:
 
     def __init__(self) -> None:
         self.verification_calls = 0
+        self.factory_calls = 0
 
     def __call__(self, config, run_id, saver, clock):
+        self.factory_calls += 1
         builder = StateGraph(LegacyVerificationState)
 
         def prepare(_state):
@@ -394,12 +396,12 @@ class GuardedDeadlineFactory:
 
 
 class DurableRuntimeTests(RunConfigTestCase):
-    def test_old_v2_checkpoint_fails_closed_before_verification(self) -> None:
+    def test_old_v3_checkpoint_fails_closed_before_graph_or_verification(self) -> None:
         with tempfile.TemporaryDirectory() as directory:
             root = Path(directory)
             config = self.make_config(root)
             current_request = self.request(config)
-            with patch("agent.runtime.semantics.SEMANTIC_CONFIG_SCHEMA_VERSION", 2):
+            with patch("agent.runtime.semantics.SEMANTIC_CONFIG_SCHEMA_VERSION", 3):
                 old_digest = semantic_config_digest(config)
             old_request = StartRequest(
                 current_request.identity,
@@ -408,7 +410,7 @@ class DurableRuntimeTests(RunConfigTestCase):
             )
             factory = LegacyVerificationFactory()
 
-            with patch("agent.runtime.semantics.SEMANTIC_CONFIG_SCHEMA_VERSION", 2):
+            with patch("agent.runtime.semantics.SEMANTIC_CONFIG_SCHEMA_VERSION", 3):
                 started = start_run(
                     config,
                     old_request,
@@ -417,6 +419,7 @@ class DurableRuntimeTests(RunConfigTestCase):
                     clock=lambda: 100.0,
                 )
 
+            resume_factory = LegacyVerificationFactory()
             resumed = resume_run(
                 config,
                 ResumeRequest(
@@ -424,14 +427,15 @@ class DurableRuntimeTests(RunConfigTestCase):
                     semantic_config_digest(config),
                     current_request.agent_revision,
                 ),
-                graph_factory=factory,
+                graph_factory=resume_factory,
                 clock=lambda: 150.0,
             )
 
             self.assertEqual(started.status, DurableRunStatus.PAUSED)
             self.assertEqual(resumed.status, DurableRunStatus.REJECTED)
             self.assertEqual(resumed.error_code, "run_config_mismatch")
-            self.assertEqual(factory.verification_calls, 0)
+            self.assertEqual(resume_factory.factory_calls, 0)
+            self.assertEqual(resume_factory.verification_calls, 0)
 
     def test_checkpoint_tuple_fields_accept_sequences_but_reject_scalars(self) -> None:
         usage = UsageRecord.unknown("call")

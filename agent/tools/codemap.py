@@ -11,7 +11,11 @@ from agent.tools.results import (
     tool_rejection,
     tool_success,
 )
-from agent.workspace import current_workspace_access_policy, default_workspace_resolver
+from agent.workspace import (
+    current_workspace_access_policy,
+    default_workspace_resolver,
+    has_single_regular_file_link,
+)
 
 _LANGUAGE_BY_SUFFIX = {
     ".py": "python",
@@ -157,8 +161,17 @@ def _resolve_file(file_path: str):
 
 
 def _read_denial(resolution):
+    if not resolution.ok:
+        return None
+    if resolution.path is not None and not has_single_regular_file_link(
+        resolution.path
+    ):
+        return tool_access_denied(
+            "read_denied",
+            "Workspace read access is denied for this file.",
+        )
     policy = current_workspace_access_policy()
-    if policy is None or not resolution.ok:
+    if policy is None:
         return None
     decision = policy.check_read(resolution.relative_path or resolution.requested_path)
     if decision.allowed:

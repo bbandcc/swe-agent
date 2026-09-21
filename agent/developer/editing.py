@@ -2,7 +2,6 @@
 
 import os
 from dataclasses import dataclass
-from pathlib import PurePosixPath, PureWindowsPath
 
 from agent.editing import (
     EditErrorCode,
@@ -15,6 +14,7 @@ from agent.editing import (
     WorkspaceSnapshot,
     WorkspaceTransaction,
 )
+from agent.workspace import canonical_workspace_relative_path
 
 _SEARCH = "<<<<<<< SEARCH"
 _SEPARATOR = "======="
@@ -167,24 +167,10 @@ class DeveloperEditExecutor:
 
 
 def _workspace_relative_path(plan_path: str) -> str | None:
-    normalized = plan_path.replace("\\", "/")
-    posix_path = PurePosixPath(normalized)
-    windows_path = PureWindowsPath(normalized)
-    if (
-        not normalized
-        or posix_path.is_absolute()
-        or windows_path.is_absolute()
-        or windows_path.drive
-        or ".." in posix_path.parts
-    ):
+    relative = canonical_workspace_relative_path(plan_path, allow_root=False)
+    if relative is None:
         return None
-
-    parts = list(posix_path.parts)
-    if parts and parts[0] == "workspace_repo":
-        parts.pop(0)
-    if not parts:
-        return None
-    return "/".join(parts)
+    return relative
 
 
 def canonical_plan_path(plan_path: str) -> str | None:

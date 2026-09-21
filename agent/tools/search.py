@@ -18,6 +18,7 @@ from agent.workspace import (
     WorkspacePathResolver,
     current_workspace_access_policy,
     default_workspace_resolver,
+    has_single_regular_file_link,
 )
 
 
@@ -80,6 +81,8 @@ def _search_directory(
                 continue
             file_path = root_path / name
             if _is_link_or_junction(file_path):
+                continue
+            if not has_single_regular_file_link(file_path):
                 continue
             if _is_protected(file_path, workspace_root, access_policy):
                 continue

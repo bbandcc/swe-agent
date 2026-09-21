@@ -6,6 +6,7 @@ import math
 import hashlib
 import re
 import subprocess
+from collections.abc import Mapping
 from dataclasses import dataclass
 from enum import Enum
 from pathlib import Path
@@ -76,6 +77,39 @@ class WorkspaceRevision:
     @classmethod
     def unknown(cls, reason: WorkspaceRevisionReason) -> "WorkspaceRevision":
         return cls(None, None, None, None, WorkspaceRevisionStatus.UNKNOWN, reason)
+
+    @classmethod
+    def from_dict(cls, value: Mapping[str, object]) -> "WorkspaceRevision":
+        """Parse the exact checkpoint-safe revision shape."""
+        required = {
+            "status",
+            "head",
+            "dirty",
+            "status_digest",
+            "diff_digest",
+            "reason",
+        }
+        if not isinstance(value, Mapping) or set(value) != required:
+            raise ValueError("Workspace revision shape is invalid.")
+        try:
+            status = WorkspaceRevisionStatus(value["status"])
+        except (TypeError, ValueError) as error:
+            raise ValueError("Workspace revision status is invalid.") from error
+        reason_value = value["reason"]
+        reason = None
+        if reason_value is not None:
+            try:
+                reason = WorkspaceRevisionReason(reason_value)
+            except (TypeError, ValueError) as error:
+                raise ValueError("Workspace revision reason is invalid.") from error
+        return cls(
+            head=value["head"],
+            dirty=value["dirty"],
+            status_digest=value["status_digest"],
+            diff_digest=value["diff_digest"],
+            status=status,
+            reason=reason,
+        )
 
     def to_dict(self) -> dict[str, object | None]:
         return {

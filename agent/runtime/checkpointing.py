@@ -81,6 +81,35 @@ class GraphCheckpointLookup(CheckpointLookup):
         )
 
 
+class SqliteCheckpointLookup(CheckpointLookup):
+    """Read the root checkpoint through SqliteSaver before graph creation."""
+
+    def __init__(self, saver: Any, thread_config: Mapping[str, Any]) -> None:
+        self.saver = saver
+        self.thread_config = thread_config
+
+    def get(self, thread_id: str) -> RunCheckpoint | None:
+        if thread_id != self.thread_config["configurable"]["thread_id"]:
+            return None
+        checkpoint = self.saver.get_tuple(self.thread_config)
+        if checkpoint is None:
+            return None
+        values = checkpoint.checkpoint.get("channel_values", {})
+        if not isinstance(values, Mapping):
+            return None
+        if not {
+            "run_identity",
+            "run_config_digest",
+            "agent_revision",
+        }.issubset(values):
+            return None
+        return RunCheckpoint(
+            identity=_identity(values["run_identity"]),
+            run_config_digest=str(values["run_config_digest"]),
+            agent_revision=_revision(values["agent_revision"]),
+        )
+
+
 def mark_uncertain_dispatch(
     graph: Any, thread_config: Mapping[str, Any]
 ) -> Mapping[str, Any] | None:

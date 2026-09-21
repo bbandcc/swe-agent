@@ -5,6 +5,7 @@ import unittest
 from pathlib import Path
 
 from agent.editing import EditOperation, EditProposal, EditStatus, WorkspaceEditor
+from agent.developer.editing import DeveloperEditExecutor
 from agent.runtime import (
     AgentCodeRevision,
     AgentRevisionStatus,
@@ -22,6 +23,7 @@ from agent.tools.codemap import (
     get_raw_file_content,
 )
 from agent.tools.search import search_keyword_in_directory
+from agent.tools.write import get_files_structure
 from agent.tools.write import get_files_structure
 from agent.verification import VerificationCheckStatus, VerificationRunner, VerificationSpec
 from agent.workspace import workspace_root_scope
@@ -146,6 +148,22 @@ class WorkspaceAccessPolicyTests(RunConfigTestCase):
                 semantic_config_digest(first), semantic_config_digest(reordered)
             )
 
+            aliases = (
+                WorkspaceAccessPolicy(oracle_paths=("oracle",)),
+                WorkspaceAccessPolicy(oracle_paths=("./oracle",)),
+                WorkspaceAccessPolicy(oracle_paths=("workspace_repo/oracle",)),
+            )
+            self.assertEqual(aliases[0], aliases[1])
+            self.assertEqual(aliases[0], aliases[2])
+            self.assertEqual(
+                semantic_config_digest(
+                    self.make_config(root, access_policy=aliases[0])
+                ),
+                semantic_config_digest(
+                    self.make_config(root, access_policy=aliases[2])
+                ),
+            )
+
     def test_resume_rejects_policy_change_before_graph(self) -> None:
         with tempfile.TemporaryDirectory() as directory:
             root = Path(directory)
@@ -169,6 +187,65 @@ class WorkspaceAccessPolicyTests(RunConfigTestCase):
                 type("Lookup", (), {"get": lambda self, _: checkpoint})(),
             )
             self.assertEqual(result.error_code.value, "run_config_mismatch")
+
+    def test_hard_link_aliases_are_denied_without_leaking_content(self) -> None:
+        canary = "HARDLINK_PROTECTED_CANARY"
+        with tempfile.TemporaryDirectory() as directory:
+            root = Path(directory)
+            (root / ".git").mkdir()
+            (root / "oracle").mkdir()
+            protected = {
+                root / ".git" / "config": root / "public_git.py",
+                root / "credentials": root / "public_credentials.py",
+                root / "oracle" / "expected.py": root / "public_oracle.py",
+            }
+            for source, alias in protected.items():
+                source.write_text(canary, encoding="utf-8")
+                try:
+                    alias.hardlink_to(source)
+                except OSError as error:
+                    self.skipTest(f"hard links are unavailable: {error}")
+            before = {
+                source: (source.read_bytes(), source.stat().st_mtime_ns)
+                for source in protected
+            }
+            policy = WorkspaceAccessPolicy(oracle_paths=("oracle",))
+            editor = WorkspaceEditor(root, access_policy=policy)
+            developer = DeveloperEditExecutor(editor)
+
+            with workspace_root_scope(root, access_policy=policy):
+                raw = get_raw_file_content.invoke({"file_path": "public_git.py"})
+                definitions = get_code_definitions.invoke(
+                    {"file_path": "public_oracle.py"}
+                )
+                search = search_keyword_in_directory.invoke(
+                    {"directory": ".", "search_term": "HARDLINK"}
+                )
+                tree = get_files_structure.invoke({"directory": "."})
+            snapshot = editor.snapshot("public_oracle.py")
+            started = editor.begin("public_oracle.py")
+            checked = editor.check_write("public_oracle.py")
+            developer_snapshot = developer.prepare(
+                "./workspace_repo/public_oracle.py"
+            )
+            developer_check = developer.check_write(
+                "./workspace_repo/public_oracle.py"
+            )
+
+            rendered = json.dumps((raw, definitions, search, tree))
+            self.assertNotIn(canary, rendered)
+            self.assertNotIn("public_git.py", rendered)
+            self.assertNotIn("public_oracle.py", rendered)
+            self.assertEqual(raw["error_code"], "read_denied")
+            self.assertEqual(definitions["error_code"], "read_denied")
+            self.assertEqual(snapshot.error_code.value, "read_denied")
+            self.assertEqual(started.edit_result.error_code.value, "write_denied")
+            self.assertEqual(checked.error_code.value, "write_denied")
+            self.assertEqual(developer_snapshot.error_code.value, "read_denied")
+            self.assertEqual(developer_check.error_code.value, "write_denied")
+            for source, (content, mtime_ns) in before.items():
+                self.assertEqual(source.read_bytes(), content)
+                self.assertEqual(source.stat().st_mtime_ns, mtime_ns)
 
 
 if __name__ == "__main__":

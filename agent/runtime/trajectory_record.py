@@ -11,6 +11,7 @@ from pathlib import Path
 from typing import Any
 
 from agent.runtime.secrets import KnownSecretFilter
+from agent.runtime.revision import WorkspaceRevision
 from agent.runtime.trajectory_contracts import (
     RECORD_SCHEMA_VERSION,
     RECORDS_DIRECTORY,
@@ -50,11 +51,17 @@ class RunRecord:
     record_ref: str | None = None
 
     def __post_init__(self) -> None:
-        if self.schema_version not in {1, RECORD_SCHEMA_VERSION}:
+        input_schema_version = self.schema_version
+        if (
+            isinstance(input_schema_version, bool)
+            or not isinstance(input_schema_version, int)
+            or input_schema_version not in {1, RECORD_SCHEMA_VERSION}
+        ):
             raise ValueError("Unsupported run record schema version.")
-        # Accept records constructed by the pre-revision public seam, but
-        # publish the current schema whenever they are written.
-        object.__setattr__(self, "schema_version", RECORD_SCHEMA_VERSION)
+        # Keep schema-1 values readable/writable through the legacy seam. New
+        # durable records are constructed with the current schema explicitly.
+        if input_schema_version == RECORD_SCHEMA_VERSION:
+            object.__setattr__(self, "schema_version", RECORD_SCHEMA_VERSION)
         for name in (
             "run_id",
             "thread_id",
@@ -94,7 +101,16 @@ class RunRecord:
             raise ValueError("agent_revision must be a mapping.")
         for name in ("workspace_revision_start", "workspace_revision_end"):
             value = getattr(self, name)
-            if isinstance(value, str):
+            if input_schema_version == RECORD_SCHEMA_VERSION:
+                if not isinstance(value, Mapping):
+                    raise ValueError(
+                        f"{name} must contain a complete workspace revision."
+                    )
+                revision = WorkspaceRevision.from_dict(value)
+                object.__setattr__(self, name, revision.to_dict())
+            elif isinstance(value, str):
+                if value != "UNKNOWN":
+                    raise ValueError(f"{name} has an invalid legacy value.")
                 _require_text(value, name)
             elif isinstance(value, Mapping):
                 object.__setattr__(self, name, _bounded_json_value(value))
@@ -125,6 +141,13 @@ class RunRecord:
     def from_dict(cls, value: Mapping[str, Any]) -> "RunRecord":
         if not isinstance(value, Mapping):
             raise ValueError("Run record must be a mapping.")
+        schema_version = value.get("schema_version")
+        if (
+            isinstance(schema_version, bool)
+            or not isinstance(schema_version, int)
+            or schema_version not in {1, RECORD_SCHEMA_VERSION}
+        ):
+            raise ValueError("Run record schema version is invalid.")
         allowed = {
             "schema_version",
             "identity",
@@ -146,6 +169,11 @@ class RunRecord:
         }
         if set(value) - allowed:
             raise ValueError("Run record contains unknown fields.")
+        if schema_version == RECORD_SCHEMA_VERSION and not {
+            "workspace_revision_start",
+            "workspace_revision_end",
+        }.issubset(value):
+            raise ValueError("Run record revision fields are missing.")
         identity = value.get("identity")
         if not isinstance(identity, Mapping):
             raise ValueError("Run record identity is invalid.")
@@ -157,7 +185,7 @@ class RunRecord:
         if set(workspace) - {"canonical_root", "root_digest"}:
             raise ValueError("Run record workspace identity contains unknown fields.")
         return cls(
-            schema_version=value["schema_version"],
+            schema_version=schema_version,
             run_id=identity["run_id"],
             thread_id=identity["thread_id"],
             task_id=identity["task_id"],

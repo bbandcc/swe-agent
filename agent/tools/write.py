@@ -16,6 +16,7 @@ from agent.workspace import (
     WorkspaceAccessPolicy,
     current_workspace_access_policy,
     default_workspace_resolver,
+    has_single_regular_file_link,
 )
 
 
@@ -47,6 +48,7 @@ def _safe_tree(
             name
             for name in files
             if not _is_link_or_junction(root_path / name)
+            and has_single_regular_file_link(root_path / name)
             and not _is_protected(
                 root_path / name, workspace_root, access_policy
             )

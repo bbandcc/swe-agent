@@ -1,6 +1,7 @@
 """Resolve untrusted paths against one configured workspace boundary."""
 
 import os
+import stat
 from contextlib import contextmanager
 from contextvars import ContextVar
 from dataclasses import dataclass
@@ -191,13 +192,10 @@ class WorkspacePathResolver:
                 return absolute.relative_to(root)
             except (OSError, ValueError):
                 return None
-        if ".." in posix.parts:
+        relative = canonical_workspace_relative_path(requested_path)
+        if relative is None:
             return None
-
-        parts = list(posix.parts)
-        if parts and parts[0] == "workspace_repo":
-            parts.pop(0)
-        return Path(*parts) if parts else Path()
+        return Path() if relative == "." else Path(relative)
 
     @staticmethod
     def _error(
@@ -219,6 +217,23 @@ def _is_link_or_junction(path: Path) -> bool:
         )
     except OSError:
         return True
+
+
+def has_single_regular_file_link(path: Path) -> bool:
+    """Return whether an existing regular file has one directory entry.
+
+    A hard-linked regular file can expose protected content through a public
+    alias. Model-visible reads and writes fail closed unless the file has the
+    ordinary single-link shape. Metadata failures are treated as unsafe.
+    """
+    try:
+        metadata = path.stat(follow_symlinks=False)
+    except (OSError, TypeError):
+        return False
+    return bool(
+        stat.S_ISREG(metadata.st_mode)
+        and getattr(metadata, "st_nlink", 0) == 1
+    )
 
 
 def canonicalize_root_path(
@@ -266,6 +281,40 @@ def canonicalize_root_path(
 def canonical_path_key(path: str | Path) -> str:
     """Return the S1 cross-platform comparison key for a canonical path."""
     return os.path.normcase(str(path))
+
+
+def canonical_workspace_relative_path(
+    requested_path: str,
+    *,
+    allow_root: bool = True,
+) -> str | None:
+    """Normalize the relative spelling shared by resolver and trusted policy.
+
+    Model paths may be emitted as ``oracle``, ``./oracle`` or
+    ``workspace_repo/oracle``. Keep this normalization in the shared path
+    module so policy configuration and runtime resolution cannot drift.
+    Absolute paths and parent traversal are never accepted here.
+    """
+    if not isinstance(requested_path, str) or not requested_path:
+        return None
+    if "\x00" in requested_path:
+        return None
+    normalized = requested_path.replace("\\", "/")
+    posix = PurePosixPath(normalized)
+    windows = PureWindowsPath(normalized)
+    if (
+        posix.is_absolute()
+        or windows.is_absolute()
+        or windows.drive
+        or ".." in posix.parts
+    ):
+        return None
+    parts = list(posix.parts)
+    if parts and os.path.normcase(parts[0]) == os.path.normcase("workspace_repo"):
+        parts.pop(0)
+    if not parts:
+        return "." if allow_root else None
+    return os.path.normcase("/".join(parts)).replace("\\", "/")
 
 
 def default_workspace_resolver() -> WorkspacePathResolver:

@@ -11,15 +11,15 @@
 ### 当前状态文件基线
 
 - S3.2 production 技术冻结点：`5850b8370c49f868e90aeffe9e6042f85eaa522c`；D1/S1a、D2/S2b 已冻结，D3/S2c Seal blocker 已通过本地验收。
-- S3.2 的配置、身份、SQLite checkpoint、预算边界、start/resume 和现有图接入均保持冻结；D3/S2c 已将单一 JUnit XML 可信报告、稳定 case identity、保守 acceptance policy 和 owned temporary evidence 生命周期接入生产验收链路。D4/S3.2a 已补齐模型请求时限、单次外部尝试边界、普通模型响应结算和部分请求身份范围；D6/S3.3a、S3.3b、S3.3c 与 D7/S3.5a 已完成本地验收，本轮 D7/S3.5b 增加可信读写 policy、受保护路径和 workspace revision evidence；S3 尚未全部完成，当前不能进入 S4。
+- S3.2 的配置、身份、SQLite checkpoint、预算边界、start/resume 和现有图接入均保持冻结；D3/S2c 已将单一 JUnit XML 可信报告、稳定 case identity、保守 acceptance policy 和 owned temporary evidence 生命周期接入生产验收链路。D4/S3.2a 已补齐模型请求时限、单次外部尝试边界、普通模型响应结算和部分请求身份范围；D6/S3.3a、S3.3b、S3.3c 与 D7/S3.5a 已完成本地验收，本轮 D7/S3.5b Final Seal 补齐 hard-link 读取边界、policy canonical alias、严格 RunRecord v2 revision 和旧 semantic v3 resume 预检；S3 尚未全部完成，当前不能进入 S4。
 - D2/S2b Final Seal 已收窄 library/CLI 的异常边界；`RunSummary.warnings` 只输出 preflight warning code，unexpected `RuntimeError`、`KeyboardInterrupt` 和 `SystemExit` 不被入口吞掉。
-- 最新 Codex 本地验证：unittest 309 tests OK / 10 skipped；pytest 299 passed / 10 skipped /
+- 最新 Codex 本地验证：unittest 312 tests OK / 10 skipped；pytest 302 passed / 10 skipped /
   172 subtests passed；Python compile、11 个 prompt render、root/start/resume 三套 CLI help、
   `git diff --check` 均通过。10 个 skip 均为当前 Windows 链接能力或平台边界限制。
 - 没有 GitHub CI 或独立外部测试证据，不作相应声明。
 - 剩余能力：完整 secret-safe state persistence（当前只覆盖 RunConfig 中已知凭据）、write/verification recovery 等仍未实现；D7 policy 只约束使用本 seam 的合作进程和模型可调用工具，不阻止第三方直接写 workspace，也不是 OS sandbox。本轮 EventSink/RunRecord 与 verification artifact 只提供单进程本地 JSONL、结构化记录和有界/脱敏日志，不是完整恢复系统。provider 正向 retry/独立 attempt 语义未实现，当前 durable 只允许单次外部尝试；当前模型 `request_digest` 只代表有界语义输入，身份范围明确为 `PARTIAL`，不能据此安全重放最终 rendered request；exactly-once 不承诺。JUnit XML 是当前唯一可信报告格式，未配置或报告缺失/畸形时保守返回证据不足；多框架 parser registry、扩展 repair 和 S4 均未实现。runner 只改写精确匹配的 `--junitxml/--junit-xml` destination 到 owned temporary output，workspace report_path 保持原 bytes/mtime；owned temp cleanup 失败返回结构化 `EXECUTION_ERROR`。pytest 对其它 workspace 文件的副作用留给 D5，本轮未实现 artifact recovery。
 - 后续技术切片继续按 MASTER_PLAN §5.2 执行；保留现有 S1/S2/S3 历史编号，不重新开启或重命名 S1。
-- MASTER_PLAN 对应：当前实现事实覆盖 S3.2、D1/S1a、D2/S2b、D3/S2c、D4/S3.2a、D6/S3.3a、S3.3b、S3.3c、D7/S3.5a 和本轮 S3.5b；没有 GitHub CI 或独立外部测试证据。后续运行控制、轨迹和恢复要求继续按 §5.2 映射执行，本轮不进入 S3.4 或 S4。
+- MASTER_PLAN 对应：当前实现事实覆盖 S3.2、D1/S1a、D2/S2b、D3/S2c、D4/S3.2a、D6/S3.3a、S3.3b、S3.3c、D7/S3.5a 和本轮 S3.5b Final Seal；没有 GitHub CI 或独立外部测试证据。后续运行控制、轨迹和恢复要求继续按 §5.2 映射执行，本轮不进入 S3.4 或 S4。
 
 ## 当前文档任务：独立 MASTER PLAN（2026-09-16）
 
@@ -757,6 +757,9 @@ preexisting hard link 在 open 后写入前结构化拒绝，外部 target bytes
 - `WorkspaceAccessPolicy` 是来自可信 `RunConfig` 的不可变值对象。它复用
   `WorkspacePathResolver` 的 canonical relative-path 边界，固定保护 `.git`、常见凭据路径，
   并保护配置的 hidden/oracle path；读取和写入分别返回结构化 `READ_DENIED` / `WRITE_DENIED`。
+- policy 配置与模型路径统一归一 `oracle`、`./oracle`、`workspace_repo/oracle` 等等价拼写；
+  model-visible regular file 若 `st_nlink != 1` 则保守拒绝，raw/codemap/search/tree、
+  WorkspaceEditor 和 Developer 均不读取 hard-link alias 内容，也不泄漏受保护源路径。
 - Architect/Developer 的 search、codemap、tree/read 工具在同一 workspace policy context 下执行；
   Developer 计划目标、`WorkspaceEditor.begin` 和 `commit` 也执行 write policy。受保护目录在 tree/search
   中静默跳过，直接访问返回不含受保护路径的 denial；verification runner 保持可信 checks 的独立执行边界，
@@ -770,27 +773,33 @@ preexisting hard link 在 open 后写入前结构化拒绝，外部 target bytes
   `shell=False` 和有界 timeout，持久化只保留 digest，不保存 raw diff。非 Git、Git 不可用或查询失败统一返回
   结构化 `UNKNOWN` 原因。
 - RunRecord schema 升至 v2，记录 admission 内的 start/end workspace revision；不执行 reset/checkout，
-  不覆盖用户修改。revision 是证据摘要，不是 recovery 或 workspace identity 的强唯一保证。
+  不覆盖用户修改。v2 revision 必须是完整 known/structured-unknown shape，损坏记录拒绝覆盖；合法 v1
+  legacy record 仍可读取。revision 是证据摘要，不是 recovery 或 workspace identity 的强唯一保证。
+- resume 在 graph factory 前读取 SQLite root checkpoint；旧 semantic schema v3 paused checkpoint 在当前
+  schema v4 下返回 `run_config_mismatch`，不触发 graph/model/verification side effect。
 
 ### TDD 验收切片
 
 - [x] plan/read/commit 对 `.git`、credential、hidden/oracle path 一致拒绝；tree/search/codemap 不泄漏受保护
-  名称或内容；Developer protected plan target 在模型工作前拒绝；trusted verification 可读取 oracle。
+  名称或内容；Developer protected plan target 在模型工作前拒绝；trusted verification 可读取 oracle；
+  hard-link alias 读取/编辑拒绝且源 bytes/mtime 不变。
 - [x] policy env/config digest 与 resume mismatch seam；clean、dirty、non-Git、Git failure workspace revision；
-  durable RunRecord start/end revision。
+  durable RunRecord start/end revision、严格 v2 shape 与 v1 legacy 读取；旧 v3 SQLite resume 零图副作用。
 - [x] 全量 unittest/pytest、Python compile、11 个 prompt render、root/start/resume CLI help 和
   `git diff --check` 通过。
 
 ### 已知边界
 
 - policy 是 cooperative model/tool boundary，不是 OS sandbox、通用 ACL/RBAC 或第三方进程写保护；
-  verification checks 仍是可信外部配置，D3 oracle 不受 model read policy 限制。
+  verification checks 仍是可信外部配置，D3 oracle 不受 model read policy 限制。hard-link 拒绝依赖平台
+  提供的 `st_nlink`/hard-link 语义；平台不能创建 hard link 时测试只记录 skip。
 - revision digest 不保存 diff 内容；Git 查询失败或非 Git workspace 只记录 UNKNOWN；同路径整体替换、
-  第三方并发修改和 S3.4 pending-write/hash recovery 仍不在本切片承诺范围。
+  第三方并发修改和 S3.4 pending-write/hash recovery 仍不在本切片承诺范围。v1 仅保留历史读取语义，
+  不把旧记录升级为新的 revision 证据。
 
 ### 当前状态
 
-D7/S3.5b 本地实现与验收完成：unittest 309 tests OK / 10 skipped；pytest 299 passed / 10 skipped /
-172 subtests passed。新增 policy、protected path、Developer plan、trusted oracle 和 workspace revision
+D7/S3.5b Final Seal 本地实现与验收完成：unittest 312 tests OK / 10 skipped；pytest 302 passed / 10 skipped /
+172 subtests passed。新增 hard-link policy、canonical alias、严格 RunRecord v2 和旧 semantic v3 resume
 回归通过；旧 S1/S2/S3.1/S3.2/D3-D7a 测试保持通过。compile、11 个 prompt render、root/start/resume
 CLI help 和 `git diff --check` 通过；没有 GitHub CI 或独立外部测试证据。
