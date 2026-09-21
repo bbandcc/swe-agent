@@ -85,10 +85,14 @@ class RunRecord:
                 raise ValueError("audit_status is invalid.") from error
         for name in ("started_at", "finished_at"):
             value = getattr(self, name)
+            try:
+                finite = math.isfinite(value)
+            except (OverflowError, TypeError):
+                finite = False
             if (
                 isinstance(value, bool)
                 or not isinstance(value, (int, float))
-                or not math.isfinite(value)
+                or not finite
             ):
                 raise ValueError(f"{name} must be finite.")
         if self.last_event_sequence is not None and (
@@ -148,41 +152,46 @@ class RunRecord:
             or schema_version not in {1, RECORD_SCHEMA_VERSION}
         ):
             raise ValueError("Run record schema version is invalid.")
-        allowed = {
+        required_legacy = {
             "schema_version",
             "identity",
             "run_config_digest",
             "runtime_status",
+            "started_at",
+            "finished_at",
+            "audit_status",
+            "agent_revision",
+        }
+        allowed = {
+            *required_legacy,
             "workflow_outcome",
             "verification_status",
             "error_code",
             "budget",
-            "started_at",
-            "finished_at",
             "last_event_sequence",
-            "audit_status",
             "audit_error_code",
-            "agent_revision",
             "workspace_revision_start",
             "workspace_revision_end",
             "record_ref",
         }
         if set(value) - allowed:
             raise ValueError("Run record contains unknown fields.")
-        if schema_version == RECORD_SCHEMA_VERSION and not {
-            "workspace_revision_start",
-            "workspace_revision_end",
-        }.issubset(value):
-            raise ValueError("Run record revision fields are missing.")
+        missing = required_legacy - set(value)
+        if missing:
+            raise ValueError("Run record required fields are missing.")
+        if schema_version == RECORD_SCHEMA_VERSION:
+            missing = allowed - set(value)
+            if missing:
+                raise ValueError("Run record v2 fields are missing.")
         identity = value.get("identity")
         if not isinstance(identity, Mapping):
             raise ValueError("Run record identity is invalid.")
-        if set(identity) - {"run_id", "thread_id", "task_id", "workspace"}:
+        if set(identity) != {"run_id", "thread_id", "task_id", "workspace"}:
             raise ValueError("Run record identity contains unknown fields.")
         workspace = identity.get("workspace")
         if not isinstance(workspace, Mapping):
             raise ValueError("Run record workspace identity is invalid.")
-        if set(workspace) - {"canonical_root", "root_digest"}:
+        if set(workspace) != {"canonical_root", "root_digest"}:
             raise ValueError("Run record workspace identity contains unknown fields.")
         return cls(
             schema_version=schema_version,
@@ -293,7 +302,13 @@ def write_run_record(
                             message="The existing run record contains a configured secret.",
                         )
                 RunRecord.from_dict(decoded)
-            except (UnicodeError, json.JSONDecodeError, TypeError, ValueError):
+            except (
+                UnicodeError,
+                json.JSONDecodeError,
+                KeyError,
+                TypeError,
+                ValueError,
+            ):
                 return RecordWriteResult(
                     success=False,
                     record_ref=reference,

@@ -300,7 +300,9 @@ def create_architect_workflow(
 
             def policy_wrapped(*args, **kwargs):
                 with workspace_access_scope(access_policy):
-                    return original(*args, **kwargs)
+                    if callable(original):
+                        return original(*args, **kwargs)
+                    return original.invoke(*args, **kwargs)
 
             wrapped = policy_wrapped
         if event_recorder is not None and event_type is not None:

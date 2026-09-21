@@ -10,6 +10,7 @@ from langchain_core.tools import tool
 from agent.tools.results import (
     tool_access_denied,
     tool_error,
+    tool_policy_denial,
     tool_rejection,
     tool_success,
 )
@@ -154,6 +155,11 @@ def search_keyword_in_directory(
             directory, "invalid_request", "context must be between 0 and 20."
         )
     resolver = default_workspace_resolver()
+    early_denial = tool_policy_denial(
+        resolver, directory, current_workspace_access_policy()
+    )
+    if early_denial is not None:
+        return early_denial
     resolution = resolver.resolve_directory(directory)
     if not resolution.ok or resolution.path is None:
         return tool_rejection(resolution)

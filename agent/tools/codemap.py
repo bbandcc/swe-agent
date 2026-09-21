@@ -8,6 +8,7 @@ from tree_sitter_languages import get_language, get_parser
 from agent.tools.results import (
     tool_access_denied,
     tool_error,
+    tool_policy_denial,
     tool_rejection,
     tool_success,
 )
@@ -186,7 +187,13 @@ def get_code_definitions(file_path: str) -> dict[str, object]:
     Args:
         file_path: Workspace file, relative or absolute within the workspace.
     """
-    resolution = _resolve_file(file_path)
+    resolver = default_workspace_resolver()
+    early_denial = tool_policy_denial(
+        resolver, file_path, current_workspace_access_policy()
+    )
+    if early_denial is not None:
+        return early_denial
+    resolution = resolver.resolve_file(file_path)
     if not resolution.ok or resolution.path is None:
         return tool_rejection(resolution)
     denied = _read_denial(resolution)
@@ -215,7 +222,13 @@ def get_function_implementation(
         file_path: Workspace file, relative or absolute within the workspace.
         function_name: Function or method name to find.
     """
-    resolution = _resolve_file(file_path)
+    resolver = default_workspace_resolver()
+    early_denial = tool_policy_denial(
+        resolver, file_path, current_workspace_access_policy()
+    )
+    if early_denial is not None:
+        return early_denial
+    resolution = resolver.resolve_file(file_path)
     if not resolution.ok or resolution.path is None:
         return tool_rejection(resolution)
     denied = _read_denial(resolution)
@@ -249,7 +262,13 @@ def get_code_definitions_multi(file_paths: list[str]) -> dict[str, object]:
     Args:
         file_paths: Workspace files to inspect.
     """
-    resolutions = [_resolve_file(file_path) for file_path in file_paths]
+    resolver = default_workspace_resolver()
+    policy = current_workspace_access_policy()
+    for file_path in file_paths:
+        early_denial = tool_policy_denial(resolver, file_path, policy)
+        if early_denial is not None:
+            return early_denial
+    resolutions = [resolver.resolve_file(file_path) for file_path in file_paths]
     for resolution in resolutions:
         if not resolution.ok:
             return tool_rejection(resolution)
@@ -292,7 +311,13 @@ def get_raw_file_content(file_path: str) -> dict[str, object]:
     Args:
         file_path: Workspace file, relative or absolute within the workspace.
     """
-    resolution = _resolve_file(file_path)
+    resolver = default_workspace_resolver()
+    early_denial = tool_policy_denial(
+        resolver, file_path, current_workspace_access_policy()
+    )
+    if early_denial is not None:
+        return early_denial
+    resolution = resolver.resolve_file(file_path)
     if not resolution.ok or resolution.path is None:
         return tool_rejection(resolution)
     denied = _read_denial(resolution)

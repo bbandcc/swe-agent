@@ -46,3 +46,22 @@ def tool_access_denied(error_code: str, message: str) -> dict[str, object]:
         "error_code": error_code,
         "message": message,
     }
+
+
+def tool_policy_denial(
+    resolver,
+    requested_path: str,
+    policy,
+    *,
+    write: bool = False,
+) -> dict[str, object] | None:
+    """Apply trusted policy before resolver descendant metadata checks."""
+    if policy is None:
+        return None
+    relative = resolver.canonical_relative_path(requested_path)
+    if relative is None:
+        return None
+    decision = policy.check_write(relative) if write else policy.check_read(relative)
+    if decision.allowed:
+        return None
+    return tool_access_denied(decision.error_code.value, decision.message)

@@ -1,9 +1,24 @@
 import json
+import os
 import sys
 import tempfile
 import unittest
 from pathlib import Path
+from unittest.mock import patch
 
+from langchain_core.messages import AIMessage
+
+from agent.architect.graph import create_architect_workflow
+from agent.architect.models import ResearchEvaluation, ResearchStep
+from agent.architect.runtime import ArchitectRuntime
+from agent.common.entities import (
+    AtomicTask,
+    ImplementationPlan,
+    ImplementationTask,
+    PlanStatus,
+)
+from agent.developer.graph import create_developer_workflow
+from agent.developer.runtime import DeveloperRuntime
 from agent.editing import EditOperation, EditProposal, EditStatus, WorkspaceEditor
 from agent.developer.editing import DeveloperEditExecutor
 from agent.runtime import (
@@ -246,6 +261,214 @@ class WorkspaceAccessPolicyTests(RunConfigTestCase):
             for source, (content, mtime_ns) in before.items():
                 self.assertEqual(source.read_bytes(), content)
                 self.assertEqual(source.stat().st_mtime_ns, mtime_ns)
+
+    def test_protected_missing_and_link_paths_are_indistinguishable(self) -> None:
+        canary = "PROTECTED_METADATA_CANARY"
+        with tempfile.TemporaryDirectory() as directory:
+            root = Path(directory)
+            (root / "oracle").mkdir()
+            (root / "oracle" / "existing.py").write_text(
+                f"VALUE = {canary!r}\n", encoding="utf-8"
+            )
+            outside = root.parent / "outside-protected.py"
+            outside.write_text(f"VALUE = {canary!r}\n", encoding="utf-8")
+            link = root / "oracle" / "link.py"
+            try:
+                link.symlink_to(outside)
+            except OSError as error:
+                link = None
+                symlink_skip = str(error)
+            else:
+                symlink_skip = None
+            policy = WorkspaceAccessPolicy(oracle_paths=("oracle",))
+            calls = (
+                (get_raw_file_content, {"file_path": "oracle/existing.py"}),
+                (get_code_definitions, {"file_path": "oracle/existing.py"}),
+                (get_raw_file_content, {"file_path": "oracle/missing.py"}),
+                (get_raw_file_content, {"file_path": "./oracle/missing.py"}),
+                (
+                    get_raw_file_content,
+                    {"file_path": "workspace_repo/oracle/missing.py"},
+                ),
+                (get_code_definitions, {"file_path": "oracle/missing.py"}),
+                (
+                    search_keyword_in_directory,
+                    {"directory": "oracle", "search_term": "VALUE"},
+                ),
+                (
+                    search_keyword_in_directory,
+                    {"directory": "oracle/missing-dir", "search_term": "VALUE"},
+                ),
+                (get_files_structure, {"directory": "oracle"}),
+                (get_files_structure, {"directory": "oracle/missing-dir"}),
+            )
+            if link is not None:
+                calls += ((get_raw_file_content, {"file_path": "oracle/link.py"}),)
+            with workspace_root_scope(root, access_policy=policy):
+                results = [tool.invoke(arguments) for tool, arguments in calls]
+            for result in results:
+                self.assertFalse(result["ok"], result)
+                self.assertEqual(result["error_code"], "read_denied", result)
+                self.assertIsNone(result["path"], result)
+                self.assertNotIn("oracle", json.dumps(result))
+                self.assertNotIn(canary, json.dumps(result))
+            if symlink_skip is not None:
+                self.assertTrue(symlink_skip)
+
+            with workspace_root_scope(root, access_policy=policy):
+                outside_result = get_raw_file_content.invoke(
+                    {"file_path": str(outside)}
+                )
+            self.assertFalse(outside_result["ok"])
+            self.assertEqual(outside_result["error_code"], "path_invalid")
+
+    def test_compiled_architect_and_developer_tool_nodes_keep_policy_context(self) -> None:
+        canary = "COMPILED_POLICY_CANARY"
+        with tempfile.TemporaryDirectory() as directory:
+            root = Path(directory)
+            (root / "oracle").mkdir()
+            (root / "oracle" / "expected.txt").write_text(
+                canary, encoding="utf-8"
+            )
+            (root / "target.py").write_text("value = 1\n", encoding="utf-8")
+            policy = WorkspaceAccessPolicy(oracle_paths=("oracle",))
+            protected_tools = (
+                get_raw_file_content,
+                get_code_definitions,
+                search_keyword_in_directory,
+                get_files_structure,
+            )
+            protected_tool_calls = [
+                {
+                    "name": "get_raw_file_content",
+                    "args": {"file_path": "oracle/expected.txt"},
+                    "id": "policy-read-call",
+                    "type": "tool_call",
+                },
+                {
+                    "name": "get_code_definitions",
+                    "args": {"file_path": "oracle/expected.txt"},
+                    "id": "policy-codemap-call",
+                    "type": "tool_call",
+                },
+                {
+                    "name": "search_keyword_in_directory",
+                    "args": {"directory": "oracle", "search_term": "VALUE"},
+                    "id": "policy-search-call",
+                    "type": "tool_call",
+                },
+                {
+                    "name": "get_files_structure",
+                    "args": {"directory": "oracle"},
+                    "id": "policy-tree-call",
+                    "type": "tool_call",
+                },
+            ]
+            architect_calls = 0
+            architect_tool_results = []
+
+            def architect_conduct(_values):
+                nonlocal architect_calls
+                architect_calls += 1
+                if architect_calls == 1:
+                    return AIMessage(
+                        content="",
+                        tool_calls=protected_tool_calls,
+                    )
+                architect_tool_results.extend(
+                    message
+                    for message in _values["implementation_research_scratchpad"]
+                    if message.type == "tool"
+                )
+                return AIMessage(content="No more research.")
+
+            architect_runtime = ArchitectRuntime(
+                plan_next_step=lambda _values: ResearchStep(
+                    reasoning="inspect", hypothesis="inspect"
+                ),
+                check_research_step=lambda _values: ResearchEvaluation(
+                    reasoning="valid", is_valid=True
+                ),
+                conduct_research=architect_conduct,
+                extract_implementation_plan=lambda _values: ImplementationPlan(
+                    status=PlanStatus.NO_CHANGES,
+                    no_change_reason="No changes needed.",
+                    tasks=[],
+                ),
+                load_codebase_structure=lambda: "target.py",
+            )
+            with patch.dict(
+                os.environ, {"SWE_AGENT_WORKSPACE": str(root)}, clear=False
+            ):
+                architect_result = create_architect_workflow(
+                    architect_runtime,
+                    research_tools=protected_tools,
+                    access_policy=policy,
+                ).invoke({"implementation_research_scratchpad": []})
+            self.assertTrue(architect_result["implementation_plan"] is not None)
+            self.assertTrue(architect_tool_results)
+            architect_tool_text = json.dumps(
+                [message.content for message in architect_tool_results]
+            )
+            self.assertNotIn(canary, architect_tool_text)
+            self.assertNotIn("oracle", architect_tool_text)
+            self.assertNotIn("expected.txt", architect_tool_text)
+
+            developer_calls = 0
+            developer_tool_results = []
+            plan = ImplementationPlan(
+                tasks=[
+                    ImplementationTask(
+                        file_path="target.py",
+                        logical_task="update value",
+                        atomic_tasks=[AtomicTask(atomic_task="update value")],
+                    )
+                ]
+            )
+            editor = WorkspaceEditor(root, access_policy=policy)
+
+            def developer_research(_values):
+                nonlocal developer_calls
+                developer_calls += 1
+                if developer_calls == 1:
+                    return AIMessage(
+                        content="",
+                        tool_calls=protected_tool_calls,
+                    )
+                developer_tool_results.extend(
+                    message
+                    for message in _values["atomic_implementation_research"]
+                    if message.type == "tool"
+                )
+                return AIMessage(content="Research complete.")
+
+            developer_runtime = DeveloperRuntime(
+                edit_executor=lambda: DeveloperEditExecutor(editor),
+                load_codebase_structure=lambda: "target.py",
+                research_atomic_task=developer_research,
+                propose_existing_file_edit=lambda _values: (
+                    "<<<<<<< SEARCH\nvalue = 1\n=======\n"
+                    "value = 2\n>>>>>>> REPLACE"
+                ),
+                propose_new_file=lambda _values: "value = 2\n",
+            )
+            with patch.dict(
+                os.environ, {"SWE_AGENT_WORKSPACE": str(root)}, clear=False
+            ):
+                developer_result = create_developer_workflow(
+                    developer_runtime,
+                    research_tools=protected_tools,
+                    access_policy=policy,
+                ).invoke({"implementation_plan": plan})
+            self.assertTrue(developer_result["developer_status"])
+            self.assertTrue(developer_tool_results)
+            developer_tool_text = json.dumps(
+                [message.content for message in developer_tool_results]
+            )
+            self.assertNotIn(canary, developer_tool_text)
+            self.assertNotIn("oracle", developer_tool_text)
+            self.assertNotIn("expected.txt", developer_tool_text)
+            self.assertEqual((root / "target.py").read_text(), "value = 2\n")
 
 
 if __name__ == "__main__":

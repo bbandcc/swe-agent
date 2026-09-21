@@ -9,6 +9,7 @@ from agent.editing import EditOperation, EditProposal, EditStatus, WorkspaceEdit
 from agent.tools.results import (
     tool_access_denied,
     tool_error,
+    tool_policy_denial,
     tool_rejection,
     tool_success,
 )
@@ -129,7 +130,13 @@ def get_files_structure(directory: str = ".") -> dict[str, object]:
     Args:
         directory: Workspace directory, relative or absolute within the workspace.
     """
-    resolution = default_workspace_resolver().resolve_directory(directory)
+    resolver = default_workspace_resolver()
+    early_denial = tool_policy_denial(
+        resolver, directory, current_workspace_access_policy()
+    )
+    if early_denial is not None:
+        return early_denial
+    resolution = resolver.resolve_directory(directory)
     if not resolution.ok or resolution.path is None:
         return tool_rejection(resolution)
     access_policy = current_workspace_access_policy()
@@ -141,7 +148,7 @@ def get_files_structure(directory: str = ".") -> dict[str, object]:
                 decision.error_code.value,
                 decision.message,
             )
-    workspace_root = default_workspace_resolver().resolve_directory(".")
+    workspace_root = resolver.resolve_directory(".")
     if not workspace_root.ok or workspace_root.path is None:
         return tool_rejection(workspace_root)
     content = _safe_tree(

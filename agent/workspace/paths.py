@@ -86,6 +86,30 @@ class WorkspacePathResolver:
             allow_absolute=allow_absolute,
         )
 
+    def canonical_relative_path(
+        self,
+        requested_path: str,
+        *,
+        allow_absolute: bool = True,
+    ) -> str | None:
+        """Return a syntactic workspace-relative path before descendant I/O.
+
+        Only the configured root is canonicalized here. The method deliberately
+        does not inspect the requested descendant, so trusted policy callers
+        can deny protected paths before existence, type, or link probing.
+        """
+        root = self._resolve_root(requested_path)
+        if isinstance(root, PathResolution):
+            return None
+        relative = self._workspace_relative_path(
+            requested_path,
+            root,
+            allow_absolute=allow_absolute,
+        )
+        if relative is None:
+            return None
+        return relative.as_posix() or "."
+
     def _resolve(
         self,
         requested_path: str,

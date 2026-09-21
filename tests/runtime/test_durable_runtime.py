@@ -44,6 +44,7 @@ from agent.runtime import (
     UsageRecord,
     UsageStatus,
     WorkspaceIdentity,
+    WorkspaceAccessPolicy,
     RunEvent,
     semantic_config_digest,
 )
@@ -436,6 +437,45 @@ class DurableRuntimeTests(RunConfigTestCase):
             self.assertEqual(resumed.error_code, "run_config_mismatch")
             self.assertEqual(resume_factory.factory_calls, 0)
             self.assertEqual(resume_factory.verification_calls, 0)
+
+    def test_real_sqlite_policy_change_fails_before_graph_or_verification(self) -> None:
+        with tempfile.TemporaryDirectory() as directory:
+            root = Path(directory)
+            policy_a = WorkspaceAccessPolicy(hidden_paths=("private-a",))
+            policy_b = WorkspaceAccessPolicy(hidden_paths=("private-b",))
+            config_a = self.make_config(
+                root, verification_specs=(), access_policy=policy_a
+            )
+            config_b = self.make_config(
+                root, verification_specs=(), access_policy=policy_b
+            )
+            request_a = self.request(config_a)
+            started_factory = LegacyVerificationFactory()
+            started = start_run(
+                config_a,
+                request_a,
+                {"verification_result": None},
+                graph_factory=started_factory,
+                clock=lambda: 100.0,
+            )
+            self.assertEqual(started.status, DurableRunStatus.PAUSED)
+
+            request_b = self.request(config_b)
+            resumed_factory = LegacyVerificationFactory()
+            resumed = resume_run(
+                config_b,
+                ResumeRequest(
+                    request_b.identity,
+                    semantic_config_digest(config_b),
+                    request_b.agent_revision,
+                ),
+                graph_factory=resumed_factory,
+                clock=lambda: 150.0,
+            )
+            self.assertEqual(resumed.status, DurableRunStatus.REJECTED)
+            self.assertEqual(resumed.error_code, "run_config_mismatch")
+            self.assertEqual(resumed_factory.factory_calls, 0)
+            self.assertEqual(resumed_factory.verification_calls, 0)
 
     def test_checkpoint_tuple_fields_accept_sequences_but_reject_scalars(self) -> None:
         usage = UsageRecord.unknown("call")

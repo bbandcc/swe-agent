@@ -43,6 +43,23 @@ class _CompletedFactory:
         return graph.compile(checkpointer=saver)
 
 
+class _MutatingFactory:
+    def __init__(self, tracked_file: Path) -> None:
+        self.tracked_file = tracked_file
+
+    def __call__(self, config, run_id, saver, clock):
+        graph = StateGraph(_RevisionState)
+
+        def mutate(state):
+            self.tracked_file.write_text("two", encoding="utf-8")
+            return {"value": state.value + 1}
+
+        graph.add_node("mutate", mutate)
+        graph.add_edge(START, "mutate")
+        graph.add_edge("mutate", END)
+        return graph.compile(checkpointer=saver)
+
+
 def _git(root: Path, *args: str) -> subprocess.CompletedProcess[str]:
     return subprocess.run(
         ["git", "-C", str(root), *args],
@@ -145,6 +162,54 @@ class WorkspaceRevisionTests(RunConfigTestCase):
                 payload["workspace_revision_start"]["head"],
                 payload["workspace_revision_end"]["head"],
             )
+
+    def test_durable_record_captures_clean_to_dirty_revision_lifecycle(self) -> None:
+        with tempfile.TemporaryDirectory() as directory:
+            root = Path(directory)
+            workspace = root / "workspace"
+            workspace.mkdir()
+            self.assertEqual(_git(workspace, "init").returncode, 0)
+            _git(workspace, "config", "user.email", "test@example.invalid")
+            _git(workspace, "config", "user.name", "Test")
+            tracked = workspace / "tracked.txt"
+            tracked.write_text("one", encoding="utf-8")
+            self.assertEqual(_git(workspace, "add", "tracked.txt").returncode, 0)
+            self.assertEqual(
+                _git(workspace, "commit", "-m", "initial").returncode, 0
+            )
+            config = self.make_config(
+                root, workspace_root=workspace, verification_specs=()
+            )
+            identity = RunIdentity(
+                run_id="revision-lifecycle-run",
+                thread_id="revision-lifecycle-thread",
+                task_id="revision-lifecycle-task",
+                workspace=WorkspaceIdentity.from_root(workspace),
+            )
+            request = StartRequest(
+                identity,
+                semantic_config_digest(config),
+                AgentCodeRevision("a" * 40, AgentRevisionStatus.KNOWN),
+            )
+            result = start_run(
+                config,
+                request,
+                {"value": 0},
+                graph_factory=_MutatingFactory(tracked),
+                clock=lambda: 100.0,
+            )
+            self.assertEqual(result.status, DurableRunStatus.COMPLETED)
+            self.assertIsNotNone(result.summary.record_ref)
+            record_path = config.runtime_root / result.summary.record_ref
+            payload = json.loads(record_path.read_text(encoding="utf-8"))
+            start = payload["workspace_revision_start"]
+            end = payload["workspace_revision_end"]
+            self.assertEqual(start["status"], "known")
+            self.assertFalse(start["dirty"])
+            self.assertEqual(end["status"], "known")
+            self.assertTrue(end["dirty"])
+            self.assertNotEqual(start["status_digest"], end["status_digest"])
+            self.assertNotEqual(start["diff_digest"], end["diff_digest"])
 
 
 if __name__ == "__main__":

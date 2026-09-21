@@ -399,6 +399,128 @@ class TrajectoryContractTests(unittest.TestCase):
             )
             self.assertEqual(written.path.read_bytes(), original)
 
+    def test_missing_v2_required_fields_are_structured_corrupt_records(self) -> None:
+        unknown = WorkspaceRevision.unknown(
+            WorkspaceRevisionReason.NOT_GIT
+        ).to_dict()
+        record = RunRecord(
+            schema_version=2,
+            run_id="run-required",
+            thread_id="thread-required",
+            task_id="task-required",
+            workspace_root="C:/workspace",
+            workspace_root_digest="a" * 64,
+            run_config_digest="b" * 64,
+            runtime_status="completed",
+            workflow_outcome="completed",
+            verification_status="verified",
+            error_code=None,
+            budget=None,
+            started_at=100.0,
+            finished_at=101.0,
+            last_event_sequence=1,
+            audit_status=AuditStatus.COMPLETE,
+            agent_revision={"status": "unknown"},
+            workspace_revision_start=unknown,
+            workspace_revision_end=unknown,
+        )
+        payload = record.to_dict()
+        for field in (
+            "identity",
+            "run_config_digest",
+            "runtime_status",
+            "started_at",
+            "finished_at",
+            "last_event_sequence",
+            "audit_status",
+            "agent_revision",
+        ):
+            malformed = dict(payload)
+            malformed.pop(field)
+            with self.subTest(field=field):
+                with self.assertRaises(ValueError):
+                    RunRecord.from_dict(malformed)
+
+        malformed_identity = dict(payload)
+        malformed_identity["identity"] = {
+            "run_id": "run-required",
+            "thread_id": "thread-required",
+            "task_id": "task-required",
+            "workspace": {
+                "canonical_root": "C:/workspace",
+                "root_digest": "a" * 64,
+            },
+        }
+        malformed_identity["identity"]["workspace"].pop("root_digest")
+        with self.assertRaises(ValueError):
+            RunRecord.from_dict(malformed_identity)
+
+        legacy = dict(payload)
+        legacy["schema_version"] = 1
+        legacy.pop("workspace_revision_start")
+        legacy.pop("workspace_revision_end")
+        for field in (
+            "identity",
+            "run_config_digest",
+            "runtime_status",
+            "started_at",
+            "finished_at",
+            "audit_status",
+            "agent_revision",
+        ):
+            malformed = dict(legacy)
+            malformed.pop(field)
+            with self.subTest(legacy_field=field):
+                with self.assertRaises(ValueError):
+                    RunRecord.from_dict(malformed)
+
+        legacy_without_sequence = dict(legacy)
+        legacy_without_sequence.pop("last_event_sequence")
+        self.assertIsNone(
+            RunRecord.from_dict(legacy_without_sequence).last_event_sequence
+        )
+
+    def test_missing_required_record_bytes_are_not_overwritten(self) -> None:
+        unknown = WorkspaceRevision.unknown(
+            WorkspaceRevisionReason.NOT_GIT
+        ).to_dict()
+        record = RunRecord(
+            schema_version=2,
+            run_id="run-missing-write",
+            thread_id="thread-missing-write",
+            task_id="task-missing-write",
+            workspace_root="C:/workspace",
+            workspace_root_digest="a" * 64,
+            run_config_digest="b" * 64,
+            runtime_status="completed",
+            workflow_outcome="completed",
+            verification_status="verified",
+            error_code=None,
+            budget=None,
+            started_at=100.0,
+            finished_at=101.0,
+            last_event_sequence=1,
+            audit_status=AuditStatus.COMPLETE,
+            agent_revision={"status": "unknown"},
+            workspace_revision_start=unknown,
+            workspace_revision_end=unknown,
+        )
+        with tempfile.TemporaryDirectory() as directory:
+            written = write_run_record(directory, record)
+            assert written.path is not None
+            malformed = dict(record.to_dict())
+            malformed["identity"] = dict(malformed["identity"])
+            malformed["identity"].pop("thread_id")
+            original = json.dumps(malformed, sort_keys=True).encode() + b"\n"
+            written.path.write_bytes(original)
+            result = write_run_record(directory, record)
+            self.assertFalse(result.success)
+            self.assertEqual(
+                result.error_code,
+                EventSinkErrorCode.CORRUPT_RECORD.value,
+            )
+            self.assertEqual(written.path.read_bytes(), original)
+
 
 class DurableAuditIntegrationTests(RunConfigTestCase):
     def request(self, config: object) -> StartRequest:

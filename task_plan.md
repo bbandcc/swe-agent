@@ -11,10 +11,10 @@
 ### 当前状态文件基线
 
 - S3.2 production 技术冻结点：`5850b8370c49f868e90aeffe9e6042f85eaa522c`；D1/S1a、D2/S2b 已冻结，D3/S2c Seal blocker 已通过本地验收。
-- S3.2 的配置、身份、SQLite checkpoint、预算边界、start/resume 和现有图接入均保持冻结；D3/S2c 已将单一 JUnit XML 可信报告、稳定 case identity、保守 acceptance policy 和 owned temporary evidence 生命周期接入生产验收链路。D4/S3.2a 已补齐模型请求时限、单次外部尝试边界、普通模型响应结算和部分请求身份范围；D6/S3.3a、S3.3b、S3.3c 与 D7/S3.5a 已完成本地验收，本轮 D7/S3.5b Final Seal 补齐 hard-link 读取边界、policy canonical alias、严格 RunRecord v2 revision 和旧 semantic v3 resume 预检；S3 尚未全部完成，当前不能进入 S4。
+- S3.2 的配置、身份、SQLite checkpoint、预算边界、start/resume 和现有图接入均保持冻结；D3/S2c 已将单一 JUnit XML 可信报告、稳定 case identity、保守 acceptance policy 和 owned temporary evidence 生命周期接入生产验收链路。D4/S3.2a 已补齐模型请求时限、单次外部尝试边界、普通模型响应结算和部分请求身份范围；D6/S3.3a、S3.3b、S3.3c 与 D7/S3.5a 已完成本地验收，本轮 D7/S3.5b Final Seal 补齐 protected path metadata 不可探测、compiled ToolNode policy 接线、严格 RunRecord v1/v2 persisted shape、旧 semantic v3 resume 预检和 clean→dirty revision lifecycle；S3 尚未全部完成，当前不能进入 S3.4a 或 S4。
 - D2/S2b Final Seal 已收窄 library/CLI 的异常边界；`RunSummary.warnings` 只输出 preflight warning code，unexpected `RuntimeError`、`KeyboardInterrupt` 和 `SystemExit` 不被入口吞掉。
-- 最新 Codex 本地验证：unittest 312 tests OK / 10 skipped；pytest 302 passed / 10 skipped /
-  172 subtests passed；Python compile、11 个 prompt render、root/start/resume 三套 CLI help、
+- 本轮最新 Codex 本地验证：unittest 318 tests OK / 10 skipped；pytest 308 passed / 10 skipped /
+  187 subtests passed；Python compile、11 个 prompt render、root/start/resume 三套 CLI help、
   `git diff --check` 均通过。10 个 skip 均为当前 Windows 链接能力或平台边界限制。
 - 没有 GitHub CI 或独立外部测试证据，不作相应声明。
 - 剩余能力：完整 secret-safe state persistence（当前只覆盖 RunConfig 中已知凭据）、write/verification recovery 等仍未实现；D7 policy 只约束使用本 seam 的合作进程和模型可调用工具，不阻止第三方直接写 workspace，也不是 OS sandbox。本轮 EventSink/RunRecord 与 verification artifact 只提供单进程本地 JSONL、结构化记录和有界/脱敏日志，不是完整恢复系统。provider 正向 retry/独立 attempt 语义未实现，当前 durable 只允许单次外部尝试；当前模型 `request_digest` 只代表有界语义输入，身份范围明确为 `PARTIAL`，不能据此安全重放最终 rendered request；exactly-once 不承诺。JUnit XML 是当前唯一可信报告格式，未配置或报告缺失/畸形时保守返回证据不足；多框架 parser registry、扩展 repair 和 S4 均未实现。runner 只改写精确匹配的 `--junitxml/--junit-xml` destination 到 owned temporary output，workspace report_path 保持原 bytes/mtime；owned temp cleanup 失败返回结构化 `EXECUTION_ERROR`。pytest 对其它 workspace 文件的副作用留给 D5，本轮未实现 artifact recovery。
@@ -799,7 +799,8 @@ preexisting hard link 在 open 后写入前结构化拒绝，外部 target bytes
 
 ### 当前状态
 
-D7/S3.5b Final Seal 本地实现与验收完成：unittest 312 tests OK / 10 skipped；pytest 302 passed / 10 skipped /
-172 subtests passed。新增 hard-link policy、canonical alias、严格 RunRecord v2 和旧 semantic v3 resume
-回归通过；旧 S1/S2/S3.1/S3.2/D3-D7a 测试保持通过。compile、11 个 prompt render、root/start/resume
-CLI help 和 `git diff --check` 通过；没有 GitHub CI 或独立外部测试证据。
+D7/S3.5b Final Seal 本轮本地实现与验收完成：unittest 318 tests OK / 10 skipped；pytest 308 passed / 10 skipped /
+187 subtests passed。新增 protected path metadata non-disclosure、compiled ToolNode policy、严格 RunRecord
+v1/v2 persisted shape、旧 semantic v3 resume 和 clean→dirty revision lifecycle 回归通过；旧
+S1/S2/S3.1/S3.2/D3-D7a 测试保持通过。compile、11 个 prompt render、root/start/resume CLI help 和
+`git diff --check` 通过；这些只是 Codex 本地证据，没有 GitHub CI 或独立外部测试证据。
