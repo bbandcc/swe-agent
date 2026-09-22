@@ -15,6 +15,8 @@ from agent.outcome import WorkflowOutcome
 from agent.verification import (
     AcceptanceResult,
     VerificationResult,
+    VerificationAttempt,
+    VerificationRecoveryPolicy,
     VerificationRunner,
     VerificationSpec,
     VerificationSummary,
@@ -66,6 +68,10 @@ class AgentState(DurableBudgetState):
     post_verification: tuple[VerificationSummary, ...] = Field(
         default_factory=tuple
     )
+    verification_attempts: tuple[VerificationAttempt, ...] = Field(
+        default_factory=tuple,
+        description="Durable per-check verification attempt boundaries",
+    )
     verification_status: VerificationStatus = Field(
         VerificationStatus.PENDING
     )
@@ -101,6 +107,9 @@ def create_workflow_graph(
     secret_filter: KnownSecretFilter | None = None,
     event_recorder: EventRecorder | None = None,
     access_policy: WorkspaceAccessPolicy | None = None,
+    verification_recovery_policy: VerificationRecoveryPolicy = (
+        VerificationRecoveryPolicy.STOP_ON_UNKNOWN
+    ),
 ):
     """Create the parent workflow with injectable compiled child graphs."""
     verification = VerificationController(
@@ -110,6 +119,7 @@ def create_workflow_graph(
         runtime_root=runtime_root,
         clock=clock,
         secret_filter=secret_filter,
+        recovery_policy=verification_recovery_policy,
     )
 
     def run_baseline(state: AgentState) -> dict[str, Any]:
@@ -117,6 +127,12 @@ def create_workflow_graph(
 
     def run_post(state: AgentState) -> dict[str, Any]:
         return verification.run_post(state)
+
+    def finish_baseline(state: AgentState) -> dict[str, Any]:
+        return verification.finish_baseline_attempts(state)
+
+    def finish_post(state: AgentState) -> dict[str, Any]:
+        return verification.finish_post_attempts(state)
 
     def prepare_repair(state: AgentState) -> dict[str, Any]:
         return verification.prepare_repair(state)
@@ -195,6 +211,69 @@ def create_workflow_graph(
             node_name="run_post_verification",
         ),
     )
+    durable_verification = durable_runtime and bool(verification_specs)
+    baseline_start_nodes: list[str] = []
+    baseline_run_nodes: list[str] = []
+    post_start_nodes: list[str] = []
+    post_run_nodes: list[str] = []
+    if durable_verification:
+        for index in range(len(verification_specs)):
+            baseline_start = f"start_baseline_verification_{index}"
+            baseline_run = f"run_baseline_verification_check_{index}"
+            post_start = f"start_post_verification_{index}"
+            post_run = f"run_post_verification_check_{index}"
+            baseline_start_nodes.append(baseline_start)
+            baseline_run_nodes.append(baseline_run)
+            post_start_nodes.append(post_start)
+            post_run_nodes.append(post_run)
+            graph_builder.add_node(
+                baseline_start,
+                persist_node(
+                    lambda state, index=index: verification.start_attempt(
+                        state, phase="baseline", spec_index=index
+                    )
+                ),
+            )
+            graph_builder.add_node(
+                baseline_run,
+                persist_node(
+                    lambda state, index=index: verification.run_attempt(
+                        state, phase="baseline", spec_index=index
+                    )
+                ),
+            )
+            graph_builder.add_node(
+                post_start,
+                persist_node(
+                    lambda state, index=index: verification.start_attempt(
+                        state, phase="post", spec_index=index
+                    )
+                ),
+            )
+            graph_builder.add_node(
+                post_run,
+                persist_node(
+                    lambda state, index=index: verification.run_attempt(
+                        state, phase="post", spec_index=index
+                    )
+                ),
+            )
+        graph_builder.add_node(
+            "finish_baseline_verification",
+            persist_node(
+                finish_baseline,
+                event_type="verification",
+                node_name="run_baseline_verification",
+            ),
+        )
+        graph_builder.add_node(
+            "finish_post_verification",
+            persist_node(
+                finish_post,
+                event_type="verification",
+                node_name="run_post_verification",
+            ),
+        )
     graph_builder.add_node("prepare_repair", persist_node(prepare_repair))
     graph_builder.add_node("finalize_outcome", persist_node(finalize_outcome))
     if durable_runtime:
@@ -203,37 +282,103 @@ def create_workflow_graph(
         )
     graph_builder.add_edge(START, "swe_architect")
     if durable_runtime:
+        first_baseline = (
+            baseline_start_nodes[0]
+            if durable_verification
+            else "run_baseline_verification"
+        )
         graph_builder.add_conditional_edges(
             "swe_architect",
             route_after_runtime_node,
             {
-                "continue": "run_baseline_verification",
+                "continue": first_baseline,
                 "fail": "finalize_runtime_failure",
             },
         )
     else:
         graph_builder.add_edge("swe_architect", "run_baseline_verification")
-    graph_builder.add_conditional_edges(
-        "run_baseline_verification",
-        route_after_baseline,
-        {"develop": "swe_developer", "end": "finalize_outcome"},
-    )
+    if durable_verification:
+        for index, start_name in enumerate(baseline_start_nodes):
+            run_name = baseline_run_nodes[index]
+            graph_builder.add_conditional_edges(
+                start_name,
+                lambda state, index=index: verification.route_after_attempt_start(
+                    state, phase="baseline", spec_index=index
+                ),
+                {"run": run_name, "finish": "finish_baseline_verification"},
+            )
+            next_name = (
+                baseline_start_nodes[index + 1]
+                if index + 1 < len(baseline_start_nodes)
+                else "finish_baseline_verification"
+            )
+            graph_builder.add_conditional_edges(
+                run_name,
+                lambda state, index=index: verification.route_after_attempt_run(
+                    state, phase="baseline", spec_index=index
+                ),
+                {"next": next_name, "finish": "finish_baseline_verification"},
+            )
+        graph_builder.add_conditional_edges(
+            "finish_baseline_verification",
+            route_after_baseline,
+            {"develop": "swe_developer", "end": "finalize_outcome"},
+        )
+    else:
+        graph_builder.add_conditional_edges(
+            "run_baseline_verification",
+            route_after_baseline,
+            {"develop": "swe_developer", "end": "finalize_outcome"},
+        )
     if durable_runtime:
+        first_post = (
+            post_start_nodes[0]
+            if durable_verification
+            else "run_post_verification"
+        )
         graph_builder.add_conditional_edges(
             "swe_developer",
             route_after_runtime_node,
             {
-                "continue": "run_post_verification",
+                "continue": first_post,
                 "fail": "finalize_runtime_failure",
             },
         )
     else:
         graph_builder.add_edge("swe_developer", "run_post_verification")
-    graph_builder.add_conditional_edges(
-        "run_post_verification",
-        route_after_post,
-        {"repair": "prepare_repair", "end": "finalize_outcome"},
-    )
+    if durable_verification:
+        for index, start_name in enumerate(post_start_nodes):
+            run_name = post_run_nodes[index]
+            graph_builder.add_conditional_edges(
+                start_name,
+                lambda state, index=index: verification.route_after_attempt_start(
+                    state, phase="post", spec_index=index
+                ),
+                {"run": run_name, "finish": "finish_post_verification"},
+            )
+            next_name = (
+                post_start_nodes[index + 1]
+                if index + 1 < len(post_start_nodes)
+                else "finish_post_verification"
+            )
+            graph_builder.add_conditional_edges(
+                run_name,
+                lambda state, index=index: verification.route_after_attempt_run(
+                    state, phase="post", spec_index=index
+                ),
+                {"next": next_name, "finish": "finish_post_verification"},
+            )
+        graph_builder.add_conditional_edges(
+            "finish_post_verification",
+            route_after_post,
+            {"repair": "prepare_repair", "end": "finalize_outcome"},
+        )
+    else:
+        graph_builder.add_conditional_edges(
+            "run_post_verification",
+            route_after_post,
+            {"repair": "prepare_repair", "end": "finalize_outcome"},
+        )
     graph_builder.add_edge("prepare_repair", "swe_developer")
     graph_builder.add_edge("finalize_outcome", END)
     if durable_runtime:

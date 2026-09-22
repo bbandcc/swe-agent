@@ -5,6 +5,7 @@ from typing import Any
 from agent.runtime.config import (
     DEFAULT_MODEL_REQUEST_TIMEOUT_SECONDS,
     ModelRetryPolicy,
+    VerificationRecoveryPolicy,
     RunConfig,
     RunConfigError,
     RunConfigErrorCode,
@@ -116,6 +117,7 @@ __all__ = [
     "RunConfig",
     "DEFAULT_MODEL_REQUEST_TIMEOUT_SECONDS",
     "ModelRetryPolicy",
+    "VerificationRecoveryPolicy",
     "RunConfigError",
     "RunConfigErrorCode",
     "TokenPricing",

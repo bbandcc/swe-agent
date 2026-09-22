@@ -49,6 +49,9 @@ from agent.runtime.revision import (
     AgentCodeRevision,
     AgentRevisionReason,
     AgentRevisionStatus,
+    WorkspaceRevision,
+    WorkspaceRevisionReason,
+    WorkspaceRevisionStatus,
 )
 from agent.verification import (
     AcceptanceReason,
@@ -60,6 +63,8 @@ from agent.verification import (
     VerificationResult,
     VerificationSummary,
     VerificationStatus,
+    VerificationAttempt,
+    VerificationAttemptStatus,
 )
 
 
@@ -156,6 +161,9 @@ def checkpoint_serializer() -> JsonPlusSerializer:
             AgentCodeRevision,
             AgentRevisionStatus,
             AgentRevisionReason,
+            WorkspaceRevision,
+            WorkspaceRevisionReason,
+            WorkspaceRevisionStatus,
             BudgetSnapshot,
             CallReservation,
             CallKind,
@@ -189,6 +197,8 @@ def checkpoint_serializer() -> JsonPlusSerializer:
             VerificationStatus,
             VerificationResult,
             VerificationSummary,
+            VerificationAttempt,
+            VerificationAttemptStatus,
             ArtifactRef,
             WorkflowOutcome,
         ]

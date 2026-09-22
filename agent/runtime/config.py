@@ -15,7 +15,7 @@ from urllib.parse import urlsplit, urlunsplit
 from pydantic import SecretStr
 
 from agent.config import ModelSettings, model_settings
-from agent.verification import VerificationSpec
+from agent.verification import VerificationRecoveryPolicy, VerificationSpec
 from agent.verification.contracts import is_pytest_junitxml_producer
 from agent.verification.config import configured_verification_specs
 from agent.workspace import (
@@ -73,7 +73,6 @@ class ModelRetryPolicy:
                 "Durable model retry policy currently requires max_attempts=1.",
             )
 
-
 @dataclass(frozen=True, slots=True)
 class TokenPricing:
     input_cost_per_million_tokens: Decimal
@@ -110,6 +109,9 @@ class RunConfig:
     pricing: TokenPricing | None = None
     model_request_timeout_seconds: float = DEFAULT_MODEL_REQUEST_TIMEOUT_SECONDS
     model_retry_policy: ModelRetryPolicy = field(default_factory=ModelRetryPolicy)
+    verification_recovery_policy: VerificationRecoveryPolicy = (
+        VerificationRecoveryPolicy.STOP_ON_UNKNOWN
+    )
     access_policy: WorkspaceAccessPolicy = field(
         default_factory=WorkspaceAccessPolicy.default
     )
@@ -148,6 +150,20 @@ class RunConfig:
                 RunConfigErrorCode.INVALID_VALUE,
                 "model_retry_policy must be ModelRetryPolicy.",
             )
+        try:
+            recovery_policy = VerificationRecoveryPolicy(
+                self.verification_recovery_policy
+            )
+        except (TypeError, ValueError) as error:
+            raise RunConfigError(
+                RunConfigErrorCode.INVALID_VALUE,
+                "verification_recovery_policy is invalid.",
+            ) from error
+        if recovery_policy is not VerificationRecoveryPolicy.STOP_ON_UNKNOWN:
+            raise RunConfigError(
+                RunConfigErrorCode.INVALID_VALUE,
+                "Verification rerun policy is unsupported without an isolated execution seam.",
+            )
         if not isinstance(self.access_policy, WorkspaceAccessPolicy):
             raise RunConfigError(
                 RunConfigErrorCode.INVALID_VALUE,
@@ -183,6 +199,7 @@ class RunConfig:
             "model_request_timeout_seconds",
             float(self.model_request_timeout_seconds),
         )
+        object.__setattr__(self, "verification_recovery_policy", recovery_policy)
 
 
 def load_run_config(environ: Mapping[str, str]) -> RunConfig:
@@ -236,6 +253,12 @@ def load_run_config(environ: Mapping[str, str]) -> RunConfig:
             "SWE_AGENT_MAX_COST_USD",
         )
         pricing = _load_pricing(environ)
+        recovery_policy = VerificationRecoveryPolicy(
+            environ.get(
+                "SWE_AGENT_VERIFICATION_RECOVERY_POLICY",
+                VerificationRecoveryPolicy.STOP_ON_UNKNOWN.value,
+            )
+        )
         access_policy = WorkspaceAccessPolicy(
             hidden_paths=parse_configured_paths(
                 environ.get("SWE_AGENT_HIDDEN_PATHS", ""),
@@ -270,6 +293,7 @@ def load_run_config(environ: Mapping[str, str]) -> RunConfig:
         pricing=pricing,
         model_request_timeout_seconds=model_request_timeout,
         model_retry_policy=ModelRetryPolicy(max_attempts=model_max_attempts),
+        verification_recovery_policy=recovery_policy,
         access_policy=access_policy,
     )
 

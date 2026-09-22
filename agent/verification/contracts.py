@@ -6,10 +6,12 @@ import math
 import os
 from collections.abc import Sequence
 from dataclasses import dataclass
+from decimal import Decimal
 from enum import Enum
 from pathlib import Path
 
 from agent.artifacts import ArtifactRef
+from agent.runtime.revision import WorkspaceRevision
 
 
 class VerificationCheckStatus(str, Enum):
@@ -42,6 +44,19 @@ class VerificationStatus(str, Enum):
     VERIFICATION_ERROR = "verification_error"
     EVIDENCE_INSUFFICIENT = "evidence_insufficient"
     REPAIR_EXHAUSTED = "repair_exhausted"
+
+
+class VerificationRecoveryPolicy(str, Enum):
+    """Trusted policy for an interrupted verification command.
+
+    The current runtime only supports stopping when a command has started but
+    its result was not checkpointed.  A rerun policy remains an explicit
+    value so a future isolated execution seam cannot be confused with the
+    conservative default.
+    """
+
+    STOP_ON_UNKNOWN = "stop_on_unknown"
+    RERUN_ISOLATED = "rerun_isolated"
 
 
 @dataclass(frozen=True, slots=True)
@@ -345,6 +360,176 @@ class VerificationSummary:
             stderr_artifact=result.stderr_artifact,
             artifact_error_code=result.artifact_error_code,
         )
+
+
+VERIFICATION_ATTEMPT_SCHEMA_VERSION = 1
+
+
+class VerificationAttemptStatus(str, Enum):
+    STARTED = "started"
+    RESULT_RECORDED = "result_recorded"
+
+
+def verification_spec_digest(spec: VerificationSpec) -> str:
+    """Return the trusted, secret-free identity of one configured check."""
+    payload = {
+        "name": spec.name,
+        "argv": list(spec.argv),
+        "cwd": spec.cwd,
+        "timeout_seconds": _canonical_number_text(spec.timeout_seconds),
+        "max_output_bytes": spec.max_output_bytes,
+        "report_path": spec.report_path,
+        "allowed_failure_case_ids": list(spec.allowed_failure_case_ids),
+    }
+    return hashlib.sha256(
+        json.dumps(
+            payload,
+            ensure_ascii=False,
+            sort_keys=True,
+            separators=(",", ":"),
+        ).encode("utf-8")
+    ).hexdigest()
+
+
+def _canonical_number_text(value: int | float) -> str:
+    normalized = Decimal(str(value)).normalize()
+    return "0" if normalized == 0 else format(normalized, "f")
+
+
+@dataclass(frozen=True, slots=True)
+class VerificationAttempt:
+    """Checkpoint-safe boundary around one externally executed check."""
+
+    schema_version: int
+    attempt_id: str
+    run_id: str
+    task_id: str
+    phase: str
+    repair_attempt: int
+    spec_index: int
+    spec_name: str
+    attempt_ordinal: int
+    spec_digest: str
+    workspace_revision: WorkspaceRevision
+    status: VerificationAttemptStatus
+    result: VerificationSummary | None = None
+
+    def __post_init__(self) -> None:
+        if self.schema_version != VERIFICATION_ATTEMPT_SCHEMA_VERSION:
+            raise ValueError("Unsupported verification attempt schema version.")
+        for name in ("attempt_id", "run_id", "task_id", "phase", "spec_name"):
+            value = getattr(self, name)
+            if not isinstance(value, str) or not value.strip():
+                raise ValueError(f"Verification attempt {name} must be non-empty.")
+        if self.phase not in {"baseline", "post"}:
+            raise ValueError("Verification attempt phase is invalid.")
+        for name in ("repair_attempt", "spec_index", "attempt_ordinal"):
+            value = getattr(self, name)
+            if isinstance(value, bool) or not isinstance(value, int) or value < 0:
+                raise ValueError(f"Verification attempt {name} is invalid.")
+        if (
+            not isinstance(self.spec_digest, str)
+            or len(self.spec_digest) != 64
+            or any(char not in "0123456789abcdef" for char in self.spec_digest)
+        ):
+            raise ValueError("Verification attempt spec_digest is invalid.")
+        if not isinstance(self.workspace_revision, WorkspaceRevision):
+            raise ValueError("Verification attempt workspace revision is invalid.")
+        if not isinstance(self.status, VerificationAttemptStatus):
+            try:
+                object.__setattr__(self, "status", VerificationAttemptStatus(self.status))
+            except (TypeError, ValueError) as error:
+                raise ValueError("Verification attempt status is invalid.") from error
+        if self.status is VerificationAttemptStatus.STARTED and self.result is not None:
+            raise ValueError("Started verification attempts cannot have a result.")
+        if self.status is VerificationAttemptStatus.RESULT_RECORDED and not isinstance(
+            self.result, VerificationSummary
+        ):
+            raise ValueError("Recorded verification attempts require a result.")
+        if self.result is not None and self.result.name != self.spec_name:
+            raise ValueError("Verification attempt result does not match spec.")
+        if self.attempt_id != self._stable_attempt_id():
+            raise ValueError("Verification attempt identity is invalid.")
+
+    @classmethod
+    def started(
+        cls,
+        *,
+        run_id: str,
+        task_id: str,
+        phase: str,
+        repair_attempt: int,
+        spec_index: int,
+        spec: VerificationSpec,
+        attempt_ordinal: int,
+        workspace_revision: WorkspaceRevision,
+    ) -> "VerificationAttempt":
+        spec_digest = verification_spec_digest(spec)
+        seed = {
+            "schema_version": VERIFICATION_ATTEMPT_SCHEMA_VERSION,
+            "run_id": run_id,
+            "task_id": task_id,
+            "phase": phase,
+            "repair_attempt": repair_attempt,
+            "spec_index": spec_index,
+            "spec_name": spec.name,
+            "attempt_ordinal": attempt_ordinal,
+            "spec_digest": spec_digest,
+        }
+        attempt_id = hashlib.sha256(
+            json.dumps(seed, ensure_ascii=False, sort_keys=True, separators=(",", ":")).encode(
+                "utf-8"
+            )
+        ).hexdigest()
+        return cls(
+            schema_version=VERIFICATION_ATTEMPT_SCHEMA_VERSION,
+            attempt_id=attempt_id,
+            run_id=run_id,
+            task_id=task_id,
+            phase=phase,
+            repair_attempt=repair_attempt,
+            spec_index=spec_index,
+            spec_name=spec.name,
+            attempt_ordinal=attempt_ordinal,
+            spec_digest=spec_digest,
+            workspace_revision=workspace_revision,
+            status=VerificationAttemptStatus.STARTED,
+        )
+
+    def with_result(self, result: VerificationSummary) -> "VerificationAttempt":
+        return VerificationAttempt(
+            schema_version=self.schema_version,
+            attempt_id=self.attempt_id,
+            run_id=self.run_id,
+            task_id=self.task_id,
+            phase=self.phase,
+            repair_attempt=self.repair_attempt,
+            spec_index=self.spec_index,
+            spec_name=self.spec_name,
+            attempt_ordinal=self.attempt_ordinal,
+            spec_digest=self.spec_digest,
+            workspace_revision=self.workspace_revision,
+            status=VerificationAttemptStatus.RESULT_RECORDED,
+            result=result,
+        )
+
+    def _stable_attempt_id(self) -> str:
+        seed = {
+            "schema_version": self.schema_version,
+            "run_id": self.run_id,
+            "task_id": self.task_id,
+            "phase": self.phase,
+            "repair_attempt": self.repair_attempt,
+            "spec_index": self.spec_index,
+            "spec_name": self.spec_name,
+            "attempt_ordinal": self.attempt_ordinal,
+            "spec_digest": self.spec_digest,
+        }
+        return hashlib.sha256(
+            json.dumps(seed, ensure_ascii=False, sort_keys=True, separators=(",", ":")).encode(
+                "utf-8"
+            )
+        ).hexdigest()
 
 
 def is_pytest_command(argv: Sequence[str]) -> bool:

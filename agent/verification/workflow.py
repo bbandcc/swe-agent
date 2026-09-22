@@ -13,7 +13,10 @@ from agent.editing import EditResult
 from agent.outcome import WorkflowOutcome
 from agent.runtime.budget import BudgetErrorCode, BudgetSnapshot
 from agent.verification.contracts import (
+    VerificationAttempt,
+    VerificationAttemptStatus,
     VerificationCheckStatus,
+    VerificationRecoveryPolicy,
     VerificationResult,
     VerificationSummary,
     VerificationSpec,
@@ -27,6 +30,7 @@ from agent.verification.evaluation import (
 )
 from agent.verification.runner import VerificationRunner
 from agent.runtime.secrets import KnownSecretFilter
+from agent.runtime.revision import detect_workspace_revision
 
 MAX_REPAIR_ATTEMPTS = 2
 
@@ -56,8 +60,12 @@ class VerificationController:
         runtime_root: str | Path | None = None,
         clock: Callable[[], float] = time.time,
         secret_filter: KnownSecretFilter | None = None,
+        recovery_policy: VerificationRecoveryPolicy = (
+            VerificationRecoveryPolicy.STOP_ON_UNKNOWN
+        ),
     ) -> None:
         self._specs = tuple(specs)
+        self._workspace_root = workspace_root
         self._runner = runner
         if self._specs and self._runner is None:
             self._runner = VerificationRunner(
@@ -67,6 +75,18 @@ class VerificationController:
             )
         self._clock = clock
         self._secret_filter = secret_filter
+        try:
+            self._recovery_policy = VerificationRecoveryPolicy(recovery_policy)
+        except (TypeError, ValueError) as error:
+            raise ValueError("Verification recovery policy is invalid.") from error
+        if self._recovery_policy is not VerificationRecoveryPolicy.STOP_ON_UNKNOWN:
+            raise ValueError(
+                "Verification rerun policy requires an isolated execution seam."
+            )
+        # A start node and its run node execute in one graph invocation.  This
+        # process-local arm is deliberately absent after a durable restart, so
+        # a checkpoint containing STARTED cannot silently dispatch again.
+        self._armed_attempts: set[str] = set()
 
     def run_baseline(self, state: _VerificationState) -> dict[str, Any]:
         initial = {
@@ -174,6 +194,298 @@ class VerificationController:
             "verification_message": _verification_message(status),
             "acceptance": acceptance,
             "outcome": _workflow_outcome(state.developer_status, status),
+        }
+
+    def start_attempt(
+        self, state: _VerificationState, *, phase: str, spec_index: int
+    ) -> dict[str, Any]:
+        """Persist STARTED before a command can be dispatched."""
+        attempt = self._new_attempt(state, phase=phase, spec_index=spec_index)
+        attempts = list(getattr(state, "verification_attempts", ()))
+        existing = next(
+            (item for item in attempts if item.attempt_id == attempt.attempt_id),
+            None,
+        )
+        if existing is not None:
+            if existing.status is VerificationAttemptStatus.STARTED:
+                return self._unknown_update(
+                    tuple(attempts),
+                    "A verification command was started but its result was not recorded; execution was not repeated.",
+                )
+            if not self._result_matches_spec(existing.result, self._specs[spec_index]):
+                return self._unknown_update(
+                    tuple(attempts),
+                    "The recorded verification result does not match the trusted specification.",
+                )
+            return {"verification_attempts": tuple(attempts)}
+        attempts.append(attempt)
+        self._armed_attempts.add(attempt.attempt_id)
+        return {"verification_attempts": tuple(attempts)}
+
+    def run_attempt(
+        self, state: _VerificationState, *, phase: str, spec_index: int
+    ) -> dict[str, Any]:
+        """Execute only an armed STARTED attempt and checkpoint its result."""
+        attempt = self._attempt_for_state(state, phase=phase, spec_index=spec_index)
+        if attempt is None:
+            return self._unknown_update(
+                getattr(state, "verification_attempts", ()),
+                "The durable verification attempt is missing from checkpoint state.",
+            )
+        if attempt.status is VerificationAttemptStatus.RESULT_RECORDED:
+            if not self._result_matches_spec(attempt.result, self._specs[spec_index]):
+                return self._unknown_update(
+                    getattr(state, "verification_attempts", ()),
+                    "The recorded verification result does not match the trusted specification.",
+                )
+            return {}
+        if attempt.attempt_id not in self._armed_attempts:
+            return self._unknown_update(
+                getattr(state, "verification_attempts", ()),
+                "The verification command was started before this process resumed; its result is unknown.",
+            )
+        self._armed_attempts.discard(attempt.attempt_id)
+        spec = self._specs[spec_index]
+        budget = getattr(state, "budget", None)
+        deadline = budget.deadline_at if budget is not None else None
+        if deadline is not None:
+            remaining = deadline - self._clock()
+            if remaining <= 0:
+                result = _deadline_result(spec)
+                return self._record_attempt_result(
+                    state,
+                    attempt,
+                    result,
+                    runtime_error_code=BudgetErrorCode.TIMEOUT_OVERRUN,
+                    runtime_message=(
+                        "The absolute run deadline elapsed before verification dispatch."
+                    ),
+                )
+            spec = replace(spec, timeout_seconds=min(spec.timeout_seconds, remaining))
+        result = self._runner.run(spec)
+        if self._secret_filter is not None:
+            result = self._secret_filter.sanitize(result).value
+        if isinstance(result, VerificationResult):
+            summary = VerificationSummary.from_result(result)
+        elif isinstance(result, VerificationSummary):
+            summary = result
+        else:
+            raise TypeError("Verification runner must return verification evidence.")
+        runtime_error_code = None
+        runtime_message = ""
+        if deadline is not None and self._clock() >= deadline:
+            runtime_error_code = BudgetErrorCode.TIMEOUT_OVERRUN
+            runtime_message = (
+                "The verification command crossed the absolute run deadline; "
+                "its result was recorded and later checks were blocked."
+            )
+        return self._record_attempt_result(
+            state,
+            attempt,
+            summary,
+            runtime_error_code=runtime_error_code,
+            runtime_message=runtime_message,
+        )
+
+    def finish_baseline_attempts(self, state: _VerificationState) -> dict[str, Any]:
+        results = self._phase_results(state, "baseline")
+        if state.runtime_error_code is not None:
+            return {
+                "baseline_verification": results,
+                "verification_status": VerificationStatus.VERIFICATION_ERROR,
+                "verification_message": (
+                    "Baseline verification stopped before every attempt produced a result."
+                ),
+                "outcome": WorkflowOutcome.FAILED,
+                "acceptance": _insufficient_acceptance(),
+            }
+        return self._baseline_result_update(state, results)
+
+    def finish_post_attempts(self, state: _VerificationState) -> dict[str, Any]:
+        results = self._phase_results(state, "post")
+        if state.runtime_error_code is not None:
+            return {
+                "post_verification": results,
+                "verification_status": VerificationStatus.VERIFICATION_ERROR,
+                "verification_message": (
+                    "Post-edit verification stopped before every attempt produced a result."
+                ),
+                "outcome": WorkflowOutcome.FAILED,
+                "acceptance": _insufficient_acceptance(),
+            }
+        if _has_evidence_problem(results):
+            return {
+                "post_verification": results,
+                "verification_status": VerificationStatus.EVIDENCE_INSUFFICIENT,
+                "verification_message": (
+                    "Post-edit verification evidence is incomplete."
+                ),
+                "acceptance": _insufficient_acceptance(),
+                "outcome": WorkflowOutcome.FAILED,
+            }
+        status = classify_verification(state.baseline_verification, results)
+        acceptance = evaluate_acceptance(state.baseline_verification, results)
+        if (
+            status is VerificationStatus.REGRESSION
+            and state.repair_attempts >= MAX_REPAIR_ATTEMPTS
+        ):
+            status = VerificationStatus.REPAIR_EXHAUSTED
+        return {
+            "post_verification": results,
+            "verification_status": status,
+            "verification_message": _verification_message(status),
+            "acceptance": acceptance,
+            "outcome": _workflow_outcome(state.developer_status, status),
+        }
+
+    def route_after_attempt_start(
+        self, state: _VerificationState, *, phase: str, spec_index: int
+    ) -> str:
+        if state.runtime_error_code is not None:
+            return "finish"
+        attempt = self._attempt_for_state(state, phase=phase, spec_index=spec_index)
+        return "finish" if attempt is not None and attempt.status is VerificationAttemptStatus.RESULT_RECORDED else "run"
+
+    def route_after_attempt_run(
+        self, state: _VerificationState, *, phase: str, spec_index: int
+    ) -> str:
+        return "finish" if state.runtime_error_code is not None else "next"
+
+    def _new_attempt(
+        self, state: _VerificationState, *, phase: str, spec_index: int
+    ) -> VerificationAttempt:
+        identity = getattr(state, "run_identity", None)
+        run_id = getattr(identity, "run_id", None) or "local-run"
+        task_id = getattr(identity, "task_id", None) or "local-task"
+        repair_attempt = state.repair_attempts if phase == "post" else 0
+        return VerificationAttempt.started(
+            run_id=run_id,
+            task_id=task_id,
+            phase=phase,
+            repair_attempt=repair_attempt,
+            spec_index=spec_index,
+            spec=self._specs[spec_index],
+            attempt_ordinal=0,
+            workspace_revision=detect_workspace_revision(self._workspace_root),
+        )
+
+    def _attempt_for_state(
+        self, state: _VerificationState, *, phase: str, spec_index: int
+    ) -> VerificationAttempt | None:
+        expected = self._new_attempt(state, phase=phase, spec_index=spec_index)
+        return next(
+            (
+                item
+                for item in getattr(state, "verification_attempts", ())
+                if item.attempt_id == expected.attempt_id
+            ),
+            None,
+        )
+
+    def _record_attempt_result(
+        self,
+        state: _VerificationState,
+        attempt: VerificationAttempt,
+        result: VerificationResult | VerificationSummary,
+        *,
+        runtime_error_code: BudgetErrorCode | None = None,
+        runtime_message: str = "",
+    ) -> dict[str, Any]:
+        summary = (
+            VerificationSummary.from_result(result)
+            if isinstance(result, VerificationResult)
+            else result
+        )
+        updated = attempt.with_result(summary)
+        attempts = tuple(
+            updated if item.attempt_id == attempt.attempt_id else item
+            for item in getattr(state, "verification_attempts", ())
+        )
+        update: dict[str, Any] = {"verification_attempts": attempts}
+        if runtime_error_code is not None:
+            update.update(
+                {
+                    "runtime_error_code": runtime_error_code,
+                    "runtime_message": runtime_message,
+                }
+            )
+        return update
+
+    @staticmethod
+    def _result_matches_spec(
+        result: VerificationSummary | None, spec: VerificationSpec
+    ) -> bool:
+        return bool(
+            result is not None
+            and result.name == spec.name
+            and result.argv == tuple(spec.argv)
+            and result.allowed_failure_case_ids
+            == tuple(spec.allowed_failure_case_ids)
+        )
+
+    def _phase_results(
+        self, state: _VerificationState, phase: str
+    ) -> tuple[VerificationSummary, ...]:
+        attempts = sorted(
+            (
+                item
+                for item in getattr(state, "verification_attempts", ())
+                if item.phase == phase
+                and item.repair_attempt
+                == (getattr(state, "repair_attempts", 0) if phase == "post" else 0)
+                and item.result is not None
+            ),
+            key=lambda item: item.spec_index,
+        )
+        return tuple(item.result for item in attempts if item.result is not None)
+
+    @staticmethod
+    def _unknown_update(
+        attempts: Sequence[VerificationAttempt], message: str
+    ) -> dict[str, Any]:
+        return {
+            "verification_attempts": tuple(attempts),
+            "runtime_error_code": BudgetErrorCode.OUTCOME_UNKNOWN,
+            "runtime_message": message,
+        }
+
+    def _baseline_result_update(
+        self,
+        state: _VerificationState,
+        results: tuple[VerificationSummary, ...],
+    ) -> dict[str, Any]:
+        initial = {
+            "post_verification": (),
+            "verification_feedback": None,
+            "repair_plan": None,
+            "repair_attempts": 0,
+            "acceptance": None,
+            "developer_status": state.developer_status,
+            "outcome": WorkflowOutcome.PENDING,
+        }
+        if _has_execution_problem(results):
+            return {
+                **initial,
+                "baseline_verification": results,
+                "verification_status": VerificationStatus.VERIFICATION_ERROR,
+                "verification_message": "Baseline verification could not execute reliably.",
+                "outcome": WorkflowOutcome.FAILED,
+                "acceptance": _insufficient_acceptance(),
+            }
+        if _has_evidence_problem(results):
+            return {
+                **initial,
+                "baseline_verification": results,
+                "verification_status": VerificationStatus.EVIDENCE_INSUFFICIENT,
+                "verification_message": "Baseline verification did not produce a valid structured report.",
+                "outcome": WorkflowOutcome.FAILED,
+                "acceptance": _insufficient_acceptance(),
+            }
+        return {
+            **initial,
+            "baseline_verification": results,
+            "verification_status": VerificationStatus.PENDING,
+            "verification_message": "Baseline verification completed.",
         }
 
     def prepare_repair(self, state: _VerificationState) -> dict[str, Any]:

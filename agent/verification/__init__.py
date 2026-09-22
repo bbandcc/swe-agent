@@ -10,6 +10,11 @@ from agent.verification.contracts import (
     VerificationSummary,
     VerificationSpec,
     VerificationStatus,
+    VerificationAttempt,
+    VerificationAttemptStatus,
+    VerificationRecoveryPolicy,
+    VERIFICATION_ATTEMPT_SCHEMA_VERSION,
+    verification_spec_digest,
 )
 from agent.verification.evaluation import (
     AcceptanceReason,
@@ -31,6 +36,11 @@ __all__ = [
     "VerificationRunner",
     "VerificationSpec",
     "VerificationStatus",
+    "VerificationAttempt",
+    "VerificationAttemptStatus",
+    "VerificationRecoveryPolicy",
+    "VERIFICATION_ATTEMPT_SCHEMA_VERSION",
+    "verification_spec_digest",
     "AcceptanceReason",
     "AcceptanceResult",
     "classify_verification",
