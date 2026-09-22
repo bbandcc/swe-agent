@@ -1,6 +1,7 @@
 """Developer graph that stages each file in memory before one final commit."""
 
 from collections.abc import Sequence
+from dataclasses import replace
 from typing import Any
 
 from langchain_core.messages import AnyMessage
@@ -28,13 +29,39 @@ from agent.developer.workflow_support import (
     should_start,
     start_implementing,
 )
-from agent.editing import EditResult, EditStatus, WorkspaceSnapshot
+from agent.editing import (
+    EditErrorCode,
+    EditResult,
+    EditStatus,
+    RecoveryResult,
+    RecoveryStatus,
+    WorkspaceSnapshot,
+    WriteIntent,
+)
+from agent.editing.text import sha256
 from agent.tools.codemap import codemap_tools
 from agent.tools.search import search_tools
 from agent.runtime import DurableBudgetBoundary
+from agent.runtime.budget import BudgetErrorCode
 from agent.runtime.secrets import KnownSecretFilter
 from agent.runtime.trajectory import EventRecorder
 from agent.workspace import WorkspaceAccessPolicy, workspace_access_scope
+
+_RECOVERY_COMMIT_ERRORS = frozenset(
+    {
+        EditErrorCode.WORKSPACE_NOT_FOUND,
+        EditErrorCode.WORKSPACE_INVALID,
+        EditErrorCode.PATH_INVALID,
+        EditErrorCode.READ_FAILED,
+        EditErrorCode.FILE_NOT_FOUND,
+        EditErrorCode.FILE_EXISTS,
+        EditErrorCode.HASH_MISMATCH,
+        EditErrorCode.WRITE_FAILED,
+        EditErrorCode.READ_DENIED,
+        EditErrorCode.WRITE_DENIED,
+        EditErrorCode.RECOVERY_CONFLICT,
+    }
+)
 
 
 def create_developer_workflow(
@@ -45,6 +72,8 @@ def create_developer_workflow(
     secret_filter: KnownSecretFilter | None = None,
     event_recorder: EventRecorder | None = None,
     access_policy: WorkspaceAccessPolicy | None = None,
+    run_id: str | None = None,
+    task_id: str | None = None,
 ):
     runtime = runtime or default_developer_runtime()
     tools = list(
@@ -208,6 +237,22 @@ def create_developer_workflow(
         )
         if not staged.ok:
             assert staged.edit_result is not None
+            if staged.edit_result.status is EditStatus.NOOP:
+                updated = replace(
+                    transaction, task_ids=staged.edit_result.task_ids
+                )
+                return {
+                    **budget_update,
+                    "current_file_transaction": updated,
+                    "current_file_snapshot": WorkspaceSnapshot(
+                        path=updated.path,
+                        exists=updated.existed,
+                        content=updated.working_content,
+                        content_hash=updated.base_hash,
+                    ),
+                    "current_file_content": updated.working_content,
+                    "last_edit_result": None,
+                }
             return {**budget_update, **failed_edit(staged.edit_result)}
         updated = staged.transaction
         assert updated is not None
@@ -238,6 +283,64 @@ def create_developer_workflow(
         transaction = state.current_file_transaction
         if transaction is None:
             return invalid_state("The Developer has no transaction to commit.")
+        pending_write = state.pending_write
+        recovery = None
+        if budget_boundary is not None:
+            if not isinstance(pending_write, WriteIntent):
+                return {
+                    **invalid_state(
+                        "The Developer has no valid durable write intent to reconcile."
+                    ),
+                    "runtime_error_code": BudgetErrorCode.RECOVERY_CONFLICT,
+                    "runtime_message": (
+                        "A durable file transaction was reached without its "
+                        "checkpointed write intent."
+                    ),
+                }
+            recovery = runtime.edit_executor().reconcile(
+                transaction, pending_write
+            )
+            if recovery.status is RecoveryStatus.CONFLICT:
+                rejected = EditResult(
+                    status=EditStatus.REJECTED,
+                    path=transaction.path,
+                    error_code=EditErrorCode.RECOVERY_CONFLICT,
+                    message=recovery.message,
+                    before_hash=recovery.current_hash,
+                    task_ids=transaction.task_ids,
+                )
+                return {
+                    **failed_edit(rejected),
+                    "last_recovery_result": recovery,
+                    "runtime_error_code": BudgetErrorCode.RECOVERY_CONFLICT,
+                    "runtime_message": recovery.message,
+                }
+            if recovery.status is RecoveryStatus.ALREADY_APPLIED:
+                result = recovery.edit_result
+                if result is None or result.status is not EditStatus.APPLIED:
+                    return {
+                        **invalid_state(
+                            "The durable recovery result was not an applied edit."
+                        ),
+                        "last_recovery_result": recovery,
+                        "runtime_error_code": BudgetErrorCode.RECOVERY_CONFLICT,
+                        "runtime_message": (
+                            "The durable recovery result was invalid."
+                        ),
+                    }
+                deadline_update = budget_boundary.check_deadline(
+                    state,
+                    message=(
+                        "The file was already applied before recovery; later "
+                        "side effects were blocked by the absolute deadline."
+                    ),
+                )
+                return {
+                    "last_edit_result": result,
+                    "last_recovery_result": recovery,
+                    "current_file_transaction": None,
+                    **deadline_update,
+                }
         if budget_boundary is not None:
             deadline_update = budget_boundary.check_deadline(
                 state,
@@ -262,12 +365,120 @@ def create_developer_workflow(
             else {}
         )
         if result.status is not EditStatus.APPLIED:
-            return {**failed_edit(result), **deadline_update}
+            update = {
+                **failed_edit(result),
+                "last_recovery_result": (
+                    recovery if budget_boundary is not None else None
+                ),
+                **deadline_update,
+            }
+            if (
+                budget_boundary is not None
+                and result.error_code in _RECOVERY_COMMIT_ERRORS
+            ):
+                conflict = RecoveryResult(
+                    status=RecoveryStatus.CONFLICT,
+                    path=transaction.path,
+                    current_hash=result.before_hash,
+                    expected_after_hash=(
+                        pending_write.expected_after_hash
+                        if pending_write is not None
+                        else None
+                    ),
+                    error_code=EditErrorCode.RECOVERY_CONFLICT,
+                    message=result.message,
+                )
+                update.update(
+                    {
+                        "last_recovery_result": conflict,
+                        "runtime_error_code": BudgetErrorCode.RECOVERY_CONFLICT,
+                        "runtime_message": result.message,
+                    }
+                )
+            return update
         return {
             "last_edit_result": result,
+            "last_recovery_result": (
+                RecoveryResult(
+                    status=RecoveryStatus.SAFE_TO_APPLY,
+                    path=pending_write.path,
+                    current_hash=pending_write.before_hash,
+                    expected_after_hash=pending_write.expected_after_hash,
+                    edit_result=result,
+                )
+                if pending_write is not None
+                else None
+            ),
             "current_file_transaction": None,
             **deadline_update,
         }
+
+    def prepare_write_intent(
+        state: SoftwareDeveloperState,
+    ) -> dict[str, Any]:
+        """Checkpoint a stable write intent before the first filesystem write."""
+        transaction = state.current_file_transaction
+        if transaction is None:
+            return invalid_state("The Developer has no transaction to prepare.")
+        if budget_boundary is None:
+            return {}
+        deadline_update = budget_boundary.check_deadline(
+            state,
+            message=(
+                "The absolute run deadline expired before write intent "
+                "persistence; no write was attempted."
+            ),
+        )
+        if deadline_update:
+            return deadline_update
+        existing = state.pending_write
+        if existing is not None:
+            if existing.path == transaction.path and existing.task_ids == transaction.task_ids:
+                return {"last_recovery_result": None}
+            return {
+                **invalid_state("A different pending write intent is active."),
+                "runtime_error_code": BudgetErrorCode.RECOVERY_CONFLICT,
+                "runtime_message": "A different durable write intent is active.",
+            }
+        if transaction.existed and (
+            transaction.original_content.encode("utf-8")
+            == transaction.working_content.encode("utf-8")
+        ):
+            noop_result = runtime.edit_executor().commit(transaction)
+            if noop_result.status is not EditStatus.NOOP:
+                return failed_edit(noop_result)
+            return {
+                "last_edit_result": noop_result,
+                "current_file_transaction": None,
+                "pending_write": None,
+                "last_recovery_result": None,
+            }
+        logical_task_id = task_id or f"task-{state.current_task_idx + 1}"
+        intent = WriteIntent.create(
+            run_id=run_id or budget_boundary.run_id,
+            task_id=logical_task_id,
+            task_index=state.current_task_idx,
+            repair_attempt=state.repair_attempts,
+            transaction=transaction,
+            expected_after_hash=sha256(
+                transaction.working_content.encode("utf-8")
+            ),
+        )
+        return {
+            "pending_write": intent,
+            "last_recovery_result": None,
+        }
+
+    def clear_pending_write(
+        state: SoftwareDeveloperState,
+    ) -> dict[str, Any]:
+        if state.last_edit_result is None or state.last_edit_result.status is not EditStatus.APPLIED:
+            return {
+                **invalid_state("A pending write can only clear after an applied edit."),
+                "runtime_error_code": BudgetErrorCode.RECOVERY_CONFLICT,
+                "runtime_message": "A pending write was cleared without an applied edit.",
+            }
+        return {"pending_write": None}
 
     def proceed_to_next_task(
         state: SoftwareDeveloperState,
@@ -422,6 +633,13 @@ def create_developer_workflow(
             node_name="commit_file_transaction",
         ),
     )
+    if budget_boundary is not None:
+        workflow.add_node(
+            "prepare_write_intent", persist_node(prepare_write_intent)
+        )
+        workflow.add_node(
+            "clear_pending_write", persist_node(clear_pending_write)
+        )
     workflow.add_node(
         "proceed_to_next_task", persist_node(proceed_to_next_task)
     )
@@ -529,7 +747,19 @@ def create_developer_workflow(
         workflow.add_conditional_edges(
             "check_deadline_before_commit",
             lambda state: (
-                "end" if state.runtime_error_code is not None else "commit"
+                "end"
+                if state.runtime_error_code is not None
+                else "prepare"
+            ),
+            {"prepare": "prepare_write_intent", "end": END},
+        )
+        workflow.add_conditional_edges(
+            "prepare_write_intent",
+            lambda state: (
+                "end"
+                if state.runtime_error_code is not None
+                or state.last_edit_result is not None
+                else "commit"
             ),
             {"commit": "commit_file_transaction", "end": END},
         )
@@ -540,8 +770,13 @@ def create_developer_workflow(
                 if state.runtime_error_code is not None
                 else route_after_commit(state)
             ),
-            {"advance": "proceed_to_next_task", END: END, "end": END},
+            {
+                "advance": "clear_pending_write",
+                END: END,
+                "end": END,
+            },
         )
+        workflow.add_edge("clear_pending_write", "proceed_to_next_task")
         workflow.add_conditional_edges(
             "proceed_to_next_task",
             route_after_task_advance,

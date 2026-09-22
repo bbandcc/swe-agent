@@ -801,6 +801,8 @@ def create_durable_workflow(
         budget_boundary=boundary,
         secret_filter=secret_filter,
         event_recorder=event_recorder,
+        run_id=run_id,
+        task_id=task_id,
     )
     return create_workflow_graph(
         architect=architect,

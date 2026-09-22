@@ -9,11 +9,11 @@ from typing import Any
 
 from agent.runtime.config import RunConfig
 
-# Version 4 binds the trusted workspace read/write policy to checkpoint
-# identity.  A checkpoint from an earlier policy/schema cannot be resumed
-# under a potentially different authorization boundary. Future semantic field
-# or encoding changes must increment this version again.
-SEMANTIC_CONFIG_SCHEMA_VERSION = 4
+# Version 5 binds durable pending-write intent/reconciliation semantics to
+# checkpoint identity. A checkpoint from an earlier schema cannot be resumed
+# under a state model that may contain incomplete file writes. Future semantic
+# field or encoding changes must increment this version again.
+SEMANTIC_CONFIG_SCHEMA_VERSION = 5
 
 
 def semantic_config_digest(config: RunConfig) -> str:

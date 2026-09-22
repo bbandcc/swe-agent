@@ -10,7 +10,7 @@ from agent.architect.graph import swe_architect
 from agent.common.entities import ImplementationPlan
 from agent.developer.graph import swe_developer
 from agent.developer.state import DeveloperErrorCode, DeveloperStatus
-from agent.editing import EditResult
+from agent.editing import EditResult, RecoveryResult, WriteIntent
 from agent.outcome import WorkflowOutcome
 from agent.verification import (
     AcceptanceResult,
@@ -50,6 +50,12 @@ class AgentState(DurableBudgetState):
     )
     last_edit_result: Optional[EditResult] = Field(
         None, description="The final Developer edit outcome"
+    )
+    pending_write: WriteIntent | None = Field(
+        None, description="Durable file-write intent awaiting reconciliation"
+    )
+    last_recovery_result: RecoveryResult | None = Field(
+        None, description="Latest deterministic pending-write reconciliation"
     )
     developer_status: DeveloperStatus = Field(DeveloperStatus.PENDING)
     developer_error_code: Optional[DeveloperErrorCode] = Field(None)

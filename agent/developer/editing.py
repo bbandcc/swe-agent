@@ -9,6 +9,9 @@ from agent.editing import (
     EditProposal,
     EditResult,
     EditStatus,
+    RecoveryReconciler,
+    RecoveryResult,
+    WriteIntent,
     TransactionResult,
     WorkspaceEditor,
     WorkspaceSnapshot,
@@ -121,6 +124,12 @@ class DeveloperEditExecutor:
 
     def commit(self, transaction: WorkspaceTransaction) -> EditResult:
         return self._editor.commit(transaction)
+
+    def reconcile(
+        self, transaction: WorkspaceTransaction, intent: WriteIntent
+    ) -> RecoveryResult:
+        """Compare a durable write intent with the live file without writing."""
+        return RecoveryReconciler(self._editor).reconcile(transaction, intent)
 
     def apply(
         self, snapshot: WorkspaceSnapshot, model_output: str, *, task_id: str

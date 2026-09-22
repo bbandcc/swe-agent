@@ -19,8 +19,11 @@ from agent.editing import (
     EditOperation,
     EditResult,
     EditStatus,
+    RecoveryResult,
+    RecoveryStatus,
     WorkspaceSnapshot,
     WorkspaceTransaction,
+    WriteIntent,
 )
 from agent.outcome import WorkflowOutcome
 from agent.runtime.boundary import DurableCallResult
@@ -174,6 +177,9 @@ def checkpoint_serializer() -> JsonPlusSerializer:
             EditResult,
             WorkspaceSnapshot,
             WorkspaceTransaction,
+            WriteIntent,
+            RecoveryStatus,
+            RecoveryResult,
             VerificationCheckStatus,
             AcceptanceReason,
             AcceptanceResult,

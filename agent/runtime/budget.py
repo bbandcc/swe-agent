@@ -50,6 +50,7 @@ class BudgetErrorCode(str, Enum):
     MODEL_REQUEST_TIMEOUT = "model_request_timeout"
     MODEL_TRANSPORT_ERROR = "model_transport_error"
     SENSITIVE_DATA_DETECTED = "sensitive_data_detected"
+    RECOVERY_CONFLICT = "recovery_conflict"
 
 
 @dataclass(frozen=True, slots=True)

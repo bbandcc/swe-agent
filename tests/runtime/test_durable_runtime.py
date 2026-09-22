@@ -438,6 +438,47 @@ class DurableRuntimeTests(RunConfigTestCase):
             self.assertEqual(resume_factory.factory_calls, 0)
             self.assertEqual(resume_factory.verification_calls, 0)
 
+    def test_old_v4_checkpoint_fails_closed_before_write_or_verification(self) -> None:
+        with tempfile.TemporaryDirectory() as directory:
+            root = Path(directory)
+            config = self.make_config(root)
+            current_request = self.request(config)
+            with patch("agent.runtime.semantics.SEMANTIC_CONFIG_SCHEMA_VERSION", 4):
+                old_digest = semantic_config_digest(config)
+            old_request = StartRequest(
+                current_request.identity,
+                old_digest,
+                current_request.agent_revision,
+            )
+            factory = LegacyVerificationFactory()
+
+            with patch("agent.runtime.semantics.SEMANTIC_CONFIG_SCHEMA_VERSION", 4):
+                started = start_run(
+                    config,
+                    old_request,
+                    {"verification_result": None},
+                    graph_factory=factory,
+                    clock=lambda: 100.0,
+                )
+
+            resume_factory = LegacyVerificationFactory()
+            resumed = resume_run(
+                config,
+                ResumeRequest(
+                    current_request.identity,
+                    semantic_config_digest(config),
+                    current_request.agent_revision,
+                ),
+                graph_factory=resume_factory,
+                clock=lambda: 150.0,
+            )
+
+            self.assertEqual(started.status, DurableRunStatus.PAUSED)
+            self.assertEqual(resumed.status, DurableRunStatus.REJECTED)
+            self.assertEqual(resumed.error_code, "run_config_mismatch")
+            self.assertEqual(resume_factory.factory_calls, 0)
+            self.assertEqual(resume_factory.verification_calls, 0)
+
     def test_real_sqlite_policy_change_fails_before_graph_or_verification(self) -> None:
         with tempfile.TemporaryDirectory() as directory:
             root = Path(directory)

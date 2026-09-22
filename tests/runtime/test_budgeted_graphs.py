@@ -134,6 +134,161 @@ class BudgetedGraphTests(unittest.TestCase):
             RequestIdentityScope.PARTIAL,
         )
 
+    def test_durable_net_zero_transaction_has_no_write_intent_or_disk_write(self) -> None:
+        with tempfile.TemporaryDirectory() as directory:
+            root = Path(directory)
+            target = root / "app.py"
+            target.write_text("value = 1\n", encoding="utf-8", newline="")
+            before = target.stat()
+            runtime = DeveloperRuntime(
+                edit_executor=lambda: DeveloperEditExecutor(WorkspaceEditor(root)),
+                load_codebase_structure=lambda: "app.py",
+                research_atomic_task=lambda _: measured(AIMessage(content="ready")),
+                propose_existing_file_edit=lambda _: measured(
+                    "<<<<<<< SEARCH\nvalue = 1\n=======\nvalue = 1\n>>>>>>> REPLACE"
+                ),
+                propose_new_file=lambda _: self.fail("unexpected create"),
+            )
+            developer = create_developer_workflow(
+                runtime,
+                research_tools=[],
+                budget_boundary=DurableBudgetBoundary("run", clock=lambda: 100.0),
+            )
+
+            result = developer.invoke(
+                {
+                    "implementation_plan": ready_plan(),
+                    "budget": BudgetSnapshot.create(
+                        max_steps=4, max_cost_usd=None, deadline_at=200.0
+                    ),
+                }
+            )
+
+            self.assertEqual(result["last_edit_result"].status.value, "noop")
+            self.assertIsNone(result["pending_write"])
+            self.assertEqual(result["current_task_idx"], 0)
+            self.assertEqual(target.read_bytes(), b"value = 1\n")
+            self.assertEqual(target.stat().st_mtime_ns, before.st_mtime_ns)
+
+    def test_durable_create_empty_file_is_applied_through_intent(self) -> None:
+        with tempfile.TemporaryDirectory() as directory:
+            root = Path(directory)
+            runtime = DeveloperRuntime(
+                edit_executor=lambda: DeveloperEditExecutor(WorkspaceEditor(root)),
+                load_codebase_structure=lambda: "",
+                research_atomic_task=lambda _: measured(AIMessage(content="ready")),
+                propose_existing_file_edit=lambda _: self.fail("unexpected edit"),
+                propose_new_file=lambda _: measured(""),
+            )
+            developer = create_developer_workflow(
+                runtime,
+                research_tools=[],
+                budget_boundary=DurableBudgetBoundary("run", clock=lambda: 100.0),
+            )
+
+            plan = ImplementationPlan(
+                tasks=[
+                    ImplementationTask(
+                        file_path="empty.py",
+                        logical_task="create empty file",
+                        atomic_tasks=[AtomicTask(atomic_task="create")],
+                    )
+                ]
+            )
+            result = developer.invoke(
+                {
+                    "implementation_plan": plan,
+                    "budget": BudgetSnapshot.create(
+                        max_steps=4, max_cost_usd=None, deadline_at=200.0
+                    ),
+                }
+            )
+
+            target = root / "empty.py"
+            self.assertTrue(target.exists())
+            self.assertEqual(target.read_bytes(), b"")
+            self.assertEqual(result["last_edit_result"].status.value, "applied")
+            self.assertIsNone(result["pending_write"])
+
+    def test_durable_net_zero_rechecks_external_change_before_noop(self) -> None:
+        with tempfile.TemporaryDirectory() as directory:
+            root = Path(directory)
+            target = root / "app.py"
+            target.write_text("value = 1\n", encoding="utf-8", newline="")
+
+            def propose(_):
+                target.write_text("value = 99\n", encoding="utf-8", newline="")
+                return measured(
+                    "<<<<<<< SEARCH\nvalue = 1\n=======\nvalue = 1\n>>>>>>> REPLACE"
+                )
+
+            runtime = DeveloperRuntime(
+                edit_executor=lambda: DeveloperEditExecutor(WorkspaceEditor(root)),
+                load_codebase_structure=lambda: "app.py",
+                research_atomic_task=lambda _: measured(AIMessage(content="ready")),
+                propose_existing_file_edit=propose,
+                propose_new_file=lambda _: self.fail("unexpected create"),
+            )
+            developer = create_developer_workflow(
+                runtime,
+                research_tools=[],
+                budget_boundary=DurableBudgetBoundary("run", clock=lambda: 100.0),
+            )
+
+            result = developer.invoke(
+                {
+                    "implementation_plan": ready_plan(),
+                    "budget": BudgetSnapshot.create(
+                        max_steps=4, max_cost_usd=None, deadline_at=200.0
+                    ),
+                }
+            )
+
+            self.assertEqual(result["last_edit_result"].status.value, "rejected")
+            self.assertEqual(
+                result["last_edit_result"].error_code.value, "hash_mismatch"
+            )
+            self.assertIsNone(result["pending_write"])
+            self.assertEqual(result["current_task_idx"], 0)
+            self.assertEqual(target.read_text(encoding="utf-8"), "value = 99\n")
+
+    def test_parent_durable_net_zero_does_not_become_success(self) -> None:
+        with tempfile.TemporaryDirectory() as directory:
+            root = Path(directory)
+            target = root / "app.py"
+            target.write_text("value = 1\n", encoding="utf-8", newline="")
+            runtime = DeveloperRuntime(
+                edit_executor=lambda: DeveloperEditExecutor(WorkspaceEditor(root)),
+                load_codebase_structure=lambda: "app.py",
+                research_atomic_task=lambda _: measured(AIMessage(content="ready")),
+                propose_existing_file_edit=lambda _: measured(
+                    "<<<<<<< SEARCH\nvalue = 1\n=======\nvalue = 1\n>>>>>>> REPLACE"
+                ),
+                propose_new_file=lambda _: self.fail("unexpected create"),
+            )
+            boundary = DurableBudgetBoundary("run", clock=lambda: 100.0)
+            developer = create_developer_workflow(
+                runtime, research_tools=[], budget_boundary=boundary
+            )
+            result = create_workflow_graph(
+                architect=lambda _: {"implementation_plan": ready_plan()},
+                developer=developer,
+                verification_specs=(),
+                workspace_root=root,
+                durable_runtime=True,
+                clock=lambda: 100.0,
+            ).compile().invoke(
+                {
+                    "budget": BudgetSnapshot.create(
+                        max_steps=4, max_cost_usd=None, deadline_at=200.0
+                    )
+                }
+            )
+
+            self.assertEqual(result["last_edit_result"].status.value, "noop")
+            self.assertEqual(result["outcome"], WorkflowOutcome.FAILED)
+            self.assertEqual(target.read_text(encoding="utf-8"), "value = 1\n")
+
     def test_model_request_timeout_uses_remaining_deadline_and_settles_unknown(self) -> None:
         now = [107.0]
         boundary = DurableBudgetBoundary(

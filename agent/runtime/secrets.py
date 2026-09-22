@@ -27,6 +27,7 @@ _CODE_BEARING_STATE_KEYS = frozenset(
         "old_text",
         "patch",
         "proposal",
+        "pending_write",
         "working_content",
     }
 )

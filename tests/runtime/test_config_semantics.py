@@ -16,7 +16,7 @@ from tests.runtime._config_support import (
 
 class SemanticConfigDigestTests(RunConfigTestCase):
     def test_digest_schema_version_is_bumped_for_workspace_policy_semantics(self) -> None:
-        self.assertEqual(SEMANTIC_CONFIG_SCHEMA_VERSION, 4)
+        self.assertEqual(SEMANTIC_CONFIG_SCHEMA_VERSION, 5)
 
     def test_digest_excludes_paths_and_api_key(self) -> None:
         with (

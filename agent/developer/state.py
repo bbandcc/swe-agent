@@ -7,7 +7,13 @@ from langgraph.graph.message import Messages
 from pydantic import BaseModel, Field
 
 from agent.common.entities import ImplementationPlan
-from agent.editing import EditResult, WorkspaceSnapshot, WorkspaceTransaction
+from agent.editing import (
+    EditResult,
+    RecoveryResult,
+    WorkspaceSnapshot,
+    WorkspaceTransaction,
+    WriteIntent,
+)
 from agent.runtime.boundary import DurableBudgetState
 
 
@@ -50,6 +56,12 @@ class SoftwareDeveloperState(DurableBudgetState):
     )
     current_file_transaction: WorkspaceTransaction | None = Field(
         None, description="In-memory transaction for the current file"
+    )
+    pending_write: WriteIntent | None = Field(
+        None, description="Durable intent that must be reconciled before writing"
+    )
+    last_recovery_result: RecoveryResult | None = Field(
+        None, description="Latest deterministic pending-write reconciliation"
     )
     current_file_content: str | None = Field(
         None, description="Current UTF-8 content supplied to the model"

@@ -42,6 +42,8 @@ def start_implementing(state: SoftwareDeveloperState) -> dict[str, Any]:
         "current_task_idx": 0,
         "current_atomic_task_idx": 0,
         "current_file_transaction": None,
+        "pending_write": None,
+        "last_recovery_result": None,
         "last_edit_result": None,
         "developer_status": (
             DeveloperStatus.FAILED if error is not None else status
