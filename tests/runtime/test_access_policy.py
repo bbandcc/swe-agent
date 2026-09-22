@@ -382,7 +382,7 @@ class WorkspaceAccessPolicyTests(RunConfigTestCase):
                 architect_tool_results.extend(
                     message
                     for message in _values["implementation_research_scratchpad"]
-                    if message.type == "tool"
+                    if "UNTRUSTED EVIDENCE" in str(message.content)
                 )
                 return AIMessage(content="No more research.")
 
@@ -442,7 +442,7 @@ class WorkspaceAccessPolicyTests(RunConfigTestCase):
                 developer_tool_results.extend(
                     message
                     for message in _values["atomic_implementation_research"]
-                    if message.type == "tool"
+                    if "UNTRUSTED EVIDENCE" in str(message.content)
                 )
                 return AIMessage(content="Research complete.")
 

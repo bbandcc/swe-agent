@@ -4,7 +4,6 @@ from collections.abc import Sequence
 from dataclasses import replace
 from typing import Any
 
-from langchain_core.messages import AnyMessage
 from langchain_core.runnables import RunnableConfig
 from langgraph.constants import END, START
 from langgraph.graph import StateGraph
@@ -16,8 +15,8 @@ from agent.developer.state import (
     DeveloperStatus,
     SoftwareDeveloperState,
 )
+from agent.common.tool_message_renderer import render_tool_messages
 from agent.developer.workflow_support import (
-    convert_tools_messages_to_ai_and_human,
     duplicate_file_task_error,
     failed_edit,
     invalid_state,
@@ -214,7 +213,7 @@ def create_developer_workflow(
             "codebase_structure": state.codebase_structure,
             "additional_context": current_atomic_task.additional_context,
             "atomic_implementation_research": (
-                state.atomic_implementation_research
+                render_tool_messages(state.atomic_implementation_research)
             ),
         }
         values, deadline_update = prepare_model_values(state, values)
@@ -248,7 +247,7 @@ def create_developer_workflow(
         values = {
             "task": current_atomic_task.atomic_task,
             "additional_context": current_atomic_task.additional_context,
-            "research": convert_tools_messages_to_ai_and_human(
+            "research": render_tool_messages(
                 state.atomic_implementation_research
             ),
             "file_path": transaction.path,

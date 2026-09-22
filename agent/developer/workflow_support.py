@@ -1,13 +1,12 @@
 """Deterministic validation, routing, and message adaptation for Developer."""
 
-import json
 from collections.abc import Callable
 from typing import Any
 
-from langchain_core.messages import AIMessage, AnyMessage, HumanMessage
 from langgraph.constants import END
 
 from agent.common.entities import PlanStatus
+from agent.common.tool_message_renderer import render_tool_messages
 from agent.developer.state import (
     DeveloperErrorCode,
     DeveloperStatus,
@@ -138,34 +137,7 @@ def route_after_task_advance(state: SoftwareDeveloperState):
     return "complete"
 
 
-def convert_tools_messages_to_ai_and_human(
-    implementation_research_scratchpad: list[AnyMessage],
-) -> list[AnyMessage]:
-    messages: list[AnyMessage] = []
-    for message in implementation_research_scratchpad:
-        if message.type == "ai" and message.tool_calls:
-            tool_name = message.tool_calls[0]["name"]
-            tool_args = json.dumps(message.tool_calls[0]["args"])
-            messages.append(
-                AIMessage(
-                    content=(
-                        f"I want to call the tool {tool_name} with the following "
-                        f"arguments: {tool_args}"
-                    )
-                )
-            )
-        elif message.type == "tool":
-            messages.append(
-                HumanMessage(
-                    content=(
-                        f"When executing Tool {message.name}\n"
-                        f"The result was {message.content}"
-                    )
-                )
-            )
-        else:
-            messages.append(message)
-    return messages
+convert_tools_messages_to_ai_and_human = render_tool_messages
 
 
 def failed_edit(result: EditResult) -> dict[str, Any]:

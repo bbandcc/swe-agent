@@ -1,6 +1,5 @@
 """Architect research graph with explicit invalid-step routing."""
 
-import json
 from collections.abc import Sequence
 from typing import Any, NotRequired, TypedDict
 
@@ -15,6 +14,7 @@ from agent.architect.models import ResearchEvaluation, ResearchStep
 from agent.architect.runtime import ArchitectRuntime, default_architect_runtime
 from agent.architect.state import SoftwareArchitectState
 from agent.common.entities import ImplementationPlan
+from agent.common.tool_message_renderer import render_tool_messages
 from agent.tools.codemap import codemap_tools
 from agent.tools.search import search_tools
 from agent.runtime import BudgetSnapshot, DurableBudgetBoundary, DurableCallResult
@@ -57,34 +57,7 @@ def should_conduct_research(state: SoftwareArchitectState):
     return "plan_is_not_valid"
 
 
-def convert_tools_messages_to_ai_and_human(
-    implementation_research_scratchpad: list[AnyMessage],
-) -> list[AnyMessage]:
-    messages: list[AnyMessage] = []
-    for message in implementation_research_scratchpad:
-        if message.type == "ai" and message.tool_calls:
-            tool_name = message.tool_calls[0]["name"]
-            tool_args = json.dumps(message.tool_calls[0]["args"])
-            messages.append(
-                AIMessage(
-                    content=(
-                        f"I want to call the tool {tool_name} with the following "
-                        f"arguments: {tool_args}"
-                    )
-                )
-            )
-        elif message.type == "tool":
-            messages.append(
-                HumanMessage(
-                    content=(
-                        f"When executing Tool {message.name}\n"
-                        f"The result was {message.content}"
-                    )
-                )
-            )
-        else:
-            messages.append(message)
-    return messages
+convert_tools_messages_to_ai_and_human = render_tool_messages
 
 
 def create_architect_workflow(
@@ -118,7 +91,7 @@ def create_architect_workflow(
     ) -> dict[str, Any]:
         values = {
                 "implementation_research_scratchpad": (
-                    state.implementation_research_scratchpad
+                    render_tool_messages(state.implementation_research_scratchpad)
                 ),
                 "codebase_structure": runtime.load_codebase_structure(),
             }
@@ -150,7 +123,7 @@ def create_architect_workflow(
     ) -> dict[str, Any]:
         values = {
                 "implementation_research_scratchpad": (
-                    state.implementation_research_scratchpad
+                    render_tool_messages(state.implementation_research_scratchpad)
                 )
             }
         values, deadline_update = prepare_model_values(state, values)
@@ -179,7 +152,7 @@ def create_architect_workflow(
     def conduct_research(state: SoftwareArchitectState) -> dict[str, Any]:
         values = {
                 "implementation_research_scratchpad": (
-                    state.implementation_research_scratchpad
+                    render_tool_messages(state.implementation_research_scratchpad)
                 ),
                 "codebase_structure": runtime.load_codebase_structure(),
             }
@@ -202,7 +175,7 @@ def create_architect_workflow(
         state: SoftwareArchitectState,
     ) -> dict[str, Any]:
         values = {
-                "research_findings": convert_tools_messages_to_ai_and_human(
+                "research_findings": render_tool_messages(
                     state.implementation_research_scratchpad
                 ),
                 "codebase_structure": runtime.load_codebase_structure(),
@@ -225,12 +198,14 @@ def create_architect_workflow(
     def request_values(state: SoftwareArchitectState, name: str) -> dict[str, Any]:
         if name == "extract_implementation_plan":
             return {
-                "research_findings": convert_tools_messages_to_ai_and_human(
+                "research_findings": render_tool_messages(
                     state.implementation_research_scratchpad
                 ),
             }
         return {
-            "scratchpad": state.implementation_research_scratchpad,
+            "scratchpad": render_tool_messages(
+                state.implementation_research_scratchpad
+            ),
             "research_next_step": state.research_next_step,
             "node": name,
         }

@@ -11,15 +11,15 @@
 ### 当前状态文件基线
 
 - S3.2 production 技术冻结点：`5850b8370c49f868e90aeffe9e6042f85eaa522c`；D1/S1a、D2/S2b 已冻结，D3/S2c Seal blocker 已通过本地验收。
-- S3.2 的配置、身份、SQLite checkpoint、预算边界、start/resume 和现有图接入均保持冻结；D3/S2c 已将单一 JUnit XML 可信报告、稳定 case identity、保守 acceptance policy 和 owned temporary evidence 生命周期接入生产验收链路。D4/S3.2a 已补齐模型请求时限、单次外部尝试边界、普通模型响应结算和部分请求身份范围；D6/S3.3a、S3.3b、S3.3c 与 D7/S3.5a、S3.5b 已完成本地验收。本轮完成 S2d/D3 受控多文件 repair：semantic config schema v7、checkpoint-safe committed edits、可信 repair scope、结构化 failure signature/stagnation history，并保持 S3.4a/S3.4b recovery seam；当前等待 ChatGPT 审核，不进入 S4。
+- S3.2 的配置、身份、SQLite checkpoint、预算边界、start/resume 和现有图接入均保持冻结；D3/S2c 已将单一 JUnit XML 可信报告、稳定 case identity、保守 acceptance policy 和 owned temporary evidence 生命周期接入生产验收链路。D4/S3.2a 已补齐模型请求时限、单次外部尝试边界、普通模型响应结算和部分请求身份范围；D6/S3.3a、S3.3b、S3.3c 与 D7/S3.5a、S3.5b 已完成本地验收。本轮完成 S2d/D3 受控多文件 repair和 S4a/D8 工具消息完整传递：S2d 保持 semantic config schema v7，S4a 建立共享纯 renderer 并保持持久化/预算契约；当前等待 ChatGPT Final Gate，不进入 S4b。
 - D2/S2b Final Seal 已收窄 library/CLI 的异常边界；`RunSummary.warnings` 只输出 preflight warning code，unexpected `RuntimeError`、`KeyboardInterrupt` 和 `SystemExit` 不被入口吞掉。
-- 本轮最新 Codex 本地验证：unittest 355 tests OK / 10 skipped；pytest 345 passed / 10 skipped /
+- 本轮最新 Codex 本地验证：unittest 357 tests OK / 10 skipped；pytest 351 passed / 10 skipped /
   190 subtests passed；Python compile、11 个 prompt render、root/start/resume 三套 CLI help、
   `git diff --check` 均通过。10 个 skip 均为当前 Windows 链接能力或平台边界限制。
 - 没有 GitHub CI 或独立外部测试证据，不作相应声明。
-- 剩余能力：完整 secret-safe state persistence（当前只覆盖 RunConfig 中已知凭据）、verification rerun/replay、S2d、S4 仍未实现；D7 policy 只约束使用本 seam 的合作进程和模型可调用工具，不阻止第三方直接写 workspace，也不是 OS sandbox。本轮 EventSink/RunRecord 与 verification artifact 只提供单进程本地 JSONL、结构化记录和有界/脱敏日志，不是完整恢复系统。provider 正向 retry/独立 attempt 语义未实现，当前 durable 只允许单次外部尝试；当前模型 `request_digest` 只代表有界语义输入，身份范围明确为 `PARTIAL`，不能据此安全重放最终 rendered request；exactly-once 不承诺。JUnit XML 是当前唯一可信报告格式，未配置或报告缺失/畸形时保守返回证据不足；多框架 parser registry、扩展 repair 和 S4 均未实现。runner 只改写精确匹配的 `--junitxml/--junit-xml` destination 到 owned temporary output，workspace report_path 保持原 bytes/mtime；owned temp cleanup 失败返回结构化 `EXECUTION_ERROR`。S3.4b 对命令已启动但结果未持久化的恢复默认保守返回 `OUTCOME_UNKNOWN`，当前没有 isolated execution seam，因此不支持自动重跑；pytest 对其它 workspace 文件的副作用仍未提供 recovery。
+- 剩余能力：完整 secret-safe state persistence（当前只覆盖 RunConfig 中已知凭据）、verification rerun/replay、S4b 搜索限额、S4c symbol/repo map 仍未实现；D7 policy 只约束使用本 seam 的合作进程和模型可调用工具，不阻止第三方直接写 workspace，也不是 OS sandbox。本轮 EventSink/RunRecord 与 verification artifact 只提供单进程本地 JSONL、结构化记录和有界/脱敏日志，不是完整恢复系统。provider 正向 retry/独立 attempt 语义未实现，当前 durable 只允许单次外部尝试；当前模型 `request_digest` 只代表有界语义输入，身份范围明确为 `PARTIAL`，不能据此安全重放最终 rendered request；exactly-once 不承诺。JUnit XML 是当前唯一可信报告格式，未配置或报告缺失/畸形时保守返回证据不足；多框架 parser registry、扩展 repair、S4b/S4c 均未实现。runner 只改写精确匹配的 `--junitxml/--junit-xml` destination 到 owned temporary output，workspace report_path 保持原 bytes/mtime；owned temp cleanup 失败返回结构化 `EXECUTION_ERROR`。S3.4b 对命令已启动但结果未持久化的恢复默认保守返回 `OUTCOME_UNKNOWN`，当前没有 isolated execution seam，因此不支持自动重跑；pytest 对其它 workspace 文件的副作用仍未提供 recovery。
 - 后续技术切片继续按 MASTER_PLAN §5.2 执行；保留现有 S1/S2/S3 历史编号，不重新开启或重命名 S1。
-- MASTER_PLAN 对应：当前实现事实覆盖 S3.2、D1/S1a、D2/S2b、D3/S2c、D4/S3.2a、D5/S3.4a、D5/S3.4b、D6/S3.3a、S3.3b、S3.3c、D7/S3.5a、S3.5b Final Seal 和 S2d/D3 受控多文件 repair；没有 GitHub CI 或独立外部测试证据。后续运行控制、轨迹和恢复要求继续按 §5.2 映射执行，本轮不进入 S4。
+- MASTER_PLAN 对应：当前实现事实覆盖 S3.2、D1/S1a、D2/S2b、D3/S2c、D4/S3.2a、D5/S3.4a、D5/S3.4b、D6/S3.3a、S3.3b、S3.3c、D7/S3.5a、S3.5b Final Seal、S2d/D3 受控多文件 repair 和 D8/S4a 工具消息完整传递；没有 GitHub CI 或独立外部测试证据。后续运行控制、轨迹和恢复要求继续按 §5.2 映射执行，本轮不进入 S4b。
 
 ## 当前文档任务：独立 MASTER PLAN（2026-09-16）
 
@@ -949,3 +949,33 @@ S1/S2/S3.1/S3.2/D3-D7a 测试保持通过。compile、11 个 prompt render、roo
   OS sandbox。CommittedEdit 只证明 checkpoint 中的 hash/digest 证据，不提供跨文件 atomicity、filesystem
   exactly-once、verification replay 或第三方并发写保护。stagnation 只在结构化报告可验证且 patch digest
   可取得时触发，不能从 failure_id 或截断日志推断归因。
+
+## D8/S4a：工具消息完整传递
+
+### 固定范围与公开契约
+
+- 基线：`5ed85f9dc8b9c49ed197aff119e141c382a8bc76`；本轮只增加 Architect/Developer 共用的纯工具消息 renderer，
+  不进入 S4b 搜索限额、S4c symbol/repo map、历史摘要或新消息总线。
+- 公开 seam 为 `agent.common.tool_message_renderer.render_tool_messages(messages)`；Architect 与 Developer
+  只通过该 renderer 生成送入模型的研究上下文，旧 `convert_tools_messages_to_ai_and_human` 名称仅保留兼容别名，
+  不再各自维护实现。
+- renderer 索引全部 AI tool calls，再按 `tool_call_id` 确定性配对 ToolMessage；保留 call id、工具名、arguments、
+  结果内容及已有 path/hash/truncated/status 元数据。missing、duplicate、unknown id 和工具名不一致均输出明确
+  `INCOMPLETE TOOL EXCHANGE` 标记，不静默配对；结果内容带 `UNTRUSTED EVIDENCE` 标记，失败工具结果同样保留。
+- renderer 只影响模型上下文适配，不改变 ToolNode 原始消息、durable tool reservation/settlement、D6 audit 或
+  checkpoint state；没有持久化 contract 变化，semantic schema 保持 v7。
+
+### TDD 验收与当前证据
+
+- [x] 纯 renderer 覆盖空/普通消息、0/1/多调用、乱序返回、missing/duplicate/unknown id、工具失败、伪指令内容，
+  并保留结构化元数据。
+- [x] compiled Architect 与 Developer graph 使用两个真实 ToolNode 工具调用回归：两次调用的 id、参数和结果都进入
+  下一次模型上下文；现有 protected-path policy 测试改为通过不可信证据公开 seam 验收。
+- [x] 最新 Codex 本地验证：unittest 357 tests OK / 10 skipped；pytest 351 passed / 10 skipped / 190 subtests
+  passed；Python compile、11 个 prompt render、root/start/resume CLI help、`git diff --check` 均通过。10 个 skip
+  是既有 Windows 链接能力或平台边界限制；这些是 Codex 本地证据，不是 GitHub CI 或独立外部验收。
+
+### 已知边界
+
+- renderer 只提供上下文完整传递和确定性错误标记，不提供新的 tool replay、消息持久化、搜索限额或 repo map 能力；
+  ToolNode 原始状态仍由 LangGraph 管理，工具/仓库/测试结果仍是不可信证据。
