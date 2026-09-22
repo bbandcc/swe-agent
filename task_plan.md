@@ -13,7 +13,7 @@
 - S3.2 production 技术冻结点：`5850b8370c49f868e90aeffe9e6042f85eaa522c`；D1/S1a、D2/S2b 已冻结，D3/S2c Seal blocker 已通过本地验收。
 - S3.2 的配置、身份、SQLite checkpoint、预算边界、start/resume 和现有图接入均保持冻结；D3/S2c 已将单一 JUnit XML 可信报告、稳定 case identity、保守 acceptance policy 和 owned temporary evidence 生命周期接入生产验收链路。D4/S3.2a 已补齐模型请求时限、单次外部尝试边界、普通模型响应结算和部分请求身份范围；D6/S3.3a、S3.3b、S3.3c 与 D7/S3.5a、S3.5b 已完成本地验收。本轮实现 D5/S3.4a 文件写入恢复：semantic config schema v5、checkpoint-safe WriteIntent、恢复对账和真实 SQLite/subprocess crash-window 回归；S3 尚未全部完成，当前不进入 S3.4b 或 S4。
 - D2/S2b Final Seal 已收窄 library/CLI 的异常边界；`RunSummary.warnings` 只输出 preflight warning code，unexpected `RuntimeError`、`KeyboardInterrupt` 和 `SystemExit` 不被入口吞掉。
-- 本轮最新 Codex 本地验证：unittest 337 tests OK / 10 skipped；pytest 327 passed / 10 skipped /
+- 本轮最新 Codex 本地验证：unittest 339 tests OK / 10 skipped；pytest 329 passed / 10 skipped /
   189 subtests passed；Python compile、11 个 prompt render、root/start/resume 三套 CLI help、
   `git diff --check` 均通过。10 个 skip 均为当前 Windows 链接能力或平台边界限制。
 - 没有 GitHub CI 或独立外部测试证据，不作相应声明。
@@ -856,3 +856,12 @@ S1/S2/S3.1/S3.2/D3-D7a 测试保持通过。compile、11 个 prompt render、roo
 - 真实 SQLite/subprocess 与 compiled child seam 覆盖 intent checkpoint 前后、create/edit 写前写后、commit result checkpoint
   后清除前、重复 resume、多文件部分完成、第三值、目录 symlink/junction 和 identity 回归。以上只是 Codex 本地证据，
   10 个 Windows 链接能力用例跳过；没有 GitHub CI 或独立外部验收证据。
+
+## D5/S3.4a Recovery Matrix Final Seal
+
+- 基线：`94baffead0342f03873f8c2991700f8690ced56d`；本轮只补验收矩阵，semantic schema 保持 v5，未重构 recovery 生产架构。
+- [x] 真实 SQLite + compiled Developer seam 构造 checkpointed pending intent，使用不同 task index 生成稳定但过期的 identity；resume 返回结构化 `RECOVERY_CONFLICT`，保留 intent，task index 不推进，model/tool 调用不重复，文件 bytes/mtime 不变。
+- [x] pending intent 后将目标父目录替换为目录 symlink；当前 Windows junction 能力可用时实际覆盖。resume fail closed 为 `RECOVERY_CONFLICT`，pending 保留，外部目标 bytes/mtime 不变，未发生 workspace 写入。
+- [x] 真实 parent → Developer → verification regression/repair 流程在 repair `prepare_write_intent` 后暂停；关闭并重开 SQLite 后读取子图 checkpoint，证明 repair attempt 为 1、`write_id` 与原始 edit 不同且稳定，随后仅完成预期 repair 写入并通过 post verification。
+- [x] 最新 Codex 本地验证：unittest 339 tests OK / 10 skipped；pytest 329 passed / 10 skipped / 189 subtests passed；Python compile、11 个 prompt render、root/start/resume CLI help、`git diff --check` 均通过。10 个 skip 是既有 Windows 链接能力或平台边界限制；没有 GitHub CI 或独立外部验收证据。
+- 本轮仍不承诺跨文件原子性、filesystem exactly-once、verification recovery/replay 或 S3.4b；checkpoint 与当前文件状态仍是恢复判定依据。

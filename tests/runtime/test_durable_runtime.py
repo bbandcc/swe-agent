@@ -24,7 +24,9 @@ from agent.editing import (
     EditStatus,
     WorkspaceEditor,
     WorkspaceTransaction,
+    WriteIntent,
 )
+from agent.editing.text import sha256
 from agent.graph import create_workflow_graph
 from agent.outcome import WorkflowOutcome
 from agent.runtime import (
@@ -718,7 +720,13 @@ class DurableRuntimeTests(RunConfigTestCase):
                         developer_runtime,
                         research_tools=[],
                         budget_boundary=boundary,
+                        run_id=request.identity.run_id,
+                        task_id=request.identity.task_id,
                     )
+                    if self.compiles == 2:
+                        developer = developer.builder.compile(
+                            interrupt_after=["prepare_write_intent"]
+                        )
                     builder = create_workflow_graph(
                         architect=architect,
                         developer=developer,
@@ -759,25 +767,87 @@ class DurableRuntimeTests(RunConfigTestCase):
                 clock=lambda: 150.0,
             )
 
+            original_transaction = WorkspaceTransaction(
+                path="app.py",
+                existed=True,
+                original_content="value = 1\n",
+                working_content="value = 'BROKEN'\n",
+                base_hash=sha256(b"value = 1\n"),
+                original_mode=None,
+                task_ids=("task-1.step-1",),
+            )
+            original_write_id = WriteIntent.create(
+                run_id=request.identity.run_id,
+                task_id=request.identity.task_id,
+                task_index=0,
+                repair_attempt=0,
+                transaction=original_transaction,
+                expected_after_hash=sha256(b"value = 'BROKEN'\n"),
+            ).write_id
+
             self.assertEqual(started.status, DurableRunStatus.PAUSED)
             self.assertEqual(after_start, "value = 'BROKEN'\n")
+            from agent.runtime.checkpointing import checkpoint_serializer
+            from langgraph.checkpoint.sqlite import SqliteSaver
+
+            inspection_connection = sqlite3.connect(
+                config.runtime_root / "checkpoints.sqlite",
+                check_same_thread=False,
+            )
+            inspection_saver = SqliteSaver(
+                inspection_connection, serde=checkpoint_serializer()
+            )
+            try:
+                inspection_graph = factory(
+                    config,
+                    request.identity.run_id,
+                    inspection_saver,
+                    lambda: 170.0,
+                )
+                subgraph_snapshot = inspection_graph.get_state(
+                    {"configurable": {"thread_id": request.identity.thread_id}},
+                    subgraphs=True,
+                )
+                child_snapshot = next(
+                    task.state
+                    for task in subgraph_snapshot.tasks
+                    if task.name == "swe_developer" and task.state is not None
+                )
+                repair_intent = child_snapshot.values["pending_write"]
+            finally:
+                inspection_connection.close()
+            self.assertEqual(resumed.status, DurableRunStatus.PAUSED, resumed.message)
+            self.assertEqual(repair_intent.repair_attempt, 1)
+            self.assertNotEqual(repair_intent.write_id, original_write_id)
+
+            completed = resume_run(
+                config,
+                ResumeRequest(
+                    request.identity,
+                    request.run_config_digest,
+                    request.agent_revision,
+                ),
+                graph_factory=factory,
+                clock=lambda: 180.0,
+            )
+
             self.assertEqual(
-                resumed.status, DurableRunStatus.COMPLETED, resumed.message
+                completed.status, DurableRunStatus.COMPLETED, completed.message
             )
             self.assertEqual(target.read_text(encoding="utf-8"), "value = 2\n")
             self.assertEqual(
-                resumed.state["outcome"], WorkflowOutcome.COMPLETED, resumed.state
+                completed.state["outcome"], WorkflowOutcome.COMPLETED, completed.state
             )
             self.assertEqual(
-                resumed.state["verification_status"], VerificationStatus.VERIFIED
+                completed.state["verification_status"], VerificationStatus.VERIFIED
             )
-            self.assertEqual(resumed.state["repair_attempts"], 1)
-            self.assertEqual(resumed.state["budget"].steps_used, 8)
+            self.assertEqual(completed.state["repair_attempts"], 1)
+            self.assertEqual(completed.state["budget"].steps_used, 8)
             self.assertEqual(
-                resumed.state["budget"].deadline_at,
+                completed.state["budget"].deadline_at,
                 100.0 + config.timeout_seconds,
             )
-            self.assertEqual(resumed.state["run_identity"], request.identity)
+            self.assertEqual(completed.state["run_identity"], request.identity)
 
     def test_parent_saver_propagates_to_default_child_graphs(self) -> None:
         with tempfile.TemporaryDirectory() as directory:

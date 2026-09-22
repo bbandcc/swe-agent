@@ -1,11 +1,32 @@
 import json
 import os
+import shutil
+import sqlite3
 import subprocess
 import sys
 import tempfile
 import textwrap
 import unittest
+from decimal import Decimal
 from pathlib import Path
+
+from langchain_core.messages import AIMessage
+from langgraph.checkpoint.sqlite import SqliteSaver
+
+from agent.common.entities import AtomicTask, ImplementationPlan, ImplementationTask
+from agent.developer.editing import DeveloperEditExecutor
+from agent.developer.graph import DeveloperRuntime, create_developer_workflow
+from agent.editing import WriteIntent, WorkspaceEditor
+from agent.editing.text import sha256
+from agent.runtime import (
+    BudgetErrorCode,
+    BudgetSnapshot,
+    DurableBudgetBoundary,
+    ModelCallResult,
+    UsageMeasurement,
+    UsageStatus,
+)
+from agent.runtime.checkpointing import checkpoint_serializer
 
 
 _CRASH_WORKER = r'''
@@ -205,6 +226,83 @@ else:
 
 
 class DurableWriteRecoveryTests(unittest.TestCase):
+    def _compiled_child_with_pending_intent(
+        self, root: Path, *, path: str = "app.py"
+    ):
+        workspace = root / "workspace"
+        workspace.mkdir(parents=True, exist_ok=True)
+        target = workspace / Path(path)
+        target.parent.mkdir(parents=True, exist_ok=True)
+        target.write_text("value = 1\n", encoding="utf-8", newline="")
+        connection = sqlite3.connect(
+            root / "child-checkpoint.sqlite", check_same_thread=False
+        )
+        saver = SqliteSaver(connection, serde=checkpoint_serializer())
+        saver.setup()
+        calls: list[str] = []
+
+        def measured(value):
+            return ModelCallResult(
+                value=value,
+                usage=UsageMeasurement(
+                    UsageStatus.PARTIAL, 1, 1, 2, None, None
+                ),
+                response_digest="d" * 64,
+            )
+
+        runtime = DeveloperRuntime(
+            edit_executor=lambda: DeveloperEditExecutor(WorkspaceEditor(workspace)),
+            load_codebase_structure=lambda: path,
+            research_atomic_task=lambda _: (
+                calls.append("research"),
+                measured(AIMessage(content="ready")),
+            )[1],
+            propose_existing_file_edit=lambda _: (
+                calls.append("edit"),
+                measured(
+                    "<<<<<<< SEARCH\nvalue = 1\n=======\nvalue = 2\n>>>>>>> REPLACE"
+                ),
+            )[1],
+            propose_new_file=lambda _: self.fail("unexpected create"),
+        )
+        developer = create_developer_workflow(
+            runtime,
+            research_tools=[],
+            budget_boundary=DurableBudgetBoundary(
+                "recovery-run", clock=lambda: 100.0
+            ),
+            run_id="recovery-run",
+            task_id="recovery-task",
+        )
+        compiled = developer.builder.compile(
+            checkpointer=saver,
+            interrupt_after=["prepare_write_intent"],
+        )
+        plan = ImplementationPlan(
+            tasks=[
+                ImplementationTask(
+                    file_path=path,
+                    logical_task="change value",
+                    atomic_tasks=[AtomicTask(atomic_task="change")],
+                )
+            ]
+        )
+        thread_config = {"configurable": {"thread_id": "recovery-thread"}}
+        compiled.invoke(
+            {
+                "implementation_plan": plan,
+                "budget": BudgetSnapshot.create(
+                    max_steps=4, max_cost_usd=None, deadline_at=200.0
+                ),
+            },
+            thread_config,
+            durability="sync",
+        )
+        state = compiled.get_state(thread_config).values
+        self.assertIsNotNone(state.get("pending_write"))
+        self.assertIsNotNone(state.get("current_file_transaction"))
+        return connection, compiled, thread_config, state, calls, workspace
+
     def _run_worker(
         self,
         root: Path,
@@ -237,6 +335,94 @@ class DurableWriteRecoveryTests(unittest.TestCase):
             text=True,
             timeout=30,
         )
+
+    def test_durable_stale_write_intent_identity_fails_closed(self):
+        with tempfile.TemporaryDirectory() as directory:
+            root = Path(directory)
+            connection, compiled, thread_config, state, calls, workspace = (
+                self._compiled_child_with_pending_intent(root)
+            )
+            try:
+                pending = state["pending_write"]
+                transaction = state["current_file_transaction"]
+                stale = WriteIntent.create(
+                    run_id=pending.run_id,
+                    task_id=pending.task_id,
+                    task_index=pending.task_index + 1,
+                    repair_attempt=pending.repair_attempt,
+                    transaction=transaction,
+                    expected_after_hash=sha256(
+                        transaction.working_content.encode("utf-8")
+                    ),
+                )
+                compiled.update_state(
+                    thread_config,
+                    {"pending_write": stale},
+                    as_node="prepare_write_intent",
+                )
+                target = workspace / "app.py"
+                before = target.stat()
+                resumed = compiled.invoke(
+                    None, thread_config, durability="sync"
+                )
+
+                self.assertEqual(
+                    resumed["runtime_error_code"],
+                    BudgetErrorCode.RECOVERY_CONFLICT,
+                )
+                self.assertEqual(resumed["pending_write"], stale)
+                self.assertEqual(resumed["current_task_idx"], 0)
+                self.assertEqual(calls, ["research", "edit"])
+                self.assertEqual(target.read_text(encoding="utf-8"), "value = 1\n")
+                self.assertEqual(target.stat().st_mtime_ns, before.st_mtime_ns)
+            finally:
+                connection.close()
+
+    def test_durable_pending_directory_link_replacement_fails_closed(self):
+        with tempfile.TemporaryDirectory() as directory:
+            root = Path(directory)
+            connection, compiled, thread_config, state, calls, workspace = (
+                self._compiled_child_with_pending_intent(root, path="nested/app.py")
+            )
+            try:
+                external = root / "external"
+                external.mkdir()
+                external_file = external / "app.py"
+                external_file.write_text("outside\n", encoding="utf-8", newline="")
+                nested = workspace / "nested"
+                shutil.rmtree(nested)
+                try:
+                    if os.name == "nt":
+                        linked = subprocess.run(
+                            ["cmd", "/c", "mklink", "/J", str(nested), str(external)],
+                            capture_output=True,
+                            text=True,
+                        )
+                        if linked.returncode != 0:
+                            self.skipTest("directory junctions are unavailable")
+                    else:
+                        nested.symlink_to(external, target_is_directory=True)
+                except OSError as error:
+                    self.skipTest(f"directory links are unavailable: {error}")
+
+                external_before = external_file.stat()
+                resumed = compiled.invoke(
+                    None, thread_config, durability="sync"
+                )
+
+                self.assertEqual(
+                    resumed["runtime_error_code"],
+                    BudgetErrorCode.RECOVERY_CONFLICT,
+                )
+                self.assertIsNotNone(resumed["pending_write"])
+                self.assertEqual(resumed["current_task_idx"], 0)
+                self.assertEqual(calls, ["research", "edit"])
+                self.assertEqual(external_file.read_text(encoding="utf-8"), "outside\n")
+                self.assertEqual(
+                    external_file.stat().st_mtime_ns, external_before.st_mtime_ns
+                )
+            finally:
+                connection.close()
 
     def test_sqlite_resume_reconciles_replace_after_process_exit(self):
         with tempfile.TemporaryDirectory() as directory:
