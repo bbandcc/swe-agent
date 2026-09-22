@@ -31,6 +31,7 @@ from agent.developer.workflow_support import (
 )
 from agent.editing import (
     EditErrorCode,
+    EditOperation,
     EditResult,
     EditStatus,
     RecoveryResult,
@@ -297,16 +298,36 @@ def create_developer_workflow(
                         "checkpointed write intent."
                     ),
                 }
-            recovery = runtime.edit_executor().reconcile(
-                transaction, pending_write
+            expected_task_id = task_id or f"task-{state.current_task_idx + 1}"
+            expected_operation = (
+                EditOperation.EDIT
+                if transaction.existed
+                else EditOperation.CREATE
             )
-            if recovery.status is RecoveryStatus.CONFLICT:
+            if not pending_write.matches_identity(
+                run_id=run_id or budget_boundary.run_id,
+                task_id=expected_task_id,
+                task_index=state.current_task_idx,
+                repair_attempt=state.repair_attempts,
+                path=transaction.path,
+                operation=expected_operation,
+            ):
+                recovery = RecoveryResult(
+                    status=RecoveryStatus.CONFLICT,
+                    path=transaction.path,
+                    expected_after_hash=pending_write.expected_after_hash,
+                    error_code=EditErrorCode.RECOVERY_CONFLICT,
+                    message=(
+                        "The pending write identity does not match the active "
+                        "durable task."
+                    ),
+                )
                 rejected = EditResult(
                     status=EditStatus.REJECTED,
                     path=transaction.path,
                     error_code=EditErrorCode.RECOVERY_CONFLICT,
                     message=recovery.message,
-                    before_hash=recovery.current_hash,
+                    before_hash=transaction.base_hash,
                     task_ids=transaction.task_ids,
                 )
                 return {
@@ -315,6 +336,33 @@ def create_developer_workflow(
                     "runtime_error_code": BudgetErrorCode.RECOVERY_CONFLICT,
                     "runtime_message": recovery.message,
                 }
+            recovery = runtime.edit_executor().reconcile(
+                transaction, pending_write
+            )
+            if recovery.status is RecoveryStatus.CONFLICT:
+                error_code = (
+                    recovery.error_code or EditErrorCode.RECOVERY_CONFLICT
+                )
+                rejected = EditResult(
+                    status=EditStatus.REJECTED,
+                    path=transaction.path,
+                    error_code=error_code,
+                    message=recovery.message,
+                    before_hash=recovery.current_hash,
+                    task_ids=transaction.task_ids,
+                )
+                update = {
+                    **failed_edit(rejected),
+                    "last_recovery_result": recovery,
+                }
+                if error_code is EditErrorCode.RECOVERY_CONFLICT:
+                    update.update(
+                        {
+                            "runtime_error_code": BudgetErrorCode.RECOVERY_CONFLICT,
+                            "runtime_message": recovery.message,
+                        }
+                    )
+                return update
             if recovery.status is RecoveryStatus.ALREADY_APPLIED:
                 result = recovery.edit_result
                 if result is None or result.status is not EditStatus.APPLIED:
@@ -433,37 +481,76 @@ def create_developer_workflow(
             return deadline_update
         existing = state.pending_write
         if existing is not None:
-            if existing.path == transaction.path and existing.task_ids == transaction.task_ids:
+            expected_task_id = task_id or f"task-{state.current_task_idx + 1}"
+            expected_operation = (
+                EditOperation.EDIT
+                if transaction.existed
+                else EditOperation.CREATE
+            )
+            if existing.matches_identity(
+                run_id=run_id or budget_boundary.run_id,
+                task_id=expected_task_id,
+                task_index=state.current_task_idx,
+                repair_attempt=state.repair_attempts,
+                path=transaction.path,
+                operation=expected_operation,
+            ):
                 return {"last_recovery_result": None}
             return {
                 **invalid_state("A different pending write intent is active."),
                 "runtime_error_code": BudgetErrorCode.RECOVERY_CONFLICT,
                 "runtime_message": "A different durable write intent is active.",
             }
-        if transaction.existed and (
-            transaction.original_content.encode("utf-8")
-            == transaction.working_content.encode("utf-8")
-        ):
+        try:
+            is_net_zero = transaction.existed and (
+                transaction.original_content.encode("utf-8")
+                == transaction.working_content.encode("utf-8")
+            )
+        except UnicodeEncodeError:
+            return failed_edit(
+                EditResult(
+                    status=EditStatus.REJECTED,
+                    path=transaction.path,
+                    error_code=EditErrorCode.ENCODING_ERROR,
+                    message="New file content must be valid UTF-8 text.",
+                    before_hash=transaction.base_hash,
+                    task_ids=transaction.task_ids,
+                )
+            )
+        if is_net_zero:
             noop_result = runtime.edit_executor().commit(transaction)
             if noop_result.status is not EditStatus.NOOP:
                 return failed_edit(noop_result)
             return {
-                "last_edit_result": noop_result,
+                **failed_edit(noop_result),
                 "current_file_transaction": None,
                 "pending_write": None,
                 "last_recovery_result": None,
             }
         logical_task_id = task_id or f"task-{state.current_task_idx + 1}"
-        intent = WriteIntent.create(
-            run_id=run_id or budget_boundary.run_id,
-            task_id=logical_task_id,
-            task_index=state.current_task_idx,
-            repair_attempt=state.repair_attempts,
-            transaction=transaction,
-            expected_after_hash=sha256(
+        try:
+            expected_after_hash = sha256(
                 transaction.working_content.encode("utf-8")
-            ),
-        )
+            )
+            intent = WriteIntent.create(
+                run_id=run_id or budget_boundary.run_id,
+                task_id=logical_task_id,
+                task_index=state.current_task_idx,
+                repair_attempt=state.repair_attempts,
+                transaction=transaction,
+                expected_after_hash=expected_after_hash,
+            )
+        except UnicodeEncodeError:
+            return failed_edit(
+                EditResult(
+                    status=EditStatus.REJECTED,
+                    path=transaction.path,
+                    error_code=EditErrorCode.ENCODING_ERROR,
+                    message="New file content must be valid UTF-8 text.",
+                    before_hash=transaction.base_hash,
+                    task_ids=transaction.task_ids,
+                )
+            )
         return {
             "pending_write": intent,
             "last_recovery_result": None,

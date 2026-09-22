@@ -14,7 +14,8 @@ from agent.architect.graph import (
 from agent.common.entities import AtomicTask, ImplementationPlan, ImplementationTask
 from agent.developer.editing import DeveloperEditExecutor
 from agent.developer.graph import DeveloperRuntime, create_developer_workflow
-from agent.editing import WorkspaceEditor
+from agent.developer.state import DeveloperStatus
+from agent.editing import EditErrorCode, WorkspaceEditor
 from agent.runtime import (
     BudgetErrorCode,
     BudgetSnapshot,
@@ -165,10 +166,50 @@ class BudgetedGraphTests(unittest.TestCase):
             )
 
             self.assertEqual(result["last_edit_result"].status.value, "noop")
+            self.assertEqual(result["developer_status"], DeveloperStatus.FAILED)
             self.assertIsNone(result["pending_write"])
             self.assertEqual(result["current_task_idx"], 0)
             self.assertEqual(target.read_bytes(), b"value = 1\n")
             self.assertEqual(target.stat().st_mtime_ns, before.st_mtime_ns)
+
+    def test_durable_staged_non_utf8_content_is_rejected_without_intent(self) -> None:
+        with tempfile.TemporaryDirectory() as directory:
+            root = Path(directory)
+            target = root / "app.py"
+            target.write_text("value = 1\n", encoding="utf-8", newline="")
+            invalid = "\ud800"
+            runtime = DeveloperRuntime(
+                edit_executor=lambda: DeveloperEditExecutor(WorkspaceEditor(root)),
+                load_codebase_structure=lambda: "app.py",
+                research_atomic_task=lambda _: measured(AIMessage(content="ready")),
+                propose_existing_file_edit=lambda _: measured(
+                    f"<<<<<<< SEARCH\nvalue = 1\n=======\nvalue = {invalid}\n>>>>>>> REPLACE"
+                ),
+                propose_new_file=lambda _: self.fail("unexpected create"),
+            )
+            developer = create_developer_workflow(
+                runtime,
+                research_tools=[],
+                budget_boundary=DurableBudgetBoundary("run", clock=lambda: 100.0),
+            )
+
+            result = developer.invoke(
+                {
+                    "implementation_plan": ready_plan(),
+                    "budget": BudgetSnapshot.create(
+                        max_steps=4, max_cost_usd=None, deadline_at=200.0
+                    ),
+                }
+            )
+
+            self.assertEqual(result["developer_status"], DeveloperStatus.FAILED)
+            self.assertEqual(
+                result["last_edit_result"].error_code,
+                EditErrorCode.ENCODING_ERROR,
+            )
+            self.assertEqual(result["last_edit_result"].status.value, "rejected")
+            self.assertIsNone(result["pending_write"])
+            self.assertEqual(target.read_bytes(), b"value = 1\n")
 
     def test_durable_create_empty_file_is_applied_through_intent(self) -> None:
         with tempfile.TemporaryDirectory() as directory:
@@ -286,7 +327,12 @@ class BudgetedGraphTests(unittest.TestCase):
             )
 
             self.assertEqual(result["last_edit_result"].status.value, "noop")
+            self.assertEqual(result["developer_status"], DeveloperStatus.FAILED)
             self.assertEqual(result["outcome"], WorkflowOutcome.FAILED)
+            self.assertNotIn(
+                result["developer_status"],
+                (DeveloperStatus.PENDING, DeveloperStatus.RUNNING),
+            )
             self.assertEqual(target.read_text(encoding="utf-8"), "value = 1\n")
 
     def test_model_request_timeout_uses_remaining_deadline_and_settles_unknown(self) -> None:

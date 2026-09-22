@@ -187,6 +187,38 @@ class WriteRecoveryTests(unittest.TestCase):
             self.assertNotIn(original, repr(payload))
             restored = WriteIntent.from_dict(payload)
             self.assertEqual(restored, intent)
+            self.assertTrue(
+                intent.matches_identity(
+                    run_id="run-1",
+                    task_id="task-1",
+                    task_index=0,
+                    repair_attempt=0,
+                    path="app.py",
+                    operation=EditOperation.EDIT,
+                )
+            )
+            self.assertFalse(
+                intent.matches_identity(
+                    run_id="run-1",
+                    task_id="task-1",
+                    task_index=1,
+                    repair_attempt=0,
+                    path="app.py",
+                    operation=EditOperation.EDIT,
+                )
+            )
+            tampered = replace(intent)
+            object.__setattr__(tampered, "write_id", "0" * 64)
+            self.assertFalse(
+                tampered.matches_identity(
+                    run_id="run-1",
+                    task_id="task-1",
+                    task_index=0,
+                    repair_attempt=0,
+                    path="app.py",
+                    operation=EditOperation.EDIT,
+                )
+            )
 
             alternate_transaction = replace(
                 transaction, working_content="different expected bytes"

@@ -237,6 +237,36 @@ class WriteIntent:
         }
         return hashlib.sha256(_canonical_json(seed)).hexdigest()
 
+    def matches_identity(
+        self,
+        *,
+        run_id: str,
+        task_id: str,
+        task_index: int,
+        repair_attempt: int,
+        path: str,
+        operation: EditOperation,
+    ) -> bool:
+        """Verify the full durable identity at a commit/recovery boundary."""
+        try:
+            canonical_path = canonical_workspace_relative_path(
+                path, allow_root=False
+            )
+            expected_operation = EditOperation(operation)
+        except (TypeError, ValueError):
+            return False
+        if canonical_path != path:
+            return False
+        return (
+            self.run_id == run_id
+            and self.task_id == task_id
+            and self.task_index == task_index
+            and self.repair_attempt == repair_attempt
+            and self.path == canonical_path
+            and self.operation == expected_operation
+            and self.write_id == self._stable_write_id()
+        )
+
     def to_dict(self) -> dict[str, object]:
         return {
             "schema_version": self.schema_version,

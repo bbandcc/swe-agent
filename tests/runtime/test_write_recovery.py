@@ -76,7 +76,16 @@ identity = RunIdentity(
 )
 revision = AgentCodeRevision("a" * 40, AgentRevisionStatus.KNOWN)
 request = StartRequest(identity, semantic_config_digest(config), revision)
-paths = ("a.py", "b.py") if os.environ.get("S3_RECOVERY_MULTI") == "1" else ("app.py",)
+is_create = os.environ.get("S3_RECOVERY_CREATE") == "1"
+paths = (
+    ("empty.py",)
+    if is_create
+    else (
+        ("a.py", "b.py")
+        if os.environ.get("S3_RECOVERY_MULTI") == "1"
+        else ("app.py",)
+    )
+)
 plan = ImplementationPlan(
     tasks=[
         ImplementationTask(
@@ -130,7 +139,11 @@ def factory(current_config, run_id, saver, clock):
         load_codebase_structure=lambda: "app.py",
         research_atomic_task=lambda _: (record_call("research"), measured(AIMessage(content="ready")))[1],
         propose_existing_file_edit=lambda _: (record_call("edit"), measured("<<<<<<< SEARCH\nvalue = 1\n=======\nvalue = 2\n>>>>>>> REPLACE"))[1],
-        propose_new_file=lambda _: (_ for _ in ()).throw(AssertionError("unexpected create")),
+        propose_new_file=(
+            lambda _: (record_call("create"), measured(""))[1]
+            if is_create
+            else (_ for _ in ()).throw(AssertionError("unexpected create"))
+        ),
     )
     developer = create_developer_workflow(
         runtime,
@@ -139,6 +152,15 @@ def factory(current_config, run_id, saver, clock):
         run_id=run_id,
         task_id=identity.task_id,
     )
+    interrupt = os.environ.get("S3_RECOVERY_INTERRUPT")
+    if interrupt == "before_intent":
+        developer = developer.builder.compile(
+            interrupt_before=["prepare_write_intent"]
+        )
+    elif interrupt == "after_commit":
+        developer = developer.builder.compile(
+            interrupt_after=["commit_file_transaction"]
+        )
     builder = create_workflow_graph(
         architect=lambda _: {"implementation_plan": plan},
         developer=developer,
@@ -191,6 +213,8 @@ class DurableWriteRecoveryTests(unittest.TestCase):
         crash: str,
         multi: bool = False,
         crash_path: str | None = None,
+        create: bool = False,
+        interrupt: str = "",
     ):
         env = os.environ.copy()
         env.update(
@@ -200,6 +224,8 @@ class DurableWriteRecoveryTests(unittest.TestCase):
                 "S3_RECOVERY_CRASH": crash,
                 "S3_RECOVERY_MULTI": "1" if multi else "0",
                 "S3_RECOVERY_CRASH_PATH": crash_path or "",
+                "S3_RECOVERY_CREATE": "1" if create else "0",
+                "S3_RECOVERY_INTERRUPT": interrupt,
                 "PYTHONPATH": str(Path.cwd()),
             }
         )
@@ -270,6 +296,83 @@ class DurableWriteRecoveryTests(unittest.TestCase):
                 (workspace / "app.py").read_text(encoding="utf-8"),
                 "value = 2\n",
             )
+
+    def test_sqlite_resume_reconciles_create_before_and_after_commit(self):
+        for crash in ("before", "1"):
+            with self.subTest(crash=crash), tempfile.TemporaryDirectory() as directory:
+                root = Path(directory)
+                workspace = root / "workspace"
+                workspace.mkdir()
+                first = self._run_worker(
+                    root, mode="start", crash=crash, create=True
+                )
+                self.assertEqual(first.returncode, 98 if crash == "before" else 97, first.stderr)
+                target = workspace / "empty.py"
+                if crash == "before":
+                    self.assertFalse(target.exists())
+                else:
+                    self.assertTrue(target.exists())
+                    self.assertEqual(target.read_bytes(), b"")
+
+                resumed = self._run_worker(
+                    root, mode="resume", crash="0", create=True
+                )
+                self.assertEqual(resumed.returncode, 0, resumed.stderr)
+                payload = json.loads(resumed.stdout.strip().splitlines()[-1])
+                self.assertEqual(payload["status"], "completed")
+                self.assertEqual(
+                    payload["recovery"],
+                    "safe_to_apply" if crash == "before" else "already_applied",
+                )
+                self.assertTrue(target.exists())
+                self.assertEqual(target.read_bytes(), b"")
+
+    def test_sqlite_resume_after_intent_boundary_does_not_replay_model(self):
+        with tempfile.TemporaryDirectory() as directory:
+            root = Path(directory)
+            workspace = root / "workspace"
+            workspace.mkdir()
+            target = workspace / "app.py"
+            target.write_text("value = 1\n", encoding="utf-8")
+            first = self._run_worker(
+                root, mode="start", crash="0", interrupt="before_intent"
+            )
+            self.assertEqual(first.returncode, 0, first.stderr)
+            first_payload = json.loads(first.stdout.strip().splitlines()[-1])
+            self.assertEqual(first_payload["status"], "paused")
+            self.assertEqual(target.read_text(encoding="utf-8"), "value = 1\n")
+            calls_before = (root / "model-calls.log").read_text(encoding="utf-8").splitlines()
+
+            resumed = self._run_worker(root, mode="resume", crash="0")
+            self.assertEqual(resumed.returncode, 0, resumed.stderr)
+            payload = json.loads(resumed.stdout.strip().splitlines()[-1])
+            self.assertEqual(payload["status"], "completed")
+            self.assertEqual(payload["recovery"], "safe_to_apply")
+            self.assertEqual(payload["calls"], len(calls_before))
+            self.assertEqual(target.read_text(encoding="utf-8"), "value = 2\n")
+
+    def test_sqlite_resume_after_commit_result_checkpoint_only_clears_intent(self):
+        with tempfile.TemporaryDirectory() as directory:
+            root = Path(directory)
+            workspace = root / "workspace"
+            workspace.mkdir()
+            target = workspace / "app.py"
+            target.write_text("value = 1\n", encoding="utf-8")
+            first = self._run_worker(
+                root, mode="start", crash="0", interrupt="after_commit"
+            )
+            self.assertEqual(first.returncode, 0, first.stderr)
+            first_payload = json.loads(first.stdout.strip().splitlines()[-1])
+            self.assertEqual(first_payload["status"], "paused")
+            self.assertEqual(target.read_text(encoding="utf-8"), "value = 2\n")
+            calls_before = (root / "model-calls.log").read_text(encoding="utf-8").splitlines()
+
+            resumed = self._run_worker(root, mode="resume", crash="0")
+            self.assertEqual(resumed.returncode, 0, resumed.stderr)
+            payload = json.loads(resumed.stdout.strip().splitlines()[-1])
+            self.assertEqual(payload["status"], "completed")
+            self.assertEqual(payload["calls"], len(calls_before))
+            self.assertEqual(target.read_text(encoding="utf-8"), "value = 2\n")
 
     def test_sqlite_resume_stops_on_third_value_without_clearing_intent(self):
         with tempfile.TemporaryDirectory() as directory:

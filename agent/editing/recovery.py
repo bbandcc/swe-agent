@@ -39,9 +39,16 @@ class RecoveryReconciler:
                 intent,
                 "The pending write baseline does not match the transaction.",
             )
-        expected_from_transaction = sha256(
-            transaction.working_content.encode("utf-8")
-        )
+        try:
+            expected_from_transaction = sha256(
+                transaction.working_content.encode("utf-8")
+            )
+        except UnicodeEncodeError:
+            return self._conflict(
+                intent,
+                "New file content must be valid UTF-8 text.",
+                error_code=EditErrorCode.ENCODING_ERROR,
+            )
         if expected_from_transaction != intent.expected_after_hash:
             return self._conflict(
                 intent,
@@ -106,12 +113,13 @@ class RecoveryReconciler:
         message: str,
         *,
         current_hash: str | None = None,
+        error_code: EditErrorCode = EditErrorCode.RECOVERY_CONFLICT,
     ) -> RecoveryResult:
         return RecoveryResult(
             status=RecoveryStatus.CONFLICT,
             path=intent.path,
             current_hash=current_hash,
             expected_after_hash=intent.expected_after_hash,
-            error_code=EditErrorCode.RECOVERY_CONFLICT,
+            error_code=error_code,
             message=message,
         )
