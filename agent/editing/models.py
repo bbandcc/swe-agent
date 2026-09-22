@@ -102,6 +102,7 @@ class RecoveryStatus(str, Enum):
 
 _SHA256_RE = re.compile(r"^[0-9a-f]{64}$")
 WRITE_INTENT_SCHEMA_VERSION = 1
+COMMITTED_EDIT_SCHEMA_VERSION = 1
 
 
 @dataclass(frozen=True, slots=True)
@@ -325,6 +326,196 @@ class WriteIntent:
 
 
 @dataclass(frozen=True, slots=True)
+class CommittedEdit:
+    """Checkpoint-safe evidence for one successfully committed file edit.
+
+    The record deliberately stores hashes and digests only.  ``write_id`` is
+    the same stable identity used by :class:`WriteIntent`, so a recovery
+    resume can append the logical commit at most once.
+    """
+
+    schema_version: int
+    write_id: str
+    run_id: str
+    task_id: str
+    task_index: int
+    repair_attempt: int
+    path: str
+    operation: EditOperation
+    before_hash: str | None
+    after_hash: str
+    patch_digest: str
+    task_ids: tuple[str, ...] = ()
+
+    def __post_init__(self) -> None:
+        object.__setattr__(self, "task_ids", _sequence_tuple(self.task_ids, "task_ids"))
+        if self.schema_version != COMMITTED_EDIT_SCHEMA_VERSION:
+            raise ValueError("Unsupported CommittedEdit schema version.")
+        for name in ("write_id", "run_id", "task_id", "path"):
+            value = getattr(self, name)
+            if not isinstance(value, str) or not value:
+                raise ValueError(f"{name} must be a non-empty string.")
+        if (
+            isinstance(self.task_index, bool)
+            or not isinstance(self.task_index, int)
+            or self.task_index < 0
+        ):
+            raise ValueError("task_index must be a non-negative integer.")
+        if (
+            isinstance(self.repair_attempt, bool)
+            or not isinstance(self.repair_attempt, int)
+            or self.repair_attempt < 0
+        ):
+            raise ValueError("repair_attempt must be a non-negative integer.")
+        try:
+            operation = EditOperation(self.operation)
+        except (TypeError, ValueError) as error:
+            raise ValueError("operation must be a valid EditOperation.") from error
+        object.__setattr__(self, "operation", operation)
+        canonical = canonical_workspace_relative_path(self.path, allow_root=False)
+        if canonical != self.path:
+            raise ValueError("CommittedEdit path must be canonical and relative.")
+        if operation is EditOperation.EDIT and self.before_hash is None:
+            raise ValueError("Committed edit records require before_hash.")
+        if operation is EditOperation.CREATE and self.before_hash is not None:
+            raise ValueError("Committed create records must have no before_hash.")
+        if self.before_hash is not None:
+            _validate_hash(self.before_hash, "before_hash")
+        _validate_hash(self.after_hash, "after_hash")
+        _validate_hash(self.patch_digest, "patch_digest")
+        expected_id = self._stable_write_id()
+        if self.write_id != expected_id:
+            raise ValueError("write_id does not match the durable write identity.")
+        if not self.task_ids or any(
+            not isinstance(task_id, str) or not task_id for task_id in self.task_ids
+        ):
+            raise ValueError("task_ids must contain non-empty strings.")
+
+    @classmethod
+    def from_intent(cls, intent: WriteIntent, result: EditResult) -> "CommittedEdit":
+        if result.status is not EditStatus.APPLIED:
+            raise ValueError("CommittedEdit requires an applied edit result.")
+        if result.path != intent.path or result.after_hash != intent.expected_after_hash:
+            raise ValueError("Edit result does not match the pending write intent.")
+        return cls(
+            schema_version=COMMITTED_EDIT_SCHEMA_VERSION,
+            write_id=intent.write_id,
+            run_id=intent.run_id,
+            task_id=intent.task_id,
+            task_index=intent.task_index,
+            repair_attempt=intent.repair_attempt,
+            path=intent.path,
+            operation=intent.operation,
+            before_hash=intent.before_hash,
+            after_hash=intent.expected_after_hash,
+            patch_digest=_patch_digest(result.diff),
+            task_ids=intent.task_ids,
+        )
+
+    @classmethod
+    def create(
+        cls,
+        *,
+        run_id: str,
+        task_id: str,
+        task_index: int,
+        repair_attempt: int,
+        transaction: WorkspaceTransaction,
+        result: EditResult,
+    ) -> "CommittedEdit":
+        if result.status is not EditStatus.APPLIED:
+            raise ValueError("CommittedEdit requires an applied edit result.")
+        path = canonical_workspace_relative_path(transaction.path, allow_root=False)
+        if path is None or result.path != path:
+            raise ValueError("Committed edit path is not canonical.")
+        if result.after_hash is None:
+            raise ValueError("Applied edit result must include after_hash.")
+        operation = EditOperation.EDIT if transaction.existed else EditOperation.CREATE
+        seed = {
+            "schema_version": WRITE_INTENT_SCHEMA_VERSION,
+            "run_id": run_id,
+            "task_id": task_id,
+            "task_index": task_index,
+            "repair_attempt": repair_attempt,
+            "path": path,
+            "operation": operation.value,
+        }
+        write_id = hashlib.sha256(_canonical_json(seed)).hexdigest()
+        return cls(
+            schema_version=COMMITTED_EDIT_SCHEMA_VERSION,
+            write_id=write_id,
+            run_id=run_id,
+            task_id=task_id,
+            task_index=task_index,
+            repair_attempt=repair_attempt,
+            path=path,
+            operation=operation,
+            before_hash=transaction.base_hash,
+            after_hash=result.after_hash,
+            patch_digest=_patch_digest(result.diff),
+            task_ids=result.task_ids or transaction.task_ids,
+        )
+
+    def _stable_write_id(self) -> str:
+        seed = {
+            "schema_version": WRITE_INTENT_SCHEMA_VERSION,
+            "run_id": self.run_id,
+            "task_id": self.task_id,
+            "task_index": self.task_index,
+            "repair_attempt": self.repair_attempt,
+            "path": self.path,
+            "operation": self.operation.value,
+        }
+        return hashlib.sha256(_canonical_json(seed)).hexdigest()
+
+    def to_dict(self) -> dict[str, object]:
+        return {
+            "schema_version": self.schema_version,
+            "write_id": self.write_id,
+            "run_id": self.run_id,
+            "task_id": self.task_id,
+            "task_index": self.task_index,
+            "repair_attempt": self.repair_attempt,
+            "path": self.path,
+            "operation": self.operation.value,
+            "before_hash": self.before_hash,
+            "after_hash": self.after_hash,
+            "patch_digest": self.patch_digest,
+            "task_ids": list(self.task_ids),
+        }
+
+    @classmethod
+    def from_dict(cls, value: Mapping[str, object]) -> "CommittedEdit":
+        if not isinstance(value, Mapping):
+            raise ValueError("CommittedEdit must be a mapping.")
+        required = {
+            "schema_version", "write_id", "run_id", "task_id", "task_index",
+            "repair_attempt", "path", "operation", "before_hash", "after_hash",
+            "patch_digest", "task_ids",
+        }
+        if set(value) != required:
+            raise ValueError("CommittedEdit fields are incomplete or unknown.")
+        try:
+            operation = EditOperation(value["operation"])
+        except (TypeError, ValueError) as error:
+            raise ValueError("CommittedEdit operation is invalid.") from error
+        return cls(
+            schema_version=value["schema_version"],
+            write_id=value["write_id"],
+            run_id=value["run_id"],
+            task_id=value["task_id"],
+            task_index=value["task_index"],
+            repair_attempt=value["repair_attempt"],
+            path=value["path"],
+            operation=operation,
+            before_hash=value["before_hash"],
+            after_hash=value["after_hash"],
+            patch_digest=value["patch_digest"],
+            task_ids=value["task_ids"],
+        )
+
+
+@dataclass(frozen=True, slots=True)
 class RecoveryResult:
     status: RecoveryStatus
     path: str
@@ -347,6 +538,12 @@ def _canonical_json(value: object) -> bytes:
         sort_keys=True,
         separators=(",", ":"),
     ).encode("utf-8")
+
+
+def _patch_digest(value: str) -> str:
+    if not isinstance(value, str):
+        raise ValueError("patch must be text.")
+    return hashlib.sha256(value.encode("utf-8")).hexdigest()
 
 
 @dataclass(frozen=True, slots=True)

@@ -15,6 +15,7 @@ from agent.common.entities import (
 )
 from agent.developer.state import DeveloperErrorCode, DeveloperStatus
 from agent.editing import (
+    CommittedEdit,
     EditErrorCode,
     EditOperation,
     EditResult,
@@ -186,6 +187,7 @@ def checkpoint_serializer() -> JsonPlusSerializer:
             WorkspaceSnapshot,
             WorkspaceTransaction,
             WriteIntent,
+            CommittedEdit,
             RecoveryStatus,
             RecoveryResult,
             VerificationCheckStatus,

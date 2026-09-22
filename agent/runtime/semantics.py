@@ -9,11 +9,10 @@ from typing import Any
 
 from agent.runtime.config import RunConfig
 
-# Version 6 binds durable verification attempt/result recovery semantics to
-# checkpoint identity. A checkpoint from an earlier schema cannot be resumed
-# without the per-check execution boundary. Future semantic field or encoding
-# changes must increment this version again.
-SEMANTIC_CONFIG_SCHEMA_VERSION = 6
+# Version 7 binds durable committed-edit evidence, repair scope, and
+# stagnation history to checkpoint identity. A checkpoint from an earlier
+# schema cannot be resumed without these recovery semantics.
+SEMANTIC_CONFIG_SCHEMA_VERSION = 7
 
 
 def semantic_config_digest(config: RunConfig) -> str:
@@ -66,6 +65,7 @@ def _semantic_config_payload(config: RunConfig) -> dict[str, Any]:
             for spec in config.verification_specs
         ],
         "verification_recovery_policy": config.verification_recovery_policy.value,
+        "repair_scope_policy": config.repair_scope_policy.value,
         "limits": {
             "timeout_seconds": _number_text(config.timeout_seconds),
             "max_steps": config.max_steps,

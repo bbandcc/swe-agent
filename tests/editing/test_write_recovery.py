@@ -9,12 +9,15 @@ from pathlib import Path
 
 from agent.developer.editing import DeveloperEditExecutor
 from agent.editing import (
+    CommittedEdit,
     EditOperation,
     EditProposal,
+    EditResult,
     EditStatus,
     RecoveryReconciler,
     RecoveryStatus,
     WorkspaceEditor,
+    WorkspaceTransaction,
     WriteIntent,
 )
 
@@ -24,6 +27,48 @@ def _sha(value: bytes) -> str:
 
 
 class WriteRecoveryTests(unittest.TestCase):
+    def test_committed_edit_is_stable_checkpoint_safe_and_content_free(self):
+        transaction = WorkspaceTransaction(
+            path="app.py",
+            existed=True,
+            original_content="value = 1\n",
+            working_content="value = 2\n",
+            base_hash=_sha(b"value = 1\n"),
+            original_mode=None,
+            task_ids=("task-1.step-1",),
+        )
+        result = EditResult(
+            status=EditStatus.APPLIED,
+            path="app.py",
+            before_hash=transaction.base_hash,
+            after_hash=_sha(b"value = 2\n"),
+            diff="@@ -1 +1 @@\n-value = 1\n+value = 2\n",
+            task_ids=transaction.task_ids,
+        )
+        record = CommittedEdit.create(
+            run_id="run-1",
+            task_id="task-1",
+            task_index=0,
+            repair_attempt=0,
+            transaction=transaction,
+            result=result,
+        )
+        payload = record.to_dict()
+        self.assertNotIn("value = 1", repr(payload))
+        self.assertNotIn("value = 2", repr(payload))
+        self.assertEqual(CommittedEdit.from_dict(payload), record)
+        self.assertEqual(
+            CommittedEdit.create(
+                run_id="run-1",
+                task_id="task-1",
+                task_index=0,
+                repair_attempt=0,
+                transaction=transaction,
+                result=result,
+            ).write_id,
+            record.write_id,
+        )
+
     def test_edit_reconciles_safe_then_already_applied_without_second_write(self):
         with tempfile.TemporaryDirectory() as directory:
             root = Path(directory)

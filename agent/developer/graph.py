@@ -30,6 +30,7 @@ from agent.developer.workflow_support import (
     start_implementing,
 )
 from agent.editing import (
+    CommittedEdit,
     EditErrorCode,
     EditOperation,
     EditResult,
@@ -80,6 +81,49 @@ def create_developer_workflow(
     tools = list(
         search_tools + codemap_tools if research_tools is None else research_tools
     )
+
+    def _committed_edit_update(
+        state: SoftwareDeveloperState,
+        transaction,
+        result: EditResult,
+        pending_write: WriteIntent | None,
+    ) -> dict[str, Any]:
+        """Append one applied edit idempotently to checkpoint-safe state."""
+        try:
+            if pending_write is not None:
+                record = CommittedEdit.from_intent(pending_write, result)
+            else:
+                logical_task_id = task_id or f"task-{state.current_task_idx + 1}"
+                record = CommittedEdit.create(
+                    run_id=run_id or "local-run",
+                    task_id=logical_task_id,
+                    task_index=state.current_task_idx,
+                    repair_attempt=state.repair_attempts,
+                    transaction=transaction,
+                    result=result,
+                )
+        except ValueError as error:
+            return {
+                "developer_status": DeveloperStatus.FAILED,
+                "developer_message": str(error),
+                "runtime_error_code": BudgetErrorCode.RECOVERY_CONFLICT,
+                "runtime_message": str(error),
+            }
+        records = list(getattr(state, "committed_edits", ()))
+        existing = next(
+            (item for item in records if item.write_id == record.write_id), None
+        )
+        if existing is not None:
+            if existing != record:
+                return {
+                    "developer_status": DeveloperStatus.FAILED,
+                    "developer_message": "A committed edit identity has conflicting evidence.",
+                    "runtime_error_code": BudgetErrorCode.RECOVERY_CONFLICT,
+                    "runtime_message": "A committed edit identity has conflicting evidence.",
+                }
+            return {"committed_edits": tuple(records)}
+        records.append(record)
+        return {"committed_edits": tuple(records)}
 
     def prepare_model_values(
         state: SoftwareDeveloperState, values: dict[str, Any]
@@ -383,7 +427,13 @@ def create_developer_workflow(
                         "side effects were blocked by the absolute deadline."
                     ),
                 )
+                committed_update = _committed_edit_update(
+                    state, transaction, result, pending_write
+                )
+                if committed_update.get("runtime_error_code") is not None:
+                    return committed_update
                 return {
+                    **committed_update,
                     "last_edit_result": result,
                     "last_recovery_result": recovery,
                     "current_file_transaction": None,
@@ -444,7 +494,13 @@ def create_developer_workflow(
                     }
                 )
             return update
+        committed_update = _committed_edit_update(
+            state, transaction, result, pending_write
+        )
+        if committed_update.get("runtime_error_code") is not None:
+            return committed_update
         return {
+            **committed_update,
             "last_edit_result": result,
             "last_recovery_result": (
                 RecoveryResult(

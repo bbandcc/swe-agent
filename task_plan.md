@@ -11,15 +11,15 @@
 ### 当前状态文件基线
 
 - S3.2 production 技术冻结点：`5850b8370c49f868e90aeffe9e6042f85eaa522c`；D1/S1a、D2/S2b 已冻结，D3/S2c Seal blocker 已通过本地验收。
-- S3.2 的配置、身份、SQLite checkpoint、预算边界、start/resume 和现有图接入均保持冻结；D3/S2c 已将单一 JUnit XML 可信报告、稳定 case identity、保守 acceptance policy 和 owned temporary evidence 生命周期接入生产验收链路。D4/S3.2a 已补齐模型请求时限、单次外部尝试边界、普通模型响应结算和部分请求身份范围；D6/S3.3a、S3.3b、S3.3c 与 D7/S3.5a、S3.5b 已完成本地验收。本轮完成 D5/S3.4b verification execution recovery：semantic config schema v6、checkpoint-safe per-check STARTED/RESULT_RECORDED attempt 边界、真实 SQLite/subprocess recovery 回归；S3 尚未全部完成，当前不进入 S2d 或 S4。
+- S3.2 的配置、身份、SQLite checkpoint、预算边界、start/resume 和现有图接入均保持冻结；D3/S2c 已将单一 JUnit XML 可信报告、稳定 case identity、保守 acceptance policy 和 owned temporary evidence 生命周期接入生产验收链路。D4/S3.2a 已补齐模型请求时限、单次外部尝试边界、普通模型响应结算和部分请求身份范围；D6/S3.3a、S3.3b、S3.3c 与 D7/S3.5a、S3.5b 已完成本地验收。本轮完成 S2d/D3 受控多文件 repair：semantic config schema v7、checkpoint-safe committed edits、可信 repair scope、结构化 failure signature/stagnation history，并保持 S3.4a/S3.4b recovery seam；当前等待 ChatGPT 审核，不进入 S4。
 - D2/S2b Final Seal 已收窄 library/CLI 的异常边界；`RunSummary.warnings` 只输出 preflight warning code，unexpected `RuntimeError`、`KeyboardInterrupt` 和 `SystemExit` 不被入口吞掉。
-- 本轮最新 Codex 本地验证：unittest 345 tests OK / 10 skipped；pytest 335 passed / 10 skipped /
-  189 subtests passed；Python compile、11 个 prompt render、root/start/resume 三套 CLI help、
+- 本轮最新 Codex 本地验证：unittest 355 tests OK / 10 skipped；pytest 345 passed / 10 skipped /
+  190 subtests passed；Python compile、11 个 prompt render、root/start/resume 三套 CLI help、
   `git diff --check` 均通过。10 个 skip 均为当前 Windows 链接能力或平台边界限制。
 - 没有 GitHub CI 或独立外部测试证据，不作相应声明。
 - 剩余能力：完整 secret-safe state persistence（当前只覆盖 RunConfig 中已知凭据）、verification rerun/replay、S2d、S4 仍未实现；D7 policy 只约束使用本 seam 的合作进程和模型可调用工具，不阻止第三方直接写 workspace，也不是 OS sandbox。本轮 EventSink/RunRecord 与 verification artifact 只提供单进程本地 JSONL、结构化记录和有界/脱敏日志，不是完整恢复系统。provider 正向 retry/独立 attempt 语义未实现，当前 durable 只允许单次外部尝试；当前模型 `request_digest` 只代表有界语义输入，身份范围明确为 `PARTIAL`，不能据此安全重放最终 rendered request；exactly-once 不承诺。JUnit XML 是当前唯一可信报告格式，未配置或报告缺失/畸形时保守返回证据不足；多框架 parser registry、扩展 repair 和 S4 均未实现。runner 只改写精确匹配的 `--junitxml/--junit-xml` destination 到 owned temporary output，workspace report_path 保持原 bytes/mtime；owned temp cleanup 失败返回结构化 `EXECUTION_ERROR`。S3.4b 对命令已启动但结果未持久化的恢复默认保守返回 `OUTCOME_UNKNOWN`，当前没有 isolated execution seam，因此不支持自动重跑；pytest 对其它 workspace 文件的副作用仍未提供 recovery。
 - 后续技术切片继续按 MASTER_PLAN §5.2 执行；保留现有 S1/S2/S3 历史编号，不重新开启或重命名 S1。
-- MASTER_PLAN 对应：当前实现事实覆盖 S3.2、D1/S1a、D2/S2b、D3/S2c、D4/S3.2a、D5/S3.4a、D5/S3.4b、D6/S3.3a、S3.3b、S3.3c、D7/S3.5a 和 S3.5b Final Seal；没有 GitHub CI 或独立外部测试证据。后续运行控制、轨迹和恢复要求继续按 §5.2 映射执行，本轮不进入 S2d 或 S4。
+- MASTER_PLAN 对应：当前实现事实覆盖 S3.2、D1/S1a、D2/S2b、D3/S2c、D4/S3.2a、D5/S3.4a、D5/S3.4b、D6/S3.3a、S3.3b、S3.3c、D7/S3.5a、S3.5b Final Seal 和 S2d/D3 受控多文件 repair；没有 GitHub CI 或独立外部测试证据。后续运行控制、轨迹和恢复要求继续按 §5.2 映射执行，本轮不进入 S4。
 
 ## 当前文档任务：独立 MASTER PLAN（2026-09-16）
 
@@ -909,3 +909,43 @@ S1/S2/S3.1/S3.2/D3-D7a 测试保持通过。compile、11 个 prompt render、roo
 - `VerificationAttempt` 的 workspace revision 是输入证据摘要，不是执行环境快照；外部命令对 workspace
   的其它副作用仍不由本切片恢复。EventSink/RunRecord 继续是审计旁路，checkpoint 与当前运行状态才
   决定恢复，不以事件记录驱动重放。
+
+## S2d/D3：受控多文件 repair
+
+### 固定范围与公开契约
+
+- 基线：`554411af3480d44652aa9da98fe12b753d76c6ec`；本轮只增加受控多文件 repair，保持
+  Architect → Developer 主链、S1 workspace transaction、S3.4a WriteIntent 和 S3.4b
+  VerificationAttempt，不进入 S4、sandbox/worktree 或跨文件事务。
+- `CommittedEdit` 是 checkpoint-safe 的 versioned 值对象，只保存稳定 `write_id`、run/task identity、
+  task index、repair attempt、canonical path、operation、before/after hash、task ids 和 patch digest；
+  不保存源码或完整 patch。Applied commit 记录以 write_id 幂等追加，resume 不重复追加。
+- `RepairScopePolicy.LAST_FILE` 是默认策略，保持原有只修最后成功提交文件的行为；可信 RunConfig 显式配置
+  `COMMITTED_PLAN_FILES` 时，repair 只按原 Architect plan 顺序选择已经成功 committed 的文件。未提交、
+  原计划外和模型/verification 输出指定的路径均不能扩大范围；每个文件继续独立 transaction，不承诺跨文件原子性。
+- repair history 保存结构化 failure signature `(check_id, case_id, status)` 和按本次 scope 计算的 patch digest。
+  相同可信 signature 与相同有效 patch digest 连续出现时提前返回 `REPAIR_EXHAUSTED`；缺失/畸形结构化证据
+  不猜测归因，最多两轮 repair、全局 budget/deadline 不重置。
+- semantic config digest 已从 v6 升至 v7；旧 v6 paused checkpoint 在 graph/model/write/verification
+  前返回 `run_config_mismatch`。checkpoint 仍是恢复依据，EventSink/RunRecord 仅作审计旁路。
+
+### TDD 验收与当前证据
+
+- [x] CommittedEdit 序列化只含 hash/digest、稳定 identity 并支持重复去重；普通图和真实 SQLite
+  parent → Developer → repair 均保留 committed edits，repair write_id 与原 edit 不同且稳定。
+- [x] LAST_FILE 与 COMMITTED_PLAN_FILES 图级回归：首个文件保持 byte 内容，最后文件可修复；显式范围按原
+  计划顺序修复已提交文件，未提交计划文件不会进入 repair；单文件失败不越界推进。
+- [x] 结构化 failure signature 忽略 stdout/stderr 噪声；相同 signature + patch digest 提前停止，
+  signature 改变仍允许下一轮；未配置/不可信 evidence 不做停滞猜测；两轮上限、budget/deadline 与
+  S3.4a/S3.4b identity 回归通过。
+- [x] 最新 Codex 本地验证：unittest 355 tests OK / 10 skipped；pytest 345 passed / 10 skipped /
+  190 subtests passed；Python compile、11 个 prompt render、root/start/resume CLI help、
+  `git diff --check` 均通过。10 个 skip 是既有 Windows 链接能力或平台边界限制；以上是 Codex 本地证据，
+  没有 GitHub CI 或独立外部验收证据。
+
+### 已知边界
+
+- repair scope 是 trusted RunConfig 值，不是模型可修改的权限；policy 仍是 cooperative boundary，不是
+  OS sandbox。CommittedEdit 只证明 checkpoint 中的 hash/digest 证据，不提供跨文件 atomicity、filesystem
+  exactly-once、verification replay 或第三方并发写保护。stagnation 只在结构化报告可验证且 patch digest
+  可取得时触发，不能从 failure_id 或截断日志推断归因。

@@ -821,6 +821,7 @@ def create_durable_workflow(
         event_recorder=event_recorder,
         access_policy=config.access_policy,
         verification_recovery_policy=config.verification_recovery_policy,
+        repair_scope_policy=config.repair_scope_policy,
     ).compile(checkpointer=saver).with_config({"tags": ["agent-durable-v1"]})
 
 

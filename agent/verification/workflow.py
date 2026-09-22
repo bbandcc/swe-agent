@@ -1,5 +1,7 @@
 """Deterministic baseline, post-edit, and bounded-repair graph nodes."""
 
+import hashlib
+import json
 import time
 from collections.abc import Callable, Sequence
 from dataclasses import replace
@@ -9,7 +11,7 @@ from typing import Any, Protocol
 from agent.common.entities import ImplementationPlan
 from agent.developer.editing import canonical_plan_path
 from agent.developer.state import DeveloperStatus
-from agent.editing import EditResult
+from agent.editing import CommittedEdit, EditResult
 from agent.outcome import WorkflowOutcome
 from agent.runtime.budget import BudgetErrorCode, BudgetSnapshot
 from agent.verification.contracts import (
@@ -17,6 +19,7 @@ from agent.verification.contracts import (
     VerificationAttemptStatus,
     VerificationCheckStatus,
     VerificationRecoveryPolicy,
+    RepairScopePolicy,
     VerificationResult,
     VerificationSummary,
     VerificationSpec,
@@ -46,6 +49,11 @@ class _VerificationState(Protocol):
     last_edit_result: EditResult | None
     outcome: WorkflowOutcome
     acceptance: AcceptanceResult | None
+    committed_edits: tuple[CommittedEdit, ...]
+    repair_failure_signatures: tuple[
+        tuple[tuple[str, str, str], ...] | None, ...
+    ]
+    repair_patch_digests: tuple[str | None, ...]
 
 
 class VerificationController:
@@ -63,6 +71,7 @@ class VerificationController:
         recovery_policy: VerificationRecoveryPolicy = (
             VerificationRecoveryPolicy.STOP_ON_UNKNOWN
         ),
+        repair_scope_policy: RepairScopePolicy = RepairScopePolicy.LAST_FILE,
     ) -> None:
         self._specs = tuple(specs)
         self._workspace_root = workspace_root
@@ -83,6 +92,10 @@ class VerificationController:
             raise ValueError(
                 "Verification rerun policy requires an isolated execution seam."
             )
+        try:
+            self._repair_scope_policy = RepairScopePolicy(repair_scope_policy)
+        except (TypeError, ValueError) as error:
+            raise ValueError("Repair scope policy is invalid.") from error
         # A start node and its run node execute in one graph invocation.  This
         # process-local arm is deliberately absent after a durable restart, so
         # a checkpoint containing STARTED cannot silently dispatch again.
@@ -94,6 +107,8 @@ class VerificationController:
             "verification_feedback": None,
             "repair_plan": None,
             "repair_attempts": 0,
+            "repair_failure_signatures": (),
+            "repair_patch_digests": (),
             "acceptance": None,
             "developer_status": state.developer_status,
             "outcome": WorkflowOutcome.PENDING,
@@ -183,6 +198,22 @@ class VerificationController:
             }
         status = classify_verification(state.baseline_verification, results)
         acceptance = evaluate_acceptance(state.baseline_verification, results)
+        stagnated = _repair_stagnated(
+            state, results, self._repair_scope_policy
+        )
+        if stagnated:
+            status = VerificationStatus.REPAIR_EXHAUSTED
+        if (
+            status is VerificationStatus.REGRESSION
+            and state.developer_status is DeveloperStatus.COMPLETED
+            and not _repair_plan(
+                state.implementation_plan,
+                state.last_edit_result,
+                getattr(state, "committed_edits", ()),
+                self._repair_scope_policy,
+            ).tasks
+        ):
+            status = VerificationStatus.REPAIR_EXHAUSTED
         if (
             status is VerificationStatus.REGRESSION
             and state.repair_attempts >= MAX_REPAIR_ATTEMPTS
@@ -325,6 +356,19 @@ class VerificationController:
             }
         status = classify_verification(state.baseline_verification, results)
         acceptance = evaluate_acceptance(state.baseline_verification, results)
+        if _repair_stagnated(state, results, self._repair_scope_policy):
+            status = VerificationStatus.REPAIR_EXHAUSTED
+        if (
+            status is VerificationStatus.REGRESSION
+            and state.developer_status is DeveloperStatus.COMPLETED
+            and not _repair_plan(
+                state.implementation_plan,
+                state.last_edit_result,
+                getattr(state, "committed_edits", ()),
+                self._repair_scope_policy,
+            ).tasks
+        ):
+            status = VerificationStatus.REPAIR_EXHAUSTED
         if (
             status is VerificationStatus.REGRESSION
             and state.repair_attempts >= MAX_REPAIR_ATTEMPTS
@@ -459,6 +503,8 @@ class VerificationController:
             "verification_feedback": None,
             "repair_plan": None,
             "repair_attempts": 0,
+            "repair_failure_signatures": (),
+            "repair_patch_digests": (),
             "acceptance": None,
             "developer_status": state.developer_status,
             "outcome": WorkflowOutcome.PENDING,
@@ -490,10 +536,35 @@ class VerificationController:
 
     def prepare_repair(self, state: _VerificationState) -> dict[str, Any]:
         attempt = state.repair_attempts + 1
+        failure_signature = verification_failure_signature(
+            state.post_verification
+        )
+        repair_plan = _repair_plan(
+            state.implementation_plan,
+            state.last_edit_result,
+            getattr(state, "committed_edits", ()),
+            self._repair_scope_policy,
+        )
+        repair_paths = {
+            canonical_plan_path(task.file_path)
+            for task in repair_plan.tasks
+        }
+        repair_paths.discard(None)
+        patch_digest = _committed_patch_digest(
+            getattr(state, "committed_edits", ()),
+            state.repair_attempts,
+            repair_paths,
+        )
         return {
             "repair_attempts": attempt,
-            "repair_plan": _repair_plan(
-                state.implementation_plan, state.last_edit_result
+            "repair_plan": repair_plan,
+            "repair_failure_signatures": (
+                *getattr(state, "repair_failure_signatures", ()),
+                failure_signature,
+            ),
+            "repair_patch_digests": (
+                *getattr(state, "repair_patch_digests", ()),
+                patch_digest,
             ),
             "verification_feedback": {
                 "attempt": attempt,
@@ -708,11 +779,106 @@ def _workflow_outcome(
 def _repair_plan(
     plan: ImplementationPlan | None,
     result: EditResult | None,
+    committed_edits: Sequence[CommittedEdit] = (),
+    scope: RepairScopePolicy = RepairScopePolicy.LAST_FILE,
 ) -> ImplementationPlan:
-    if plan is not None and result is not None:
-        committed_path = canonical_plan_path(result.path)
-        if committed_path is not None:
-            for task in plan.tasks:
-                if canonical_plan_path(task.file_path) == committed_path:
-                    return plan.model_copy(update={"tasks": [task]})
+    try:
+        scope = RepairScopePolicy(scope)
+    except (TypeError, ValueError):
+        return ImplementationPlan(tasks=[])
+    if plan is not None:
+        committed = {
+            canonical_plan_path(edit.path)
+            for edit in committed_edits
+        }
+        committed.discard(None)
+        if scope is RepairScopePolicy.COMMITTED_PLAN_FILES:
+            tasks = [
+                task
+                for task in plan.tasks
+                if canonical_plan_path(task.file_path) in committed
+            ]
+            return plan.model_copy(update={"tasks": tasks})
+        if result is not None:
+            committed_path = canonical_plan_path(result.path)
+            if committed_path is not None and (
+                committed_path in committed
+                or not committed_edits
+            ):
+                for task in plan.tasks:
+                    if canonical_plan_path(task.file_path) == committed_path:
+                        return plan.model_copy(update={"tasks": [task]})
     return ImplementationPlan(tasks=[])
+
+
+def verification_failure_signature(
+    results: Sequence[VerificationSummary],
+) -> tuple[tuple[str, str, str], ...] | None:
+    """Return identity-safe failure cases, excluding diagnostic noise."""
+    failures: list[tuple[str, str, str]] = []
+    for result in results:
+        report = result.report
+        if report is None:
+            return None
+        for case in report.cases:
+            if case.status.value != "pass":
+                failures.append((result.name, case.case_id, case.status.value))
+    if not failures:
+        return None
+    return tuple(sorted(set(failures)))
+
+
+def _committed_patch_digest(
+    edits: Sequence[CommittedEdit],
+    repair_attempt: int,
+    paths: set[str | None] | None = None,
+) -> str | None:
+    current = [
+        edit
+        for edit in edits
+        if edit.repair_attempt == repair_attempt
+        and (paths is None or canonical_plan_path(edit.path) in paths)
+    ]
+    if not current:
+        return None
+    payload = [
+        {
+            "path": edit.path,
+            "patch_digest": edit.patch_digest,
+            "after_hash": edit.after_hash,
+        }
+        for edit in sorted(current, key=lambda item: (item.task_index, item.path))
+    ]
+    return hashlib.sha256(
+        json.dumps(payload, sort_keys=True, separators=(",", ":")).encode("utf-8")
+    ).hexdigest()
+
+
+def _repair_stagnated(
+    state: _VerificationState,
+    results: Sequence[VerificationSummary],
+    scope: RepairScopePolicy,
+) -> bool:
+    signature = verification_failure_signature(results)
+    if signature is None:
+        return False
+    signatures = getattr(state, "repair_failure_signatures", ())
+    patches = getattr(state, "repair_patch_digests", ())
+    if not signatures or not patches or signatures[-1] is None:
+        return False
+    repair_plan = _repair_plan(
+        state.implementation_plan,
+        state.last_edit_result,
+        getattr(state, "committed_edits", ()),
+        scope,
+    )
+    repair_paths = {
+        canonical_plan_path(task.file_path) for task in repair_plan.tasks
+    }
+    repair_paths.discard(None)
+    patch = _committed_patch_digest(
+        getattr(state, "committed_edits", ()),
+        getattr(state, "repair_attempts", 0),
+        repair_paths,
+    )
+    return patch is not None and signatures[-1] == signature and patches[-1] == patch

@@ -8,6 +8,7 @@ from pydantic import BaseModel, Field
 
 from agent.common.entities import ImplementationPlan
 from agent.editing import (
+    CommittedEdit,
     EditResult,
     RecoveryResult,
     WorkspaceSnapshot,
@@ -59,6 +60,10 @@ class SoftwareDeveloperState(DurableBudgetState):
     )
     pending_write: WriteIntent | None = Field(
         None, description="Durable intent that must be reconciled before writing"
+    )
+    committed_edits: tuple[CommittedEdit, ...] = Field(
+        default_factory=tuple,
+        description="Checkpoint-safe records of successfully committed files",
     )
     last_recovery_result: RecoveryResult | None = Field(
         None, description="Latest deterministic pending-write reconciliation"

@@ -1,6 +1,8 @@
 """Deterministic workspace editing interface."""
 
 from agent.editing.models import (
+    COMMITTED_EDIT_SCHEMA_VERSION,
+    CommittedEdit,
     EditErrorCode,
     EditOperation,
     EditProposal,
@@ -17,6 +19,8 @@ from agent.editing.recovery import RecoveryReconciler
 from agent.editing.workspace import WorkspaceEditor
 
 __all__ = [
+    "COMMITTED_EDIT_SCHEMA_VERSION",
+    "CommittedEdit",
     "EditErrorCode",
     "EditOperation",
     "EditProposal",

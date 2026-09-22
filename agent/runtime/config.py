@@ -15,7 +15,11 @@ from urllib.parse import urlsplit, urlunsplit
 from pydantic import SecretStr
 
 from agent.config import ModelSettings, model_settings
-from agent.verification import VerificationRecoveryPolicy, VerificationSpec
+from agent.verification import (
+    RepairScopePolicy,
+    VerificationRecoveryPolicy,
+    VerificationSpec,
+)
 from agent.verification.contracts import is_pytest_junitxml_producer
 from agent.verification.config import configured_verification_specs
 from agent.workspace import (
@@ -115,6 +119,7 @@ class RunConfig:
     access_policy: WorkspaceAccessPolicy = field(
         default_factory=WorkspaceAccessPolicy.default
     )
+    repair_scope_policy: RepairScopePolicy = RepairScopePolicy.LAST_FILE
 
     def __post_init__(self) -> None:
         workspace = _validated_root(self.workspace_root, must_exist=True)
@@ -169,6 +174,13 @@ class RunConfig:
                 RunConfigErrorCode.INVALID_VALUE,
                 "access_policy must be WorkspaceAccessPolicy.",
             )
+        try:
+            repair_scope_policy = RepairScopePolicy(self.repair_scope_policy)
+        except (TypeError, ValueError) as error:
+            raise RunConfigError(
+                RunConfigErrorCode.INVALID_VALUE,
+                "repair_scope_policy is invalid.",
+            ) from error
 
         try:
             configured_specs = tuple(self.verification_specs)
@@ -200,6 +212,7 @@ class RunConfig:
             float(self.model_request_timeout_seconds),
         )
         object.__setattr__(self, "verification_recovery_policy", recovery_policy)
+        object.__setattr__(self, "repair_scope_policy", repair_scope_policy)
 
 
 def load_run_config(environ: Mapping[str, str]) -> RunConfig:
@@ -259,6 +272,12 @@ def load_run_config(environ: Mapping[str, str]) -> RunConfig:
                 VerificationRecoveryPolicy.STOP_ON_UNKNOWN.value,
             )
         )
+        repair_scope_policy = RepairScopePolicy(
+            environ.get(
+                "SWE_AGENT_REPAIR_SCOPE",
+                RepairScopePolicy.LAST_FILE.value,
+            )
+        )
         access_policy = WorkspaceAccessPolicy(
             hidden_paths=parse_configured_paths(
                 environ.get("SWE_AGENT_HIDDEN_PATHS", ""),
@@ -295,6 +314,7 @@ def load_run_config(environ: Mapping[str, str]) -> RunConfig:
         model_retry_policy=ModelRetryPolicy(max_attempts=model_max_attempts),
         verification_recovery_policy=recovery_policy,
         access_policy=access_policy,
+        repair_scope_policy=repair_scope_policy,
     )
 
 

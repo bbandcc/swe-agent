@@ -10,7 +10,7 @@ from agent.architect.graph import swe_architect
 from agent.common.entities import ImplementationPlan
 from agent.developer.graph import swe_developer
 from agent.developer.state import DeveloperErrorCode, DeveloperStatus
-from agent.editing import EditResult, RecoveryResult, WriteIntent
+from agent.editing import CommittedEdit, EditResult, RecoveryResult, WriteIntent
 from agent.outcome import WorkflowOutcome
 from agent.verification import (
     AcceptanceResult,
@@ -19,6 +19,7 @@ from agent.verification import (
     VerificationRecoveryPolicy,
     VerificationRunner,
     VerificationSpec,
+    RepairScopePolicy,
     VerificationSummary,
     VerificationStatus,
 )
@@ -56,6 +57,10 @@ class AgentState(DurableBudgetState):
     pending_write: WriteIntent | None = Field(
         None, description="Durable file-write intent awaiting reconciliation"
     )
+    committed_edits: tuple[CommittedEdit, ...] = Field(
+        default_factory=tuple,
+        description="Checkpoint-safe records of successfully committed files",
+    )
     last_recovery_result: RecoveryResult | None = Field(
         None, description="Latest deterministic pending-write reconciliation"
     )
@@ -79,6 +84,16 @@ class AgentState(DurableBudgetState):
     acceptance: AcceptanceResult | None = Field(None)
     verification_feedback: dict[str, Any] | None = Field(None)
     repair_attempts: int = Field(0, ge=0)
+    repair_failure_signatures: tuple[
+        tuple[tuple[str, str, str], ...] | None, ...
+    ] = Field(
+        default_factory=tuple,
+        description="Structured verification failure history used for stagnation checks",
+    )
+    repair_patch_digests: tuple[str | None, ...] = Field(
+        default_factory=tuple,
+        description="Effective patch digest history for bounded repair",
+    )
     outcome: WorkflowOutcome = Field(WorkflowOutcome.PENDING)
 
     @field_validator("baseline_verification", "post_verification", mode="before")
@@ -110,6 +125,7 @@ def create_workflow_graph(
     verification_recovery_policy: VerificationRecoveryPolicy = (
         VerificationRecoveryPolicy.STOP_ON_UNKNOWN
     ),
+    repair_scope_policy: RepairScopePolicy = RepairScopePolicy.LAST_FILE,
 ):
     """Create the parent workflow with injectable compiled child graphs."""
     verification = VerificationController(
@@ -120,6 +136,7 @@ def create_workflow_graph(
         clock=clock,
         secret_filter=secret_filter,
         recovery_policy=verification_recovery_policy,
+        repair_scope_policy=repair_scope_policy,
     )
 
     def run_baseline(state: AgentState) -> dict[str, Any]:

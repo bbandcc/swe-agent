@@ -13,6 +13,7 @@ from agent.verification.contracts import (
     VerificationAttempt,
     VerificationAttemptStatus,
     VerificationRecoveryPolicy,
+    RepairScopePolicy,
     VERIFICATION_ATTEMPT_SCHEMA_VERSION,
     verification_spec_digest,
 )
@@ -39,6 +40,7 @@ __all__ = [
     "VerificationAttempt",
     "VerificationAttemptStatus",
     "VerificationRecoveryPolicy",
+    "RepairScopePolicy",
     "VERIFICATION_ATTEMPT_SCHEMA_VERSION",
     "verification_spec_digest",
     "AcceptanceReason",

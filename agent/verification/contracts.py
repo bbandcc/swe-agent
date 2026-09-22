@@ -59,6 +59,13 @@ class VerificationRecoveryPolicy(str, Enum):
     RERUN_ISOLATED = "rerun_isolated"
 
 
+class RepairScopePolicy(str, Enum):
+    """Trusted boundary for files eligible in a regression repair."""
+
+    LAST_FILE = "last_file"
+    COMMITTED_PLAN_FILES = "committed_plan_files"
+
+
 @dataclass(frozen=True, slots=True)
 class VerificationCase:
     """One case from the trusted structured verification report."""

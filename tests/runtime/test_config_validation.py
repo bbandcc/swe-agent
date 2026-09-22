@@ -15,6 +15,7 @@ from agent.runtime import (
 )
 from agent.workspace import WorkspaceAccessPolicy
 from agent.verification import VerificationSpec
+from agent.verification import RepairScopePolicy
 from tests.runtime._config_support import (
     RunConfigTestCase,
     model_settings,
@@ -23,6 +24,18 @@ from tests.runtime._config_support import (
 
 
 class RunConfigValidationTests(RunConfigTestCase):
+    def test_repair_scope_policy_is_trusted_and_validated(self) -> None:
+        with tempfile.TemporaryDirectory() as directory:
+            root = Path(directory)
+            config = self.make_config(
+                root, repair_scope_policy=RepairScopePolicy.COMMITTED_PLAN_FILES
+            )
+            self.assertEqual(
+                config.repair_scope_policy,
+                RepairScopePolicy.COMMITTED_PLAN_FILES,
+            )
+            with self.assertRaises(RunConfigError):
+                self.make_config(root, repair_scope_policy="model_decides")
     def test_rejects_unsafe_access_policy_paths(self) -> None:
         with tempfile.TemporaryDirectory() as directory:
             root = Path(directory)

@@ -10,7 +10,14 @@ from agent.common.entities import AtomicTask, ImplementationPlan, Implementation
 from agent.developer.editing import DeveloperEditExecutor
 from agent.developer.graph import DeveloperRuntime, create_developer_workflow
 from agent.developer.state import DeveloperStatus
-from agent.editing import EditErrorCode, EditResult, EditStatus, WorkspaceEditor
+from agent.editing import (
+    CommittedEdit,
+    EditErrorCode,
+    EditResult,
+    EditStatus,
+    WorkspaceEditor,
+    WorkspaceTransaction,
+)
 from agent.graph import AgentState, WorkflowOutcome, create_workflow_graph
 from agent.runtime import BudgetErrorCode, BudgetSnapshot
 from agent.runtime.durable import DurableRunResult, DurableRunStatus, run_exit_code
@@ -22,8 +29,10 @@ from agent.verification import (
     VerificationRunner,
     VerificationResult,
     VerificationReport,
+    VerificationSummary,
     VerificationSpec,
     VerificationStatus,
+    RepairScopePolicy,
 )
 from agent.verification.workflow import VerificationController
 
@@ -75,6 +84,41 @@ def developer(root: Path, propose):
     runtime = DeveloperRuntime(
         edit_executor=lambda: executor,
         load_codebase_structure=lambda: "app.py",
+        research_atomic_task=lambda _: AIMessage(content="ready"),
+        propose_existing_file_edit=propose,
+        propose_new_file=lambda _: "value = 1\n",
+    )
+    return create_developer_workflow(runtime, research_tools=[])
+
+
+def multi_file_plan() -> ImplementationPlan:
+    return ImplementationPlan(
+        tasks=[
+            ImplementationTask(
+                file_path="workspace_repo/a.py",
+                logical_task="更新 a",
+                atomic_tasks=[AtomicTask(atomic_task="更新 a")],
+            ),
+            ImplementationTask(
+                file_path="workspace_repo/b.py",
+                logical_task="更新 b",
+                atomic_tasks=[AtomicTask(atomic_task="更新 b")],
+            ),
+        ]
+    )
+
+
+def multi_file_developer(root: Path):
+    executor = DeveloperEditExecutor(WorkspaceEditor(root))
+
+    def propose(values):
+        old = "value = 1" if not values["verification_feedback"] else "value = 2"
+        new = "value = 2" if not values["verification_feedback"] else "value = 3"
+        return search_replace(old, new)
+
+    runtime = DeveloperRuntime(
+        edit_executor=lambda: executor,
+        load_codebase_structure=lambda: "a.py b.py",
         research_atomic_task=lambda _: AIMessage(content="ready"),
         propose_existing_file_edit=propose,
         propose_new_file=lambda _: "value = 1\n",
@@ -143,6 +187,350 @@ class _SequenceRunner:
 
 
 class VerificationWorkflowTests(unittest.TestCase):
+    def test_last_file_repair_does_not_touch_earlier_committed_file(self):
+        with tempfile.TemporaryDirectory() as directory:
+            root = Path(directory)
+            for name in ("a.py", "b.py"):
+                (root / name).write_text("value = 1\n", encoding="utf-8", newline="")
+            runner = _SequenceRunner(
+                VerificationCheckStatus.PASS,
+                VerificationCheckStatus.FAIL,
+                VerificationCheckStatus.PASS,
+            )
+            result = create_workflow_graph(
+                architect=lambda _: {"implementation_plan": multi_file_plan()},
+                developer=multi_file_developer(root),
+                verification_specs=(VerificationSpec("check", ("unused",)),),
+                verification_runner=runner,
+            ).compile().invoke({})
+            self.assertEqual(result["verification_status"], VerificationStatus.VERIFIED)
+            self.assertEqual([edit.path for edit in result["committed_edits"]], ["a.py", "b.py", "b.py"])
+            self.assertEqual((root / "a.py").read_text(), "value = 2\n")
+            self.assertEqual((root / "b.py").read_text(), "value = 3\n")
+
+    def test_committed_plan_scope_repairs_each_original_committed_file_in_plan_order(self):
+        with tempfile.TemporaryDirectory() as directory:
+            root = Path(directory)
+            for name in ("a.py", "b.py"):
+                (root / name).write_text("value = 1\n", encoding="utf-8", newline="")
+            runner = _SequenceRunner(
+                VerificationCheckStatus.PASS,
+                VerificationCheckStatus.FAIL,
+                VerificationCheckStatus.PASS,
+            )
+            result = create_workflow_graph(
+                architect=lambda _: {"implementation_plan": multi_file_plan()},
+                developer=multi_file_developer(root),
+                verification_specs=(VerificationSpec("check", ("unused",)),),
+                verification_runner=runner,
+                repair_scope_policy=RepairScopePolicy.COMMITTED_PLAN_FILES,
+            ).compile().invoke({})
+            self.assertEqual(result["verification_status"], VerificationStatus.VERIFIED)
+            self.assertEqual(
+                [edit.path for edit in result["committed_edits"]],
+                ["a.py", "b.py", "a.py", "b.py"],
+            )
+            self.assertEqual((root / "a.py").read_text(), "value = 3\n")
+            self.assertEqual((root / "b.py").read_text(), "value = 3\n")
+    def _committed_record(self, path: str, index: int, repair_attempt: int = 0):
+        transaction = WorkspaceTransaction(
+            path=path,
+            existed=True,
+            original_content=f"{path}:before\n",
+            working_content=f"{path}:after-{repair_attempt}\n",
+            base_hash="a" * 64,
+            original_mode=None,
+            task_ids=(f"task-{index}.step-1",),
+        )
+        result = EditResult(
+            status=EditStatus.APPLIED,
+            path=path,
+            before_hash="a" * 64,
+            after_hash="b" * 64,
+            diff="same repair patch",
+            task_ids=transaction.task_ids,
+        )
+        return CommittedEdit.create(
+            run_id="run-1",
+            task_id="task-1",
+            task_index=index,
+            repair_attempt=repair_attempt,
+            transaction=transaction,
+            result=result,
+        )
+
+    def test_repair_scope_only_uses_original_committed_plan_files_in_order(self):
+        plan_with_three_files = ImplementationPlan(
+            tasks=[
+                ImplementationTask(
+                    file_path="workspace_repo/a.py",
+                    logical_task="a",
+                    atomic_tasks=[AtomicTask(atomic_task="a")],
+                ),
+                ImplementationTask(
+                    file_path="workspace_repo/b.py",
+                    logical_task="b",
+                    atomic_tasks=[AtomicTask(atomic_task="b")],
+                ),
+                ImplementationTask(
+                    file_path="workspace_repo/c.py",
+                    logical_task="c",
+                    atomic_tasks=[AtomicTask(atomic_task="c")],
+                ),
+            ]
+        )
+        committed = (self._committed_record("a.py", 0), self._committed_record("b.py", 1))
+        state = AgentState(
+            implementation_plan=plan_with_three_files,
+            committed_edits=committed,
+            last_edit_result=EditResult(status=EditStatus.APPLIED, path="b.py"),
+            developer_status=DeveloperStatus.COMPLETED,
+            verification_status=VerificationStatus.REGRESSION,
+        )
+
+        last_file = VerificationController((), None, ".")
+        self.assertEqual(
+            [task.file_path for task in last_file.prepare_repair(state)["repair_plan"].tasks],
+            ["workspace_repo/b.py"],
+        )
+        committed_scope = VerificationController(
+            (), None, ".", repair_scope_policy=RepairScopePolicy.COMMITTED_PLAN_FILES
+        )
+        self.assertEqual(
+            [task.file_path for task in committed_scope.prepare_repair(state)["repair_plan"].tasks],
+            ["workspace_repo/a.py", "workspace_repo/b.py"],
+        )
+
+    def test_same_structured_failure_and_patch_stops_repair_early(self):
+        spec = VerificationSpec(
+            "check", ("python", "-m", "pytest", "--junitxml=report.xml")
+        )
+        report = VerificationReport(
+            check_id="check",
+            report_schema=REPORT_SCHEMA,
+            cases=(
+                VerificationCase(
+                    check_id="check",
+                    case_id="target",
+                    status=VerificationCaseStatus.FAIL,
+                ),
+            ),
+        )
+        failing = VerificationSummary.from_result(
+            VerificationResult.create(
+                name="check",
+                argv=spec.argv,
+                cwd=".",
+                status=VerificationCheckStatus.FAIL,
+                exit_code=1,
+                report=report,
+            )
+        )
+        baseline = VerificationSummary.from_result(
+            VerificationResult.create(
+                name="check",
+                argv=spec.argv,
+                cwd=".",
+                status=VerificationCheckStatus.PASS,
+                exit_code=0,
+                report=VerificationReport(
+                    check_id="check",
+                    report_schema=REPORT_SCHEMA,
+                    cases=(
+                        VerificationCase(
+                            check_id="check",
+                            case_id="target",
+                            status=VerificationCaseStatus.PASS,
+                        ),
+                    ),
+                ),
+            )
+        )
+        committed = self._committed_record("app.py", 0, repair_attempt=0)
+        class FailureRunner:
+            def run(self, configured):
+                return VerificationResult.create(
+                    name=configured.name,
+                    argv=("python", "-m", "pytest", "--junitxml=report.xml"),
+                    cwd=".",
+                    status=VerificationCheckStatus.FAIL,
+                    exit_code=1,
+                    report=report,
+                )
+
+        controller = VerificationController((spec,), FailureRunner(), ".")
+        initial = AgentState(
+            implementation_plan=plan(),
+            committed_edits=(committed,),
+            last_edit_result=EditResult(status=EditStatus.APPLIED, path="app.py"),
+            baseline_verification=(baseline,),
+            post_verification=(failing,),
+            developer_status=DeveloperStatus.COMPLETED,
+            verification_status=VerificationStatus.REGRESSION,
+        )
+        prepared = controller.prepare_repair(initial)
+        repaired = initial.model_copy(
+            update={
+                **prepared,
+                "repair_attempts": 1,
+                "committed_edits": (self._committed_record("app.py", 0, repair_attempt=1),),
+                "post_verification": (failing,),
+                "developer_status": DeveloperStatus.COMPLETED,
+            }
+        )
+        post = controller.run_post(repaired)
+        self.assertEqual(post["verification_status"], VerificationStatus.REPAIR_EXHAUSTED)
+        self.assertEqual(post["outcome"], WorkflowOutcome.FAILED)
+
+    def test_failure_signature_ignores_diagnostic_noise(self):
+        spec = VerificationSpec(
+            "check", ("python", "-m", "pytest", "--junitxml=report.xml")
+        )
+        def summary(stdout: str):
+            return VerificationSummary.from_result(
+                VerificationResult.create(
+                    name=spec.name,
+                    argv=spec.argv,
+                    cwd=".",
+                    status=VerificationCheckStatus.FAIL,
+                    exit_code=1,
+                    stdout=stdout,
+                    report=VerificationReport(
+                        check_id=spec.name,
+                        report_schema=REPORT_SCHEMA,
+                        cases=(
+                            VerificationCase(
+                                check_id=spec.name,
+                                case_id="target",
+                                status=VerificationCaseStatus.FAIL,
+                            ),
+                        ),
+                    ),
+                )
+            )
+        from agent.verification.workflow import verification_failure_signature
+
+        self.assertEqual(
+            verification_failure_signature((summary("first"),)),
+            verification_failure_signature((summary("second"),)),
+        )
+
+    def test_changed_failure_signature_still_allows_bounded_repair(self):
+        spec = VerificationSpec(
+            "check", ("python", "-m", "pytest", "--junitxml=report.xml")
+        )
+        def result(case_id: str):
+            cases = tuple(
+                VerificationCase(
+                    check_id=spec.name,
+                    case_id=current,
+                    status=(
+                        VerificationCaseStatus.FAIL
+                        if current == case_id
+                        else VerificationCaseStatus.PASS
+                    ),
+                )
+                for current in ("target", "other")
+            )
+            return VerificationSummary.from_result(
+                VerificationResult.create(
+                    name=spec.name,
+                    argv=spec.argv,
+                    cwd=".",
+                    status=VerificationCheckStatus.FAIL,
+                    exit_code=1,
+                    report=VerificationReport(
+                        check_id=spec.name,
+                        report_schema=REPORT_SCHEMA,
+                        cases=cases,
+                    ),
+                )
+            )
+        baseline = VerificationSummary.from_result(
+            VerificationResult.create(
+                name=spec.name,
+                argv=spec.argv,
+                cwd=".",
+                status=VerificationCheckStatus.PASS,
+                exit_code=0,
+                report=VerificationReport(
+                    check_id=spec.name,
+                    report_schema=REPORT_SCHEMA,
+                    cases=tuple(
+                        VerificationCase(
+                            check_id=spec.name,
+                            case_id=current,
+                            status=VerificationCaseStatus.PASS,
+                        )
+                        for current in ("target", "other")
+                    ),
+                ),
+            )
+        )
+        state = AgentState(
+            baseline_verification=(baseline,),
+            post_verification=(result("first"),),
+            developer_status=DeveloperStatus.COMPLETED,
+            verification_status=VerificationStatus.REGRESSION,
+            repair_attempts=1,
+            repair_failure_signatures=((
+                ("check", "other", "fail"),
+            ),),
+            repair_patch_digests=("p" * 64,),
+            implementation_plan=plan(),
+            last_edit_result=EditResult(status=EditStatus.APPLIED, path="app.py"),
+            committed_edits=(self._committed_record("app.py", 0, repair_attempt=1),),
+        )
+        class Runner:
+            def run(self, configured):
+                return VerificationResult.create(
+                    name=configured.name,
+                    argv=configured.argv,
+                    cwd=configured.cwd,
+                    status=VerificationCheckStatus.FAIL,
+                    exit_code=1,
+                    report=VerificationReport(
+                        check_id=configured.name,
+                        report_schema=REPORT_SCHEMA,
+                        cases=(
+                            VerificationCase(
+                                check_id=configured.name,
+                                case_id="target",
+                                status=VerificationCaseStatus.FAIL,
+                            ),
+                            VerificationCase(
+                                check_id=configured.name,
+                                case_id="other",
+                                status=VerificationCaseStatus.PASS,
+                            ),
+                        ),
+                    ),
+                )
+
+        controller = VerificationController((spec,), Runner(), ".")
+        post = controller.run_post(state)
+        self.assertEqual(post["verification_status"], VerificationStatus.REGRESSION)
+
+    def test_uncommitted_plan_file_never_enters_repair(self):
+        calls = []
+        runner = _SequenceRunner(
+            VerificationCheckStatus.PASS,
+            VerificationCheckStatus.FAIL,
+        )
+        result = create_workflow_graph(
+            architect=lambda _: {"implementation_plan": plan()},
+            developer=lambda _: (
+                calls.append("developer")
+                or {"developer_status": DeveloperStatus.COMPLETED}
+            ),
+            verification_specs=(VerificationSpec("check", ("unused",)),),
+            verification_runner=runner,
+            repair_scope_policy=RepairScopePolicy.COMMITTED_PLAN_FILES,
+        ).compile().invoke({})
+        self.assertEqual(calls, ["developer"])
+        self.assertEqual(result["repair_attempts"], 0)
+        self.assertEqual(result["verification_status"], VerificationStatus.REPAIR_EXHAUSTED)
+        self.assertEqual(result["outcome"], WorkflowOutcome.FAILED)
     def test_baseline_clamps_each_check_to_remaining_run_deadline(self) -> None:
         now = [100.0]
 
