@@ -1,5 +1,6 @@
 """Workspace-bound tree-sitter code inspection tools."""
 
+import hashlib
 from pathlib import Path
 
 from langchain_core.tools import tool
@@ -11,6 +12,13 @@ from agent.tools.results import (
     tool_policy_denial,
     tool_rejection,
     tool_success,
+)
+from agent.tools.read_contract import (
+    MAX_RAW_PAGE_BYTES,
+    content_version,
+    decode_cursor,
+    encode_cursor,
+    tool_failure,
 )
 from agent.workspace import (
     current_workspace_access_policy,
@@ -305,12 +313,34 @@ def get_code_definitions_multi(file_paths: list[str]) -> dict[str, object]:
 
 
 @tool(parse_docstring=True)
-def get_raw_file_content(file_path: str) -> dict[str, object]:
-    """Read one UTF-8 text file from the workspace.
+def get_raw_file_content(
+    file_path: str,
+    start_byte: int = 0,
+    end_byte: int | None = None,
+    cursor: str | None = None,
+) -> dict[str, object]:
+    """Read a bounded UTF-8 byte range with version-bound pagination.
 
     Args:
         file_path: Workspace file, relative or absolute within the workspace.
+        start_byte: Inclusive UTF-8 byte offset for the requested range.
+        end_byte: Exclusive UTF-8 byte offset, or None for end of file.
+        cursor: Continuation from the preceding page; repeat the same range.
     """
+    if (
+        isinstance(start_byte, bool)
+        or not isinstance(start_byte, int)
+        or start_byte < 0
+        or (
+            end_byte is not None
+            and (
+                isinstance(end_byte, bool)
+                or not isinstance(end_byte, int)
+                or end_byte < start_byte
+            )
+        )
+    ):
+        return tool_failure(file_path, "invalid_range", "Byte range is invalid.")
     resolver = default_workspace_resolver()
     early_denial = tool_policy_denial(
         resolver, file_path, current_workspace_access_policy()
@@ -324,12 +354,129 @@ def get_raw_file_content(file_path: str) -> dict[str, object]:
     if denied is not None:
         return denied
     try:
-        content = resolution.path.read_text(encoding="utf-8")
+        current_version = content_version(resolution.path)
+        metadata = resolution.path.stat(follow_symlinks=False)
+        size = metadata.st_size
+        relative = resolution.relative_path or file_path
+        if cursor is None:
+            if start_byte > size or (end_byte is not None and end_byte > size):
+                return tool_failure(
+                    relative, "invalid_range", "Byte range exceeds file size."
+                )
+            offset = start_byte
+            requested_end = end_byte
+        else:
+            token = decode_cursor(cursor, "raw_file")
+            if token is None:
+                return tool_failure(
+                    relative, "invalid_cursor", "Continuation cursor is invalid."
+                )
+            expected_query = {
+                "path": relative,
+                "start_byte": start_byte,
+                "end_byte": end_byte,
+            }
+            actual_query = {
+                key: token.get(key)
+                for key in ("path", "start_byte", "end_byte")
+            }
+            if actual_query != expected_query:
+                return tool_failure(
+                    relative,
+                    "stale_cursor",
+                    "Continuation cursor does not match this read request.",
+                    stale=True,
+                )
+            if token.get("file_version") != current_version:
+                return tool_failure(
+                    relative,
+                    "stale_cursor",
+                    "The file changed after the previous page was read.",
+                    stale=True,
+                )
+            offset = token.get("next_offset")
+            requested_end = end_byte
+            if isinstance(offset, bool) or not isinstance(offset, int):
+                return tool_failure(
+                    relative, "invalid_cursor", "Continuation cursor is invalid."
+                )
+        range_end = size if requested_end is None else requested_end
+        if not 0 <= offset <= range_end <= size:
+            return tool_failure(
+                relative,
+                "stale_cursor",
+                "Continuation cursor range is no longer valid.",
+                stale=True,
+            )
+        page_size = min(MAX_RAW_PAGE_BYTES, range_end - offset)
+        if not has_single_regular_file_link(resolution.path):
+            return tool_access_denied(
+                "read_denied", "Workspace read access is denied for this file."
+            )
+        with resolution.path.open("rb") as source:
+            source.seek(offset)
+            raw = source.read(page_size)
+        next_offset = offset + len(raw)
+        try:
+            content = raw.decode("utf-8")
+        except UnicodeDecodeError as error:
+            if (
+                error.reason == "unexpected end of data"
+                and next_offset < range_end
+                and error.start >= max(0, len(raw) - 3)
+            ):
+                raw = raw[: error.start]
+                next_offset = offset + len(raw)
+                content = raw.decode("utf-8")
+            else:
+                return tool_failure(
+                    relative,
+                    "encoding_error",
+                    "The selected byte range is not valid UTF-8 text.",
+                )
+        after_version = content_version(resolution.path)
+        if after_version != current_version:
+            return tool_failure(
+                relative,
+                "stale_cursor",
+                "The file changed while the page was being read.",
+                stale=True,
+            )
+        has_more = next_offset < range_end
+        continuation = (
+            encode_cursor(
+                "raw_file",
+                {
+                    "path": relative,
+                    "start_byte": start_byte,
+                    "end_byte": end_byte,
+                    "next_offset": next_offset,
+                    "file_version": current_version,
+                },
+            )
+            if has_more
+            else None
+        )
     except UnicodeDecodeError:
         return tool_error(file_path, "encoding_error", "The file is not valid UTF-8.")
     except OSError as error:
         return tool_error(file_path, "read_failed", f"Could not read file: {error}")
-    return tool_success(resolution.relative_path or file_path, content)
+    return {
+        "ok": True,
+        "path": relative,
+        "content": content,
+        "range": {
+            "start_byte": offset,
+            "end_byte": next_offset,
+            "total_bytes": size,
+        },
+        "content_hash": hashlib.sha256(raw).hexdigest(),
+        "content_version": current_version,
+        "truncated": has_more,
+        "warnings": [],
+        "continuation": continuation,
+        "limits": {"max_bytes": MAX_RAW_PAGE_BYTES},
+    }
 
 
 codemap_tools = [

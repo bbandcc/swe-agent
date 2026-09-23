@@ -11,15 +11,16 @@
 ### 当前状态文件基线
 
 - S3.2 production 技术冻结点：`5850b8370c49f868e90aeffe9e6042f85eaa522c`；D1/S1a、D2/S2b 已冻结，D3/S2c Seal blocker 已通过本地验收。
-- S3.2 的配置、身份、SQLite checkpoint、预算边界、start/resume 和现有图接入均保持冻结；D3/S2c 已将单一 JUnit XML 可信报告、稳定 case identity、保守 acceptance policy 和 owned temporary evidence 生命周期接入生产验收链路。D4/S3.2a 已补齐模型请求时限、单次外部尝试边界、普通模型响应结算和部分请求身份范围；D6/S3.3a、S3.3b、S3.3c 与 D7/S3.5a、S3.5b 已完成本地验收。本轮完成 S2d/D3 受控多文件 repair和 S4a/D8 工具消息完整传递：S2d 保持 semantic config schema v7，S4a 建立共享纯 renderer 并保持持久化/预算契约；当前等待 ChatGPT Final Gate，不进入 S4b。
+- S3.2、D1-D7、S2d/D3 与 S4a/D8 的既有契约保持冻结。本轮完成 S4b/D9 有界文本检索与按需读取：search、raw read、workspace tree 使用固定代码上限、共享 ignore 目录和带查询/版本摘要的 continuation；未改变 RunConfig 或 checkpoint 语义，semantic config schema 保持 v7。
 - D2/S2b Final Seal 已收窄 library/CLI 的异常边界；`RunSummary.warnings` 只输出 preflight warning code，unexpected `RuntimeError`、`KeyboardInterrupt` 和 `SystemExit` 不被入口吞掉。
-- 本轮最新 Codex 本地验证：unittest 357 tests OK / 10 skipped；pytest 351 passed / 10 skipped /
+- 本轮最新 Codex 本地验证：unittest 370 tests OK / 10 skipped；pytest 364 passed / 10 skipped /
   190 subtests passed；Python compile、11 个 prompt render、root/start/resume 三套 CLI help、
-  `git diff --check` 均通过。10 个 skip 均为当前 Windows 链接能力或平台边界限制。
+  `git diff --check` 均通过。pytest 有 1 条既有 tree-sitter FutureWarning；10 个 skip 为已有
+  Windows 链接能力或平台边界限制。
 - 没有 GitHub CI 或独立外部测试证据，不作相应声明。
-- 剩余能力：完整 secret-safe state persistence（当前只覆盖 RunConfig 中已知凭据）、verification rerun/replay、S4b 搜索限额、S4c symbol/repo map 仍未实现；D7 policy 只约束使用本 seam 的合作进程和模型可调用工具，不阻止第三方直接写 workspace，也不是 OS sandbox。本轮 EventSink/RunRecord 与 verification artifact 只提供单进程本地 JSONL、结构化记录和有界/脱敏日志，不是完整恢复系统。provider 正向 retry/独立 attempt 语义未实现，当前 durable 只允许单次外部尝试；当前模型 `request_digest` 只代表有界语义输入，身份范围明确为 `PARTIAL`，不能据此安全重放最终 rendered request；exactly-once 不承诺。JUnit XML 是当前唯一可信报告格式，未配置或报告缺失/畸形时保守返回证据不足；多框架 parser registry、扩展 repair、S4b/S4c 均未实现。runner 只改写精确匹配的 `--junitxml/--junit-xml` destination 到 owned temporary output，workspace report_path 保持原 bytes/mtime；owned temp cleanup 失败返回结构化 `EXECUTION_ERROR`。S3.4b 对命令已启动但结果未持久化的恢复默认保守返回 `OUTCOME_UNKNOWN`，当前没有 isolated execution seam，因此不支持自动重跑；pytest 对其它 workspace 文件的副作用仍未提供 recovery。
+- 剩余能力：完整 secret-safe state persistence（当前只覆盖 RunConfig 中已知凭据）、verification rerun/replay、S4c symbol/repo map 仍未实现；D7 policy 只约束使用本 seam 的合作进程和模型可调用工具，不阻止第三方直接写 workspace，也不是 OS sandbox。本轮 EventSink/RunRecord 与 verification artifact 只提供单进程本地 JSONL、结构化记录和有界/脱敏日志，不是完整恢复系统。provider 正向 retry/独立 attempt 语义未实现，当前 durable 只允许单次外部尝试；当前模型 `request_digest` 只代表有界语义输入，身份范围明确为 `PARTIAL`，不能据此安全重放最终 rendered request；exactly-once 不承诺。JUnit XML 是当前唯一可信报告格式，未配置或报告缺失/畸形时保守返回证据不足；多框架 parser registry、扩展 repair、S4c 均未实现。runner 只改写精确匹配的 `--junitxml/--junit-xml` destination 到 owned temporary output，workspace report_path 保持原 bytes/mtime；owned temp cleanup 失败返回结构化 `EXECUTION_ERROR`。S3.4b 对命令已启动但结果未持久化的恢复默认保守返回 `OUTCOME_UNKNOWN`，当前没有 isolated execution seam，因此不支持自动重跑；pytest 对其它 workspace 文件的副作用仍未提供 recovery。S4b raw-read cursor 用文件 stat 元数据摘要识别常规变化，并非全文件快照/强内容锁；tree inventory 最多扫描 4096 项，触及上限会明确标记 truncated，不能续读未扫描后缀。
 - 后续技术切片继续按 MASTER_PLAN §5.2 执行；保留现有 S1/S2/S3 历史编号，不重新开启或重命名 S1。
-- MASTER_PLAN 对应：当前实现事实覆盖 S3.2、D1/S1a、D2/S2b、D3/S2c、D4/S3.2a、D5/S3.4a、D5/S3.4b、D6/S3.3a、S3.3b、S3.3c、D7/S3.5a、S3.5b Final Seal、S2d/D3 受控多文件 repair 和 D8/S4a 工具消息完整传递；没有 GitHub CI 或独立外部测试证据。后续运行控制、轨迹和恢复要求继续按 §5.2 映射执行，本轮不进入 S4b。
+- MASTER_PLAN 对应：当前实现事实覆盖 S3.2、D1/S1a、D2/S2b、D3/S2c、D4/S3.2a、D5/S3.4a、D5/S3.4b、D6/S3.3a、S3.3b、S3.3c、D7/S3.5a、S3.5b Final Seal、S2d/D3 受控多文件 repair、D8/S4a 工具消息完整传递和 D9/S4b 有界读取；没有 GitHub CI 或独立外部测试证据。S4c 仍未实现。
 
 ## 当前文档任务：独立 MASTER PLAN（2026-09-16）
 
@@ -979,3 +980,38 @@ S1/S2/S3.1/S3.2/D3-D7a 测试保持通过。compile、11 个 prompt render、roo
 
 - renderer 只提供上下文完整传递和确定性错误标记，不提供新的 tool replay、消息持久化、搜索限额或 repo map 能力；
   ToolNode 原始状态仍由 LangGraph 管理，工具/仓库/测试结果仍是不可信证据。
+
+## D9/S4b：有界文本检索与按需读取
+
+### 固定范围与公开契约
+
+- 基线：`568d4abb1fe41f9f1ff6dee1d1f279282fb96fed`。保留原工具名、workspace resolver、trusted read policy、
+  symlink/junction/hardlink 边界和 S4a untrusted evidence renderer；不进入 S4c。
+- `search_keyword_in_directory` 支持显式列出的 UTF-8 源码/配置后缀，包括 Python、JavaScript/TypeScript、JSON、
+  YAML、TOML、INI、XML、HTML/CSS、SQL、shell 与 Markdown/text。固定上限为 128 个候选文件、100 条结果、
+  1 MiB 累计扫描字节；单次返回的结果证据也限制在 1 MiB。短查询、二进制、非 UTF-8、访问拒绝、扫描错误以结构化
+  错误或 warnings/skipped_files 返回。
+- search 与 tree 共用 `.git`、依赖目录、缓存和构建产物的 ignore 名称集。protected 名称在 filesystem metadata 读取前排除；
+  文件仍经过现有 resolver 与单硬链接检查。
+- `get_raw_file_content` 用 UTF-8 byte range 分页，每页最多 32 KiB；返回 canonical path、range、page content hash、
+  content-version token、truncated、warnings、continuation。cursor 绑定 path、请求 range 与文件版本摘要；
+  query/version 不匹配返回 `stale_cursor`。
+- `get_files_structure` 固定最大 depth 8、每页 128 项、最多扫描 4096 项；cursor 绑定 canonical directory、depth、
+  page size 和 inventory digest。目录变化或参数变化时拒绝旧 cursor，返回结构化 stale；不会读取文件内容。
+- 这些限制是代码常量，不是 RunConfig/resume 语义；semantic config schema 保持 v7，未修改依赖。
+
+### TDD 验收与当前证据
+
+- [x] 新增公开工具回归覆盖 JS/TS/TOML 与 Unicode、短查询/空结果、二进制/非 UTF-8、ignore 目录、文件/结果/字节上限、
+  超长行、扫描错误、raw byte range、多页 UTF-8 拼接、cursor 参数不匹配、文件变化 stale、tree depth/entry 上限与 stale。
+- [x] workspace boundary、protected-path/hardlink policy、S4a renderer 和 graph integration 回归通过。
+- [x] Codex 本地全量验证：unittest 370 tests OK / 10 skipped；pytest 364 passed / 10 skipped /
+  190 subtests passed；compile、11 prompt render、root/start/resume CLI help、`git diff --check` 通过。
+  pytest 输出 1 条既有 tree-sitter FutureWarning；10 个 skip 是既有 Windows 链接能力或平台边界限制。
+  没有 GitHub CI 或独立外部测试证据。
+
+### 已知边界
+
+- 支持文件类型由后缀白名单定义，不是任意文本探测。search 没有 continuation；达到结果或扫描上限时会标记 truncated。
+- raw cursor 的文件版本使用可移植 stat 元数据摘要，不是全文件快照或强并发锁；每页 `content_hash` 只覆盖返回的 page bytes。
+- tree 最多扫描 4096 项；达到该上限时报告 truncated，未扫描后缀不可继续获取。保护策略与 OS 层隔离边界保持原契约。
