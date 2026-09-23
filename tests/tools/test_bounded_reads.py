@@ -6,6 +6,12 @@ from pathlib import Path
 from unittest.mock import patch
 
 from agent.tools.codemap import get_raw_file_content
+from agent.tools.read_contract import (
+    MAX_CURSOR_CHARS,
+    MAX_SEARCH_BYTES,
+    MAX_SEARCH_FILES,
+    MAX_SEARCH_RESULTS,
+)
 from agent.tools.search import search_keyword_in_directory
 from agent.tools.write import get_files_structure
 
@@ -98,19 +104,34 @@ class BoundedReadToolTests(unittest.TestCase):
         for path in self.root.iterdir():
             path.unlink()
         (self.root / "long.js").write_text(
-            ("needle " + "x" * (limits["max_bytes"] * 3) + "\n") * 8,
+            "needle " + "x" * (limits["max_bytes"] * 2) + "\nneedle later\n",
             encoding="utf-8",
         )
-        by_results = search_keyword_in_directory.invoke(
+        first_page = search_keyword_in_directory.invoke(
             {"directory": ".", "search_term": "needle", "context": 0}
         )
-        self.assertLessEqual(len(by_results["results"]), limits["max_results"])
-        self.assertLessEqual(
-            len(by_results["content"].encode("utf-8")), limits["max_bytes"]
-        )
-        self.assertTrue(by_results["truncated"])
-        self.assertLessEqual(
-            len(by_results["content"].encode("utf-8")), limits["max_bytes"]
+        self._assert_search_page_is_bounded(first_page)
+        self.assertTrue(first_page["truncated"])
+        self.assertIsNotNone(first_page["continuation"])
+
+        pages = [first_page]
+        cursor = first_page["continuation"]
+        while cursor is not None:
+            page = search_keyword_in_directory.invoke(
+                {
+                    "directory": ".",
+                    "search_term": "needle",
+                    "context": 0,
+                    "cursor": cursor,
+                }
+            )
+            self._assert_search_page_is_bounded(page)
+            pages.append(page)
+            cursor = page["continuation"]
+            self.assertLessEqual(len(pages), 4)
+        self.assertEqual(
+            [item["match_line"] for page in pages for item in page["results"]],
+            [1, 2],
         )
 
     def test_search_result_cap_and_long_line_are_bounded(self) -> None:
@@ -153,6 +174,242 @@ class BoundedReadToolTests(unittest.TestCase):
 
         self.assertFalse(result["ok"])
         self.assertEqual(result["error_code"], "scan_failed")
+
+    def test_search_result_cap_continuation_has_no_duplicates_or_gaps(self) -> None:
+        expected = set()
+        for index in range(MAX_SEARCH_RESULTS + 5):
+            name = f"match-{index:03}.ts"
+            expected.add(name)
+            (self.root / name).write_text("needle\n", encoding="utf-8")
+
+        pages = []
+        cursor = None
+        while True:
+            page = search_keyword_in_directory.invoke(
+                {
+                    "directory": ".",
+                    "search_term": "needle",
+                    "context": 0,
+                    "cursor": cursor,
+                }
+            )
+            self._assert_search_page_is_bounded(page)
+            pages.append(page)
+            cursor = page["continuation"]
+            if cursor is None:
+                break
+            self.assertTrue(page["truncated"])
+            self.assertLessEqual(len(pages), 3)
+
+        found = [item["path"] for page in pages for item in page["results"]]
+        self.assertEqual(set(found), expected)
+        self.assertEqual(len(found), len(expected))
+        self.assertFalse(pages[-1]["truncated"])
+        self.assertIsNone(pages[-1]["continuation"])
+
+    def test_search_file_cap_continuation_reaches_later_files(self) -> None:
+        for index in range(MAX_SEARCH_FILES):
+            (self.root / f"a-{index:03}.py").write_text(
+                "no matching term\n", encoding="utf-8"
+            )
+        expected = {"z-after-limit-1.py", "z-after-limit-2.py"}
+        for name in expected:
+            (self.root / name).write_text("needle\n", encoding="utf-8")
+
+        first = search_keyword_in_directory.invoke(
+            {"directory": ".", "search_term": "needle", "context": 0}
+        )
+        self._assert_search_page_is_bounded(first)
+        self.assertEqual(first["files_considered"], MAX_SEARCH_FILES)
+        self.assertTrue(first["truncated"])
+        self.assertIsNotNone(first["continuation"])
+
+        second = search_keyword_in_directory.invoke(
+            {
+                "directory": ".",
+                "search_term": "needle",
+                "context": 0,
+                "cursor": first["continuation"],
+            }
+        )
+        self._assert_search_page_is_bounded(second)
+        self.assertEqual({item["path"] for item in second["results"]}, expected)
+        self.assertFalse(second["truncated"])
+        self.assertIsNone(second["continuation"])
+
+    def test_search_byte_and_long_line_caps_continue_with_later_evidence(self) -> None:
+        suffix = "\nneedle later\n"
+        target_size = MAX_SEARCH_BYTES - 64
+        first_line_size = target_size - len(suffix.encode("utf-8")) - 1
+        content = "needle" + "x" * (first_line_size - len("needle")) + suffix
+        self.assertLessEqual(len(content.encode("utf-8")), MAX_SEARCH_BYTES)
+        (self.root / "long.py").write_text(content, encoding="utf-8")
+
+        first = search_keyword_in_directory.invoke(
+            {"directory": ".", "search_term": "needle", "context": 0}
+        )
+        self._assert_search_page_is_bounded(first)
+        self.assertEqual(len(first["results"]), 1)
+        self.assertTrue(first["truncated"])
+        self.assertIsNotNone(first["continuation"])
+
+        second = search_keyword_in_directory.invoke(
+            {
+                "directory": ".",
+                "search_term": "needle",
+                "context": 0,
+                "cursor": first["continuation"],
+            }
+        )
+        self._assert_search_page_is_bounded(second)
+        self.assertEqual(len(second["results"]), 1)
+        self.assertEqual(second["results"][0]["match_line"], 2)
+        self.assertFalse(second["truncated"])
+        self.assertIsNone(second["continuation"])
+
+    def test_search_scanned_byte_cap_continues_at_deferred_file(self) -> None:
+        first_size = MAX_SEARCH_BYTES * 3 // 5
+        first_content = "needle\n" + "x" * (first_size - len("needle\n"))
+        second_content = "y" * (first_size - len("\nneedle\n")) + "\nneedle\n"
+        (self.root / "a-first.py").write_text(first_content, encoding="utf-8")
+        (self.root / "b-second.py").write_text(second_content, encoding="utf-8")
+
+        first = search_keyword_in_directory.invoke(
+            {"directory": ".", "search_term": "needle", "context": 0}
+        )
+
+        self._assert_search_page_is_bounded(first)
+        self.assertEqual([item["path"] for item in first["results"]], ["a-first.py"])
+        self.assertTrue(first["truncated"])
+        self.assertIsNotNone(first["continuation"])
+
+        second = search_keyword_in_directory.invoke(
+            {
+                "directory": ".",
+                "search_term": "needle",
+                "context": 0,
+                "cursor": first["continuation"],
+            }
+        )
+
+        self._assert_search_page_is_bounded(second)
+        self.assertEqual([item["path"] for item in second["results"]], ["b-second.py"])
+        self.assertFalse(second["truncated"])
+        self.assertIsNone(second["continuation"])
+
+    def test_search_chunk_cursor_preserves_utf8_match_across_byte_boundary(self) -> None:
+        target = self.root / "unicode-long-line.js"
+        target.write_text(
+            "x" * (MAX_SEARCH_BYTES - 1) + "雪needle later\n", encoding="utf-8"
+        )
+
+        first = search_keyword_in_directory.invoke(
+            {
+                "directory": ".",
+                "search_term": "雪needle",
+                "context": 0,
+            }
+        )
+
+        self._assert_search_page_is_bounded(first)
+        self.assertEqual(first["results"], [])
+        self.assertTrue(first["truncated"])
+        self.assertIsNotNone(first["continuation"])
+
+        second = search_keyword_in_directory.invoke(
+            {
+                "directory": ".",
+                "search_term": "雪needle",
+                "context": 0,
+                "cursor": first["continuation"],
+            }
+        )
+
+        self._assert_search_page_is_bounded(second)
+        self.assertEqual(len(second["results"]), 1)
+        self.assertEqual(second["results"][0]["match_line"], 1)
+        self.assertEqual(second["results"][0]["content_hash_scope"], "scanned_segment")
+
+    def test_search_cursor_rejects_changed_query_or_context(self) -> None:
+        for index in range(MAX_SEARCH_RESULTS + 1):
+            (self.root / f"f-{index:03}.ts").write_text(
+                "needle other\n", encoding="utf-8"
+            )
+        first = search_keyword_in_directory.invoke(
+            {"directory": ".", "search_term": "needle", "context": 0}
+        )
+        self.assertIsNotNone(first["continuation"])
+        (self.root / "other").mkdir()
+
+        for directory, query in (
+            (".", {"search_term": "other", "context": 0}),
+            (".", {"search_term": "needle", "context": 1}),
+            ("other", {"search_term": "needle", "context": 0}),
+        ):
+            stale = search_keyword_in_directory.invoke(
+                {
+                    "directory": directory,
+                    **query,
+                    "cursor": first["continuation"],
+                }
+            )
+            self.assertFalse(stale["ok"])
+            self.assertEqual(stale["error_code"], "stale_cursor")
+            self.assertTrue(stale["stale"])
+
+    def test_search_cursor_rejects_changed_page_evidence(self) -> None:
+        for index in range(MAX_SEARCH_RESULTS + 1):
+            (self.root / f"f-{index:03}.ts").write_text(
+                "needle\n", encoding="utf-8"
+            )
+        first = search_keyword_in_directory.invoke(
+            {"directory": ".", "search_term": "needle", "context": 0}
+        )
+        self.assertIsNotNone(first["continuation"])
+        (self.root / "f-000.ts").write_text("changed\n", encoding="utf-8")
+
+        stale = search_keyword_in_directory.invoke(
+            {
+                "directory": ".",
+                "search_term": "needle",
+                "context": 0,
+                "cursor": first["continuation"],
+            }
+        )
+
+        self.assertFalse(stale["ok"])
+        self.assertEqual(stale["error_code"], "stale_cursor")
+        self.assertTrue(stale["stale"])
+
+        (self.root / "f-000.ts").write_text("needle\n", encoding="utf-8")
+        next_page = search_keyword_in_directory.invoke(
+            {"directory": ".", "search_term": "needle", "context": 0}
+        )
+        (self.root / "z-new.ts").write_text("needle\n", encoding="utf-8")
+        stale_directory = search_keyword_in_directory.invoke(
+            {
+                "directory": ".",
+                "search_term": "needle",
+                "context": 0,
+                "cursor": next_page["continuation"],
+            }
+        )
+        self.assertFalse(stale_directory["ok"])
+        self.assertEqual(stale_directory["error_code"], "stale_cursor")
+
+    def _assert_search_page_is_bounded(self, page: dict[str, object]) -> None:
+        self.assertTrue(page["ok"], page)
+        limits = page["limits"]
+        self.assertLessEqual(page["files_considered"], limits["max_files"])
+        self.assertLessEqual(page["files_scanned"], limits["max_files"])
+        self.assertLessEqual(len(page["results"]), limits["max_results"])
+        self.assertLessEqual(page["scanned_bytes"], limits["max_bytes"])
+        self.assertLessEqual(page["evidence_bytes"], limits["max_bytes"])
+        self.assertLessEqual(
+            len(page["content"].encode("utf-8")), limits["max_bytes"]
+        )
+        if page["continuation"] is not None:
+            self.assertLessEqual(len(page["continuation"]), MAX_CURSOR_CHARS)
 
     def test_raw_read_paginates_utf8_with_content_hash_and_bound_cursor(self) -> None:
         content = ("alpha 雪\n" * 20_000).encode("utf-8")

@@ -11,11 +11,11 @@
 ### 当前状态文件基线
 
 - S3.2 production 技术冻结点：`5850b8370c49f868e90aeffe9e6042f85eaa522c`；D1/S1a、D2/S2b 已冻结，D3/S2c Seal blocker 已通过本地验收。
-- S3.2、D1-D7、S2d/D3 与 S4a/D8 的既有契约保持冻结。本轮完成 S4b/D9 有界文本检索与按需读取：search、raw read、workspace tree 使用固定代码上限、共享 ignore 目录和带查询/版本摘要的 continuation；未改变 RunConfig 或 checkpoint 语义，semantic config schema 保持 v7。
+- S3.2、D1-D7、S2d/D3 与 S4a/D8 的既有契约保持冻结。本轮完成 S4b/D9 Final Seal：search、raw read、workspace tree 使用固定代码上限；三者的 continuation 均绑定查询及各自版本/位置证据。search 每页最多处理 128 个候选文件、返回 100 条结果并读取/输出不超过 1 MiB，不缓存整次搜索结果；未改变 RunConfig 或 checkpoint 语义，semantic config schema 保持 v7。ChatGPT Final Gate 尚待审核。
 - D2/S2b Final Seal 已收窄 library/CLI 的异常边界；`RunSummary.warnings` 只输出 preflight warning code，unexpected `RuntimeError`、`KeyboardInterrupt` 和 `SystemExit` 不被入口吞掉。
-- 本轮最新 Codex 本地验证：unittest 370 tests OK / 10 skipped；pytest 364 passed / 10 skipped /
-  190 subtests passed；Python compile、11 个 prompt render、root/start/resume 三套 CLI help、
-  `git diff --check` 均通过。pytest 有 1 条既有 tree-sitter FutureWarning；10 个 skip 为已有
+- 本轮最新 Codex 本地验证：unittest 377 tests OK / 10 skipped；pytest 371 passed / 10 skipped；
+  Python compile、11 个 prompt render、root/start/resume 三套 CLI help、`git diff --check` 均通过。
+  pytest 有 1 条既有 tree-sitter FutureWarning；10 个 skip 为已有
   Windows 链接能力或平台边界限制。
 - 没有 GitHub CI 或独立外部测试证据，不作相应声明。
 - 剩余能力：完整 secret-safe state persistence（当前只覆盖 RunConfig 中已知凭据）、verification rerun/replay、S4c symbol/repo map 仍未实现；D7 policy 只约束使用本 seam 的合作进程和模型可调用工具，不阻止第三方直接写 workspace，也不是 OS sandbox。本轮 EventSink/RunRecord 与 verification artifact 只提供单进程本地 JSONL、结构化记录和有界/脱敏日志，不是完整恢复系统。provider 正向 retry/独立 attempt 语义未实现，当前 durable 只允许单次外部尝试；当前模型 `request_digest` 只代表有界语义输入，身份范围明确为 `PARTIAL`，不能据此安全重放最终 rendered request；exactly-once 不承诺。JUnit XML 是当前唯一可信报告格式，未配置或报告缺失/畸形时保守返回证据不足；多框架 parser registry、扩展 repair、S4c 均未实现。runner 只改写精确匹配的 `--junitxml/--junit-xml` destination 到 owned temporary output，workspace report_path 保持原 bytes/mtime；owned temp cleanup 失败返回结构化 `EXECUTION_ERROR`。S3.4b 对命令已启动但结果未持久化的恢复默认保守返回 `OUTCOME_UNKNOWN`，当前没有 isolated execution seam，因此不支持自动重跑；pytest 对其它 workspace 文件的副作用仍未提供 recovery。S4b raw-read cursor 用文件 stat 元数据摘要识别常规变化，并非全文件快照/强内容锁；tree inventory 最多扫描 4096 项，触及上限会明确标记 truncated，不能续读未扫描后缀。
@@ -993,6 +993,11 @@ S1/S2/S3.1/S3.2/D3-D7a 测试保持通过。compile、11 个 prompt render、roo
   错误或 warnings/skipped_files 返回。
 - search 与 tree 共用 `.git`、依赖目录、缓存和构建产物的 ignore 名称集。protected 名称在 filesystem metadata 读取前排除；
   文件仍经过现有 resolver 与单硬链接检查。
+- `search_keyword_in_directory` continuation 绑定 canonical directory、search term、context、确定性搜索版本、候选文件序号/行号及
+  本页文件/目录 stat evidence；大文件按有界字节窗口继续读取，游标只保存 byte offset/line 状态，不保存源码片段。查询选项不匹配或
+  游标携带的 evidence 变化时返回 `stale_cursor`。每页分别受 128 候选文件、100 结果、1 MiB 扫描字节与 1 MiB 返回 evidence 上限约束；
+  正常续读不重复/遗漏下一段，耗尽后 `truncated=false` 且 continuation 为空。常规文件结果的 `content_hash_scope=file`；大文件分段结果
+  使用 `content_hash_scope=scanned_segment`，只摘要匹配所在扫描片段。
 - `get_raw_file_content` 用 UTF-8 byte range 分页，每页最多 32 KiB；返回 canonical path、range、page content hash、
   content-version token、truncated、warnings、continuation。cursor 绑定 path、请求 range 与文件版本摘要；
   query/version 不匹配返回 `stale_cursor`。
@@ -1003,15 +1008,16 @@ S1/S2/S3.1/S3.2/D3-D7a 测试保持通过。compile、11 个 prompt render、roo
 ### TDD 验收与当前证据
 
 - [x] 新增公开工具回归覆盖 JS/TS/TOML 与 Unicode、短查询/空结果、二进制/非 UTF-8、ignore 目录、文件/结果/字节上限、
-  超长行、扫描错误、raw byte range、多页 UTF-8 拼接、cursor 参数不匹配、文件变化 stale、tree depth/entry 上限与 stale。
+  超长行/扫描字节预算续读、结果上限和文件上限续读无重复遗漏、每页硬上限、search cursor query/context/directory/evidence stale、
+  扫描错误、raw byte range、多页 UTF-8 拼接、tree depth/entry 上限与 stale。
 - [x] workspace boundary、protected-path/hardlink policy、S4a renderer 和 graph integration 回归通过。
-- [x] Codex 本地全量验证：unittest 370 tests OK / 10 skipped；pytest 364 passed / 10 skipped /
-  190 subtests passed；compile、11 prompt render、root/start/resume CLI help、`git diff --check` 通过。
+- [x] Codex 本地全量验证：unittest 377 tests OK / 10 skipped；pytest 371 passed / 10 skipped；
+  compile、11 prompt render、root/start/resume CLI help、`git diff --check` 通过。
   pytest 输出 1 条既有 tree-sitter FutureWarning；10 个 skip 是既有 Windows 链接能力或平台边界限制。
   没有 GitHub CI 或独立外部测试证据。
 
 ### 已知边界
 
-- 支持文件类型由后缀白名单定义，不是任意文本探测。search 没有 continuation；达到结果或扫描上限时会标记 truncated。
+- 支持文件类型由后缀白名单定义，不是任意文本探测。search continuation 是无状态位置游标，不缓存全量结果；每次调用会确定性重走目录项前缀以定位候选序号，实际读取/处理的候选文件、扫描字节、结果数和返回 evidence 仍受每页硬上限约束。游标校验其携带的本页文件/目录 stat evidence，不是整个 workspace 的强快照。跨页大文件的单条结果以 `content_hash_scope=scanned_segment` 标明摘要只覆盖匹配所在扫描片段；该路径无法提供跨页上下文行时会返回 `chunked_file_context_limited` warning。
 - raw cursor 的文件版本使用可移植 stat 元数据摘要，不是全文件快照或强并发锁；每页 `content_hash` 只覆盖返回的 page bytes。
 - tree 最多扫描 4096 项；达到该上限时报告 truncated，未扫描后缀不可继续获取。保护策略与 OS 层隔离边界保持原契约。

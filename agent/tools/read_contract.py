@@ -11,6 +11,7 @@ MAX_SEARCH_FILES = 128
 MAX_SEARCH_RESULTS = 100
 MAX_SEARCH_BYTES = 1_048_576
 MAX_SEARCH_TERM_CHARS = 256
+MAX_CURSOR_CHARS = 131_072
 MAX_RAW_PAGE_BYTES = 32_768
 MAX_TREE_DEPTH = 8
 MAX_TREE_ENTRIES = 128
@@ -52,7 +53,7 @@ def encode_cursor(kind: str, values: Mapping[str, Any]) -> str:
 
 
 def decode_cursor(value: str, expected_kind: str) -> dict[str, Any] | None:
-    if not isinstance(value, str) or not value or len(value) > 16_384:
+    if not isinstance(value, str) or not value or len(value) > MAX_CURSOR_CHARS:
         return None
     try:
         encoded_part, checksum = value.split(".", 1)
@@ -116,6 +117,7 @@ def stable_digest(value: Any) -> str:
 
 __all__ = [
     "MAX_RAW_PAGE_BYTES",
+    "MAX_CURSOR_CHARS",
     "MAX_SEARCH_BYTES",
     "MAX_SEARCH_FILES",
     "MAX_SEARCH_RESULTS",

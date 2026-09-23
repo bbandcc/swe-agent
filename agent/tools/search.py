@@ -3,6 +3,7 @@
 import hashlib
 import json
 import os
+from collections.abc import Iterator
 from dataclasses import dataclass
 from pathlib import Path
 
@@ -15,10 +16,14 @@ from agent.tools.read_contract import (
     MAX_SEARCH_RESULTS,
     MAX_SEARCH_TERM_CHARS,
     clip_utf8,
+    content_version,
+    encode_cursor,
     stable_digest,
     tool_failure,
 )
 from agent.tools.results import tool_access_denied, tool_policy_denial, tool_rejection
+from agent.tools.search_cursor import parse_search_cursor, search_cursor_version
+from agent.tools.search_stream import search_chunked_file_page
 from agent.workspace import (
     WorkspaceAccessPolicy,
     WorkspacePathResolver,
@@ -49,6 +54,7 @@ class _DirectorySearchResult:
     skipped_files: list[str]
     truncated: bool
     evidence_bytes: int
+    continuation: str | None
 
 
 def _is_link_or_junction(path: Path) -> bool:
@@ -83,15 +89,17 @@ def _search_in_text(
     raw: bytes,
     search_term: str,
     context: int,
-) -> list[tuple[dict[str, object], str]]:
+    *,
+    start_line: int = 0,
+) -> Iterator[tuple[dict[str, object], str, int]]:
     text = raw.decode("utf-8-sig")
     if "\x00" in text:
         raise ValueError("binary")
     lines = text.splitlines()
     needle = search_term.casefold()
     digest = hashlib.sha256(raw).hexdigest()
-    matches: list[tuple[dict[str, object], str]] = []
-    for index, line in enumerate(lines):
+    for index in range(start_line, len(lines)):
+        line = lines[index]
         if needle not in line.casefold():
             continue
         first = max(0, index - context)
@@ -105,6 +113,7 @@ def _search_in_text(
             "range": {"start_line": first + 1, "end_line": last},
             "match_line": index + 1,
             "content_hash": digest,
+            "snippet_truncated": False,
         }
         display = (
             f"File: {path}\nMatch found at line: {index + 1}\n"
@@ -112,8 +121,7 @@ def _search_in_text(
             + "\n"
             + ("-" * 50)
         )
-        matches.append((metadata, display))
-    return matches
+        yield metadata, display, index
 
 
 def _search_directory(
@@ -124,21 +132,87 @@ def _search_directory(
     *,
     workspace_root: Path,
     access_policy: WorkspaceAccessPolicy | None,
+    relative_directory: str,
+    cursor_state: dict[str, object] | None,
 ) -> _DirectorySearchResult:
     results: list[dict[str, object]] = []
     rendered: list[str] = []
     warnings: list[str] = []
     skipped_files: list[str] = []
     hashes: list[tuple[str, str]] = []
+    file_evidence: dict[str, str] = {}
+    directory_evidence: dict[str, str] = {}
     scanned_bytes = 0
     files_scanned = 0
     files_considered = 0
-    truncated = False
     scan_errors: list[OSError] = []
-    stop = False
+    paused_at: tuple[int, int, Path] | None = None
+    paused_path: str | None = None
+    paused_file_state: dict[str, object] | None = None
+    start_candidate_index = (
+        int(cursor_state["next_candidate_index"])
+        if cursor_state is not None
+        else 0
+    )
+    start_line = int(cursor_state["next_line"]) if cursor_state is not None else 0
+    start_file_offset = (
+        cursor_state.get("next_file_offset") if cursor_state is not None else None
+    )
+    start_line_number = (
+        int(cursor_state["next_line_number"]) if cursor_state is not None else 1
+    )
+    start_line_open = (
+        bool(cursor_state["line_open"]) if cursor_state is not None else False
+    )
+    start_line_reported = (
+        bool(cursor_state["line_reported"]) if cursor_state is not None else False
+    )
+    candidate_index = 0
 
     def on_walk_error(error: OSError) -> None:
         scan_errors.append(error)
+
+    def record_directory_evidence(path: Path) -> None:
+        resolution = resolver.resolve_directory(str(path))
+        if not resolution.ok or resolution.path is None:
+            return
+        relative = resolution.relative_path or "."
+        try:
+            directory_evidence[relative] = content_version(resolution.path)
+        except OSError:
+            return
+
+    def append_result(metadata: dict[str, object], display: str) -> bool:
+        if len(results) >= MAX_SEARCH_RESULTS:
+            return False
+        candidate_results = results + [metadata]
+        metadata_size = len(
+            json.dumps(
+                candidate_results,
+                ensure_ascii=False,
+                sort_keys=True,
+                separators=(",", ":"),
+            ).encode("utf-8")
+        )
+        existing_rendered_size = sum(
+            len(item.encode("utf-8")) for item in rendered
+        ) + max(0, len(rendered) - 1)
+        remaining_output = (
+            MAX_SEARCH_BYTES
+            - metadata_size
+            - existing_rendered_size
+            - (1 if rendered else 0)
+        )
+        if remaining_output <= 0:
+            warnings.append("result_byte_limit_reached")
+            return False
+        clipped, was_clipped = clip_utf8(display, remaining_output)
+        if was_clipped:
+            metadata["snippet_truncated"] = True
+            warnings.append("result_snippet_truncated")
+        results.append(metadata)
+        rendered.append(clipped)
+        return True
 
     try:
         walker = os.walk(
@@ -162,12 +236,21 @@ def _search_directory(
                     continue
                 if not _is_supported(candidate):
                     continue
-                if files_considered >= MAX_SEARCH_FILES:
-                    warnings.append("file_limit_reached")
-                    truncated = True
-                    stop = True
+                current_index = candidate_index
+                candidate_index += 1
+                if current_index < start_candidate_index:
+                    continue
+                if (
+                    files_considered >= MAX_SEARCH_FILES
+                    or len(results) >= MAX_SEARCH_RESULTS
+                    or scanned_bytes >= MAX_SEARCH_BYTES
+                ):
+                    record_directory_evidence(root_path)
+                    paused_at = (current_index, 0, root_path)
+                    paused_path = candidate.relative_to(workspace_root).as_posix()
                     break
                 files_considered += 1
+                record_directory_evidence(root_path)
                 if _is_link_or_junction(candidate):
                     continue
                 resolution = resolver.resolve_file(str(candidate))
@@ -181,42 +264,113 @@ def _search_directory(
                 if not has_single_regular_file_link(resolution.path):
                     warnings.append("Skipped a file denied by workspace link policy.")
                     continue
+                relative = resolution.relative_path or candidate.name
+                result_start = len(results)
+                rendered_start = len(rendered)
+                hash_start = len(hashes)
+                warning_start = len(warnings)
                 try:
-                    before = resolution.path.stat(follow_symlinks=False)
-                    size = before.st_size
-                    remaining = MAX_SEARCH_BYTES - scanned_bytes
-                    if size > remaining:
-                        skipped_files.append(resolution.relative_path or candidate.name)
-                        warnings.append("Skipped a file because the byte limit was reached.")
-                        truncated = True
+                    before_version = content_version(resolution.path)
+                    size = resolution.path.stat(follow_symlinks=False).st_size
+                    file_evidence[relative] = before_version
+                    resumed_file = (
+                        current_index == start_candidate_index
+                        and isinstance(start_file_offset, int)
+                    )
+                    if resumed_file or size > MAX_SEARCH_BYTES - scanned_bytes:
+                        offset = int(start_file_offset) if resumed_file else 0
+                        if offset > size:
+                            skipped_files.append(relative)
+                            warnings.append("stale_cursor")
+                            continue
+                        page = search_chunked_file_page(
+                            relative,
+                            resolution.path,
+                            search_term,
+                            file_size=size,
+                            file_offset=offset,
+                            line_number=(start_line_number if resumed_file else 1),
+                            line_open=(start_line_open if resumed_file else False),
+                            line_reported=(start_line_reported if resumed_file else False),
+                            byte_budget=MAX_SEARCH_BYTES - scanned_bytes,
+                            on_match=append_result,
+                        )
+                        scanned_bytes += page.scanned_bytes
+                        files_scanned += 1
+                        after_version = content_version(resolution.path)
+                        if before_version != after_version:
+                            del results[result_start:]
+                            del rendered[rendered_start:]
+                            del hashes[hash_start:]
+                            del warnings[warning_start:]
+                            file_evidence.pop(relative, None)
+                            skipped_files.append(relative)
+                            warnings.append("Skipped a file that changed while it was read.")
+                            continue
+                        hashes.append((relative, page.content_hash))
+                        file_evidence[relative] = after_version
+                        if context and len(results) > result_start:
+                            warnings.append("chunked_file_context_limited")
+                        if not page.complete:
+                            paused_at = (current_index, 0, root_path)
+                            paused_path = relative
+                            paused_file_state = {
+                                "next_file_offset": page.next_offset,
+                                "next_line_number": page.next_line_number,
+                                "line_open": page.line_open,
+                                "line_reported": page.line_reported,
+                            }
+                            break
                         continue
+
                     with resolution.path.open("rb") as source:
                         raw = source.read(size)
-                    after = resolution.path.stat(follow_symlinks=False)
-                    if len(raw) != size or (
-                        before.st_size != after.st_size
-                        or before.st_mtime_ns != after.st_mtime_ns
-                    ):
+                    after_version = content_version(resolution.path)
+                    scanned_bytes += len(raw)
+                    if len(raw) != size or before_version != after_version:
+                        file_evidence.pop(relative, None)
                         skipped_files.append(resolution.relative_path or candidate.name)
                         warnings.append("Skipped a file that changed while it was read.")
                         continue
-                    scanned_bytes += len(raw)
                     files_scanned += 1
                     if b"\x00" in raw:
                         raise ValueError("binary")
-                    relative = resolution.relative_path or candidate.name
                     file_hash = hashlib.sha256(raw).hexdigest()
                     hashes.append((relative, file_hash))
-                    matches = _search_in_text(
-                        relative, raw, search_term, context
+                    line_offset = (
+                        start_line if current_index == start_candidate_index else 0
                     )
+                    for metadata, display, line_index in _search_in_text(
+                        relative,
+                        raw,
+                        search_term,
+                        context,
+                        start_line=line_offset,
+                    ):
+                        metadata["content_hash_scope"] = "file"
+                        if not append_result(metadata, display):
+                            paused_at = (current_index, line_index, root_path)
+                            paused_path = relative
+                            break
+                        if metadata["snippet_truncated"]:
+                            paused_at = (current_index, line_index + 1, root_path)
+                            paused_path = relative
+                            break
                 except UnicodeError:
+                    del results[result_start:]
+                    del rendered[rendered_start:]
+                    del hashes[hash_start:]
+                    del warnings[warning_start:]
                     skipped_files.append(resolution.relative_path or candidate.name)
                     warnings.append(
                         f"Skipped {resolution.relative_path or candidate.name}: invalid_utf8"
                     )
                     continue
                 except ValueError as error:
+                    del results[result_start:]
+                    del rendered[rendered_start:]
+                    del hashes[hash_start:]
+                    del warnings[warning_start:]
                     if str(error) != "binary":
                         raise
                     skipped_files.append(resolution.relative_path or candidate.name)
@@ -225,54 +379,19 @@ def _search_directory(
                     )
                     continue
                 except OSError as error:
+                    del results[result_start:]
+                    del rendered[rendered_start:]
+                    del hashes[hash_start:]
+                    del warnings[warning_start:]
+                    file_evidence.pop(relative, None)
                     skipped_files.append(resolution.relative_path or candidate.name)
                     warnings.append(
                         f"Skipped {resolution.relative_path or candidate.name}: {type(error).__name__}"
                     )
                     continue
-
-                for metadata, display in matches:
-                    if len(results) >= MAX_SEARCH_RESULTS:
-                        warnings.append("result_limit_reached")
-                        truncated = True
-                        stop = True
-                        break
-                    candidate_results = results + [metadata]
-                    metadata_size = len(
-                        json.dumps(
-                            candidate_results,
-                            ensure_ascii=False,
-                            sort_keys=True,
-                            separators=(",", ":"),
-                        ).encode("utf-8")
-                    )
-                    existing_rendered_size = sum(
-                        len(item.encode("utf-8")) for item in rendered
-                    ) + max(0, len(rendered) - 1)
-                    separator_size = 1 if rendered else 0
-                    remaining_output = (
-                        MAX_SEARCH_BYTES
-                        - metadata_size
-                        - existing_rendered_size
-                        - separator_size
-                    )
-                    if remaining_output <= 0:
-                        warnings.append("byte_limit_reached")
-                        truncated = True
-                        stop = True
-                        break
-                    clipped, was_clipped = clip_utf8(display, remaining_output)
-                    if was_clipped:
-                        warnings.append("result_snippet_truncated")
-                        truncated = True
-                    results.append(metadata)
-                    rendered.append(clipped)
-                    if was_clipped:
-                        stop = True
-                        break
-                if stop:
+                if paused_at is not None:
                     break
-            if stop:
+            if paused_at is not None:
                 break
     except OSError:
         return _DirectorySearchResult(
@@ -284,17 +403,18 @@ def _search_directory(
             files_considered=files_considered,
             warnings=["directory_scan_failed"],
             skipped_files=skipped_files,
-            truncated=True,
+            truncated=False,
             evidence_bytes=0,
+            continuation=None,
         )
 
     if scan_errors:
         for error in scan_errors:
             warnings.append(f"directory_scan_error:{type(error).__name__}")
-        truncated = True
     content = "\n".join(rendered) if rendered else "No matches found."
     content, clipped = clip_utf8(content, MAX_SEARCH_BYTES)
-    truncated = truncated or clipped
+    if clipped and paused_at is None:
+        warnings.append("result_content_truncated")
     evidence_bytes = len(
         json.dumps(
             results,
@@ -303,6 +423,44 @@ def _search_directory(
             separators=(",", ":"),
         ).encode("utf-8")
     ) + len(content.encode("utf-8"))
+    continuation = None
+    if paused_at is not None:
+        next_index, next_line, parent = paused_at
+        record_directory_evidence(parent)
+        file_evidence_items = sorted(file_evidence.items())
+        directory_evidence_items = sorted(directory_evidence.items())
+        cursor_values: dict[str, object] = {
+            "directory": relative_directory,
+            "search_term": search_term,
+            "context": context,
+            "next_candidate_index": next_index,
+            "next_line": next_line,
+            "next_file_path": paused_path,
+            "next_file_offset": (
+                paused_file_state.get("next_file_offset")
+                if paused_file_state is not None
+                else None
+            ),
+            "next_line_number": (
+                paused_file_state.get("next_line_number", 1)
+                if paused_file_state is not None
+                else 1
+            ),
+            "line_open": (
+                paused_file_state.get("line_open", False)
+                if paused_file_state is not None
+                else False
+            ),
+            "line_reported": (
+                paused_file_state.get("line_reported", False)
+                if paused_file_state is not None
+                else False
+            ),
+            "file_evidence": file_evidence_items,
+            "directory_evidence": directory_evidence_items,
+        }
+        cursor_values["search_version"] = search_cursor_version(cursor_values)
+        continuation = encode_cursor("workspace_search", cursor_values)
     return _DirectorySearchResult(
         results=results,
         content=content,
@@ -312,14 +470,18 @@ def _search_directory(
         files_considered=files_considered,
         warnings=warnings,
         skipped_files=skipped_files,
-        truncated=truncated,
+        truncated=continuation is not None,
         evidence_bytes=evidence_bytes,
+        continuation=continuation,
     )
 
 
 @tool(parse_docstring=True)
 def search_keyword_in_directory(
-    directory: str, search_term: str, context: int = 2
+    directory: str,
+    search_term: str,
+    context: int = 2,
+    cursor: str | None = None,
 ) -> dict[str, object]:
     """Search bounded UTF-8 source/config files for a literal keyword.
 
@@ -327,14 +489,23 @@ def search_keyword_in_directory(
         directory: Workspace directory, relative or absolute within the workspace.
         search_term: Literal term to find; it must contain at least 3 characters.
         context: Number of surrounding lines, between 0 and 20.
+        cursor: Continuation from the previous page for this exact query.
     """
-    if len(search_term) < 3 or len(search_term) > MAX_SEARCH_TERM_CHARS:
+    if (
+        not isinstance(search_term, str)
+        or len(search_term) < 3
+        or len(search_term) > MAX_SEARCH_TERM_CHARS
+    ):
         return tool_failure(
             directory,
             "invalid_request",
             f"search_term must contain between 3 and {MAX_SEARCH_TERM_CHARS} characters.",
         )
-    if not 0 <= context <= 20:
+    if (
+        isinstance(context, bool)
+        or not isinstance(context, int)
+        or not 0 <= context <= 20
+    ):
         return tool_failure(
             directory,
             "invalid_request",
@@ -358,6 +529,27 @@ def search_keyword_in_directory(
     workspace_root = resolver.resolve_directory(".")
     if not workspace_root.ok or workspace_root.path is None:
         return tool_rejection(workspace_root)
+    cursor_state = None
+    if cursor is not None:
+        if not isinstance(cursor, str):
+            return tool_failure(
+                relative, "invalid_cursor", "Continuation cursor is invalid."
+            )
+        cursor_state, cursor_error = parse_search_cursor(
+            cursor,
+            directory=relative,
+            search_term=search_term,
+            context=context,
+            resolver=resolver,
+            access_policy=policy,
+        )
+        if cursor_error is not None:
+            return tool_failure(
+                relative,
+                cursor_error,
+                "Continuation cursor is invalid or stale.",
+                stale=cursor_error == "stale_cursor",
+            )
     result = _search_directory(
         resolver,
         resolution.path,
@@ -365,6 +557,8 @@ def search_keyword_in_directory(
         context,
         workspace_root=workspace_root.path,
         access_policy=policy,
+        relative_directory=relative,
+        cursor_state=cursor_state,
     )
     if any(warning.startswith("directory_scan_failed") for warning in result.warnings):
         return tool_failure(
@@ -387,7 +581,7 @@ def search_keyword_in_directory(
         "truncated": result.truncated,
         "warnings": result.warnings,
         "skipped_files": result.skipped_files,
-        "continuation": None,
+        "continuation": result.continuation,
         "limits": {
             "max_files": MAX_SEARCH_FILES,
             "max_results": MAX_SEARCH_RESULTS,
