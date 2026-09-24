@@ -1,7 +1,7 @@
 {
   "schema_version": 1,
   "manifest_id": "s5a-history-seed-v1",
-  "manifest_sha256": "d641748705705c2c440f5507d8e92bde2e0a64463e8249122d0beecc8abc902d",
+  "manifest_sha256": "7274b2769b39a242c0b8a4005e86bf92b842532c2f80117eb3ffe57df67b9253",
   "tasks": [
     {
       "task_id": "symbols-python-exact-source-v1",
@@ -358,6 +358,10 @@
         "revision": "c8b0840812a7b2f1d7d56450bdea908d623a7606"
       },
       "allowed_edit_scope": [
+        {
+          "path": "agent/tools/codemap.py",
+          "operation": "modify"
+        },
         {
           "path": "agent/tools/tsx_symbols.py",
           "operation": "create"

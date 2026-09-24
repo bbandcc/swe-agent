@@ -55,6 +55,56 @@ class TaskManifestTests(unittest.TestCase):
         self.assertGreaterEqual(len(result.task_ids), 1)
         self.assertEqual(len(result.task_ids), len(set(result.task_ids)))
 
+    def test_historical_seed_scopes_include_curated_implementation_files(self) -> None:
+        document = self._document()
+        expected = {
+            "symbols-python-exact-source-v1": {
+                "agent/tools/codemap.py": "modify",
+                "agent/tools/python_symbols.py": "create",
+            },
+            "symbols-javascript-exact-source-v1": {
+                "agent/tools/codemap.py": "modify",
+                "agent/tools/python_symbols.py": "modify",
+                "agent/tools/javascript_symbols.py": "create",
+                "agent/tools/symbol_contract.py": "create",
+            },
+            "symbols-typescript-exact-source-v1": {
+                "agent/tools/codemap.py": "modify",
+                "agent/tools/typescript_symbols.py": "create",
+            },
+            "symbols-tsx-exact-source-v1": {
+                "agent/tools/codemap.py": "modify",
+                "agent/tools/tsx_symbols.py": "create",
+                "agent/tools/typescript_symbols.py": "modify",
+            },
+        }
+
+        actual = {
+            task["task_id"]: {
+                entry["path"]: entry["operation"]
+                for entry in task["allowed_edit_scope"]
+            }
+            for task in document["tasks"]
+        }
+
+        self.assertEqual(actual, expected)
+        for scope in actual.values():
+            self.assertFalse(any(path.startswith("tests/") for path in scope))
+            self.assertNotIn("task_plan.md", scope)
+
+    def test_scope_outside_pinned_target_to_oracle_change_is_rejected(self) -> None:
+        document = self._single_task_document()
+        document["tasks"][0]["allowed_edit_scope"].append(
+            {"path": "agent/graph.py", "operation": "modify"}
+        )
+        self._rehash(document)
+
+        result = self._validate(document)
+
+        self.assertIn(
+            "scope_not_in_change", {issue.code.value for issue in result.issues}
+        )
+
     def test_missing_required_budget_field_is_rejected(self) -> None:
         document = self._single_task_document()
         task = document["tasks"][0]
