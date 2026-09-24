@@ -11,16 +11,15 @@
 ### 当前状态文件基线
 
 - S3.2 production 技术冻结点：`5850b8370c49f868e90aeffe9e6042f85eaa522c`；D1/S1a、D2/S2b 已冻结，D3/S2c Seal blocker 已通过本地验收。
-- S3.2、D1-D7、S2d/D3 与 S4a/D8 的既有契约保持冻结。本轮完成 S4b/D9 Final Seal：search、raw read、workspace tree 使用固定代码上限；三者的 continuation 均绑定查询及各自版本/位置证据。search 每页最多处理 128 个候选文件、返回 100 条结果并读取/输出不超过 1 MiB，不缓存整次搜索结果；未改变 RunConfig 或 checkpoint 语义，semantic config schema 保持 v7。ChatGPT Final Gate 尚待审核。
+- S3.2、D1-D7、S2d/D3 与 S4a/D8 的既有契约保持冻结。S4b/D9 Final Gate 已通过；search、raw read、workspace tree 使用固定代码上限，三者 continuation 均绑定查询及各自版本/位置证据。search 每页最多处理 128 个候选文件、返回 100 条结果并读取/输出不超过 1 MiB，不缓存整次搜索结果；未改变 RunConfig 或 checkpoint 语义，semantic config schema 保持 v7。当前 S4c.1 只实现 Python 符号正确性，正在等待本轮 Final Gate。
 - D2/S2b Final Seal 已收窄 library/CLI 的异常边界；`RunSummary.warnings` 只输出 preflight warning code，unexpected `RuntimeError`、`KeyboardInterrupt` 和 `SystemExit` 不被入口吞掉。
-- 本轮最新 Codex 本地验证：unittest 377 tests OK / 10 skipped；pytest 371 passed / 10 skipped；
+- 本轮最新 Codex 本地验证：unittest 387 tests OK / 10 skipped；pytest 381 passed / 10 skipped / 190 subtests passed；
   Python compile、11 个 prompt render、root/start/resume 三套 CLI help、`git diff --check` 均通过。
-  pytest 有 1 条既有 tree-sitter FutureWarning；10 个 skip 为已有
-  Windows 链接能力或平台边界限制。
+  pytest 汇总 8 条锁定 Tree-sitter 旧 API 的 FutureWarning；10 个 skip 为既有 Windows 链接能力或平台边界限制。
 - 没有 GitHub CI 或独立外部测试证据，不作相应声明。
-- 剩余能力：完整 secret-safe state persistence（当前只覆盖 RunConfig 中已知凭据）、verification rerun/replay、S4c symbol/repo map 仍未实现；D7 policy 只约束使用本 seam 的合作进程和模型可调用工具，不阻止第三方直接写 workspace，也不是 OS sandbox。本轮 EventSink/RunRecord 与 verification artifact 只提供单进程本地 JSONL、结构化记录和有界/脱敏日志，不是完整恢复系统。provider 正向 retry/独立 attempt 语义未实现，当前 durable 只允许单次外部尝试；当前模型 `request_digest` 只代表有界语义输入，身份范围明确为 `PARTIAL`，不能据此安全重放最终 rendered request；exactly-once 不承诺。JUnit XML 是当前唯一可信报告格式，未配置或报告缺失/畸形时保守返回证据不足；多框架 parser registry、扩展 repair、S4c 均未实现。runner 只改写精确匹配的 `--junitxml/--junit-xml` destination 到 owned temporary output，workspace report_path 保持原 bytes/mtime；owned temp cleanup 失败返回结构化 `EXECUTION_ERROR`。S3.4b 对命令已启动但结果未持久化的恢复默认保守返回 `OUTCOME_UNKNOWN`，当前没有 isolated execution seam，因此不支持自动重跑；pytest 对其它 workspace 文件的副作用仍未提供 recovery。S4b raw-read cursor 用文件 stat 元数据摘要识别常规变化，并非全文件快照/强内容锁；tree inventory 最多扫描 4096 项，触及上限会明确标记 truncated，不能续读未扫描后缀。
+- 剩余能力：完整 secret-safe state persistence（当前只覆盖 RunConfig 中已知凭据）、verification rerun/replay、S4c JS/TS 符号解析、repo map 与 D11 context assembly 仍未实现；当前 S4c.1 仅处理 `.py`。D7 policy 只约束使用本 seam 的合作进程和模型可调用工具，不阻止第三方直接写 workspace，也不是 OS sandbox。本轮 EventSink/RunRecord 与 verification artifact 只提供单进程本地 JSONL、结构化记录和有界/脱敏日志，不是完整恢复系统。provider 正向 retry/独立 attempt 语义未实现，当前 durable 只允许单次外部尝试；当前模型 `request_digest` 只代表有界语义输入，身份范围明确为 `PARTIAL`，不能据此安全重放最终 rendered request；exactly-once 不承诺。JUnit XML 是当前唯一可信报告格式，未配置或报告缺失/畸形时保守返回证据不足；多框架 parser registry、扩展 repair 尚未实现。runner 只改写精确匹配的 `--junitxml/--junit-xml` destination 到 owned temporary output，workspace report_path 保持原 bytes/mtime；owned temp cleanup 失败返回结构化 `EXECUTION_ERROR`。S3.4b 对命令已启动但结果未持久化的恢复默认保守返回 `OUTCOME_UNKNOWN`，当前没有 isolated execution seam，因此不支持自动重跑；pytest 对其它 workspace 文件的副作用仍未提供 recovery。S4b raw-read cursor 用文件 stat 元数据摘要识别常规变化，并非全文件快照/强内容锁；tree inventory 最多扫描 4096 项，触及上限会明确标记 truncated，不能续读未扫描后缀。
 - 后续技术切片继续按 MASTER_PLAN §5.2 执行；保留现有 S1/S2/S3 历史编号，不重新开启或重命名 S1。
-- MASTER_PLAN 对应：当前实现事实覆盖 S3.2、D1/S1a、D2/S2b、D3/S2c、D4/S3.2a、D5/S3.4a、D5/S3.4b、D6/S3.3a、S3.3b、S3.3c、D7/S3.5a、S3.5b Final Seal、S2d/D3 受控多文件 repair、D8/S4a 工具消息完整传递和 D9/S4b 有界读取；没有 GitHub CI 或独立外部测试证据。S4c 仍未实现。
+- MASTER_PLAN 对应：当前实现事实覆盖 S3.2、D1/S1a、D2/S2b、D3/S2c、D4/S3.2a、D5/S3.4a、D5/S3.4b、D6/S3.3a、S3.3b、S3.3c、D7/S3.5a、S3.5b Final Seal、S2d/D3 受控多文件 repair、D8/S4a 工具消息完整传递、D9/S4b 有界读取及 D10/S4c.1 Python 符号提取；S4c 其余部分仍未实现。没有 GitHub CI 或独立外部测试证据。
 
 ## 当前文档任务：独立 MASTER PLAN（2026-09-16）
 
@@ -1021,3 +1020,24 @@ S1/S2/S3.1/S3.2/D3-D7a 测试保持通过。compile、11 个 prompt render、roo
 - 支持文件类型由后缀白名单定义，不是任意文本探测。search continuation 是无状态位置游标，不缓存全量结果；每次调用会确定性重走目录项前缀以定位候选序号，实际读取/处理的候选文件、扫描字节、结果数和返回 evidence 仍受每页硬上限约束。游标校验其携带的本页文件/目录 stat evidence，不是整个 workspace 的强快照。跨页大文件的单条结果以 `content_hash_scope=scanned_segment` 标明摘要只覆盖匹配所在扫描片段；该路径无法提供跨页上下文行时会返回 `chunked_file_context_limited` warning。
 - raw cursor 的文件版本使用可移植 stat 元数据摘要，不是全文件快照或强并发锁；每页 `content_hash` 只覆盖返回的 page bytes。
 - tree 最多扫描 4096 项；达到该上限时报告 truncated，未扫描后缀不可继续获取。保护策略与 OS 层隔离边界保持原契约。
+
+## D10/S4c.1：Python 符号正确性
+
+### 固定范围与公开契约
+
+- 基线：`7ed6bc9ee41b0f5586c0da4c980d790afb59f945`；S4b Final Gate 已通过。本轮只处理 Python，不实现 JS/JSX/TS/TSX query、repo map 或 D11 context assembly。
+- 保留 `get_code_definitions`、`get_function_implementation`、`get_code_definitions_multi` 工具名及现有 resolver/access-policy/hard-link 边界。Tree-sitter 0.21.3 与 tree-sitter-languages 1.10.2 保持锁定，无依赖升级。
+- `agent.tools.python_symbols.extract_python_symbols` 返回结构化符号：canonical path、qualified symbol、kind、半开区间 byte offset、1-based 行号、原始节点切片 SHA-256 和源码文本。源码只通过 `source_bytes[start_byte:end_byte]` 切片，不从 signature/body 重建；覆盖 decorator、async、多行签名、嵌套定义和 Unicode byte offsets。
+- 同名函数/方法按 `qualified_symbol` 唯一匹配；不唯一时返回 `ambiguous_symbol` 与候选。JS/JSX/TS/TSX 明确返回 `unsupported_language` 并提示使用 bounded text search。语法错误返回 `parse_error`，Tree-sitter 明确的 parser API `TypeError`/`ValueError`/grammar `KeyError` 返回 `tree_sitter_error`；意外运行时异常继续传播。实现直接遍历 Python grammar 节点，不编译 Tree-sitter query。
+- 单个 Python 输入最多 1 MiB；单次最多 128 个符号、16 个多文件输入、131072 字节序列化结果。超限以 `truncated` 或结构化错误呈现。未改变 RunConfig/checkpoint schema v7，也未改变依赖。
+
+### TDD 验收与当前证据
+
+- [x] 公开工具用例覆盖 decorator、async、多行签名、嵌套 class/function/method、同名候选 ambiguity、Unicode、逐字节 source/hash/offset 校验、Python syntax/parser failure、JS/JSX/TS/TSX unsupported 和单文件/多文件输出上限。
+- [x] 真实 compiled ToolNode 返回结构化符号消息并通过原有 Architect/Developer 工具与 policy 回归；workspace/access-policy、S1–S3 和 S4a/S4b 旧回归保持通过。
+- [x] Codex 本地验证：unittest 387 tests OK / 10 skipped；pytest 381 passed / 10 skipped / 190 subtests passed；compileall、11 prompt render、root/start/resume CLI help、`git diff --check` 通过。pytest 有 8 条既有 Tree-sitter FutureWarning；10 个 skip 是既有 Windows 链接能力或平台边界限制。
+- 以上为 Codex 本地验证，不代表 GitHub CI 或独立外部验收；S4c.1 当前等待 ChatGPT Final Gate。
+
+### 已知边界
+
+- 符号 query 只支持 Python `.py`，不提供其他语言 AST。Python source 超过 1 MiB、符号索引或序列化输出达到固定上限时返回结构化拒绝或截断；被截断索引不能用于证明函数名唯一。Tree-sitter 仍产生锁定版本的 FutureWarning。

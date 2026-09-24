@@ -1,17 +1,16 @@
 """Workspace-bound tree-sitter code inspection tools."""
 
 import hashlib
+import json
 from pathlib import Path
 
 from langchain_core.tools import tool
-from tree_sitter_languages import get_language, get_parser
 
 from agent.tools.results import (
     tool_access_denied,
     tool_error,
     tool_policy_denial,
     tool_rejection,
-    tool_success,
 )
 from agent.tools.read_contract import (
     MAX_RAW_PAGE_BYTES,
@@ -20,149 +19,152 @@ from agent.tools.read_contract import (
     encode_cursor,
     tool_failure,
 )
+from agent.tools.python_symbols import (
+    MAX_PYTHON_SOURCE_BYTES,
+    MAX_SYMBOL_ENTRIES,
+    MAX_SYMBOL_SOURCE_BYTES,
+    PythonSymbol,
+    PythonSymbolExtraction,
+    PythonSymbolIssue,
+    extract_python_symbols,
+)
 from agent.workspace import (
     current_workspace_access_policy,
     default_workspace_resolver,
     has_single_regular_file_link,
 )
 
-_LANGUAGE_BY_SUFFIX = {
-    ".py": "python",
-    ".js": "javascript",
-    ".jsx": "javascript",
-    ".ts": "typescript",
-    ".tsx": "typescript",
-}
+MAX_CODE_SYMBOL_OUTPUT_BYTES = 131_072
+MAX_CODE_SYMBOL_FILES = 16
+_UNSUPPORTED_LANGUAGE_SUFFIXES = {".js", ".jsx", ".mjs", ".cjs", ".ts", ".tsx"}
 
 
-def _read_code(file_path: Path) -> bytes:
-    return file_path.read_bytes()
-
-
-def _definitions(file_path: Path, display_path: str) -> str:
-    language_name = _LANGUAGE_BY_SUFFIX.get(file_path.suffix.lower())
-    if language_name is None:
-        raise ValueError(f"Unsupported file type: {file_path.suffix or '<none>'}")
-    language = get_language(language_name)
-    parser = get_parser(language_name)
-    code = _read_code(file_path)
-    tree = parser.parse(code)
-    query = language.query(
-        """
-        (class_definition
-            name: (identifier) @name.definition.class
-            body: (block
-                (function_definition
-                    name: (identifier) @name.definition.method
-                    parameters: (parameters) @params.definition.method)?)
-            @body.definition.class)
-
-        (function_definition
-            name: (identifier) @name.definition.function
-            parameters: (parameters) @params.definition.function
-            body: (block) @body.definition.function)
-        """
-    )
-    captures = query.captures(tree.root_node)
-    output_lines = [f"\n{display_path}:\n"]
-    current_definition: dict[str, object] = {}
-    in_class = False
-    last_line_number = 0
-    for node, tag in captures:
-        current_line = node.start_point[0] + 1
-        if last_line_number > 0 and current_line > last_line_number + 1:
-            output_lines.append("...")
-        if tag == "name.definition.class":
-            in_class = True
-            output_lines.append(
-                f"{current_line}| class {node.text.decode('utf-8')}:"
-            )
-            last_line_number = current_line
-        elif tag == "name.definition.method" and in_class:
-            current_definition["method_name"] = node.text.decode("utf-8")
-            current_definition["line"] = current_line
-        elif tag == "params.definition.method" and in_class:
-            line_number = int(current_definition["line"])
-            output_lines.append(
-                f"{line_number}|     def "
-                f"{current_definition['method_name']}{node.text.decode('utf-8')}:"
-            )
-            last_line_number = line_number
-        elif tag == "body.definition.method":
-            line_number = node.start_point[0] + 1
-            output_lines.append(f"{line_number}|         ...")
-            last_line_number = line_number
-        elif tag == "body.definition.class":
-            in_class = False
-        elif tag == "name.definition.function":
-            current_definition["name"] = node.text.decode("utf-8")
-            current_definition["line"] = current_line
-        elif tag == "params.definition.function":
-            line_number = int(current_definition["line"])
-            output_lines.append(
-                f"{line_number}| def "
-                f"{current_definition['name']}{node.text.decode('utf-8')}:"
-            )
-            last_line_number = line_number
-        elif tag == "body.definition.function":
-            line_number = node.start_point[0] + 1
-            output_lines.append(f"{line_number}|     ...")
-            last_line_number = line_number
-    return "\n".join(output_lines)
-
-
-def _function_implementation(
-    file_path: Path, display_path: str, function_name: str
-) -> str | None:
-    language_name = _LANGUAGE_BY_SUFFIX.get(file_path.suffix.lower())
-    if language_name is None:
-        raise ValueError(f"Unsupported file type: {file_path.suffix or '<none>'}")
-    language = get_language(language_name)
-    parser = get_parser(language_name)
-    code = _read_code(file_path)
-    tree = parser.parse(code)
-    query = language.query(
-        """
-        (function_definition
-            name: (identifier) @name.function
-            parameters: (parameters) @params.function
-            body: (block) @body.function)
-
-        (class_definition
-            body: (block
-                (function_definition
-                    name: (identifier) @name.method
-                    parameters: (parameters) @params.method
-                    body: (block) @body.method)))
-        """
-    )
-    current: dict[str, object] = {}
-    for node, tag in query.captures(tree.root_node):
-        if tag in {"name.function", "name.method"}:
-            if node.text.decode("utf-8") == function_name:
-                current = {
-                    "name": function_name,
-                    "line": node.start_point[0] + 1,
-                }
-        elif tag in {"params.function", "params.method"} and current:
-            current["params"] = node.text.decode("utf-8")
-        elif tag in {"body.function", "body.method"} and current:
-            body = code[node.start_byte : node.end_byte].decode("utf-8")
-            start_line = int(current["line"])
-            output = [
-                f"\n{display_path}:\n",
-                f"{start_line}| def {function_name}{current['params']}:",
-            ]
-            for index, line in enumerate(body.split("\n")):
-                line_number = start_line + index + 1
-                indent = (
-                    "    "
-                    if not line.strip()
-                    else line[: len(line) - len(line.lstrip())]
-                )
-                output.append(f"{line_number}|{indent}{line.lstrip()}")
-            return "\n".join(output)
+def _language_error(path: Path, display_path: str) -> dict[str, object] | None:
+    suffix = path.suffix.lower()
+    if suffix in _UNSUPPORTED_LANGUAGE_SUFFIXES:
+        return tool_error(
+            display_path,
+            "unsupported_language",
+            "Python symbols are supported here; use search_keyword_in_directory "
+            "for bounded text search of JavaScript or TypeScript files.",
+        )
+    if suffix != ".py":
+        return tool_error(
+            display_path,
+            "unsupported_file_type",
+            f"Python symbol extraction does not support {suffix or '<no extension>'}.",
+        )
     return None
+
+
+def _read_python_source(path: Path) -> bytes | PythonSymbolIssue:
+    metadata = path.stat(follow_symlinks=False)
+    if metadata.st_size > MAX_PYTHON_SOURCE_BYTES:
+        return PythonSymbolIssue(
+            "source_too_large",
+            "Python symbol input exceeds the fixed source-size limit.",
+        )
+    with path.open("rb") as source_file:
+        source = source_file.read(MAX_PYTHON_SOURCE_BYTES + 1)
+    if len(source) > MAX_PYTHON_SOURCE_BYTES:
+        return PythonSymbolIssue(
+            "source_too_large",
+            "Python symbol input exceeds the fixed source-size limit.",
+        )
+    return source
+
+
+def _issue_result(path: str, issue: PythonSymbolIssue) -> dict[str, object]:
+    result = tool_error(path, issue.error_code, issue.message)
+    if issue.details is not None:
+        result["details"] = issue.details
+    return result
+
+
+def _bounded_candidate_result(result: dict[str, object]) -> dict[str, object]:
+    candidates = result.get("candidates")
+    while len(
+        json.dumps(result, ensure_ascii=False).encode("utf-8")
+    ) > MAX_CODE_SYMBOL_OUTPUT_BYTES:
+        if not isinstance(candidates, list) or not candidates:
+            return tool_error(
+                str(result.get("path") or "<workspace>"),
+                "symbol_output_limit",
+                "Symbol candidate metadata exceeds the fixed output-size limit.",
+            )
+        candidates.pop()
+        result["truncated"] = True
+    return result
+
+
+def _bounded_symbol_response(
+    path: str,
+    symbols: list[PythonSymbol],
+    *,
+    file_hash: str | None,
+    truncated: bool,
+) -> dict[str, object]:
+    summary = ", ".join(symbol.qualified_symbol for symbol in symbols)
+    response: dict[str, object] = {
+        "ok": True,
+        "path": path,
+        "content": (
+            f"Python symbols: {summary}"
+            if summary
+            else "No Python symbols found."
+        ),
+        "symbols": [symbol.to_dict() for symbol in symbols],
+        "file_hash": file_hash,
+        "truncated": truncated,
+        "limits": {
+            "max_entries": MAX_SYMBOL_ENTRIES,
+            "max_source_bytes": MAX_SYMBOL_SOURCE_BYTES,
+            "max_files": MAX_CODE_SYMBOL_FILES,
+            "max_output_bytes": MAX_CODE_SYMBOL_OUTPUT_BYTES,
+        },
+    }
+    while len(
+        json.dumps(response, ensure_ascii=False).encode("utf-8")
+    ) > MAX_CODE_SYMBOL_OUTPUT_BYTES:
+        current = response["symbols"]
+        assert isinstance(current, list)
+        if not current:
+            return tool_error(
+                path,
+                "symbol_output_limit",
+                "Symbol metadata exceeds the fixed output-size limit.",
+            )
+        current.pop()
+        names = ", ".join(
+            str(item.get("qualified_symbol", ""))
+            for item in current
+            if isinstance(item, dict)
+        )
+        response["content"] = f"Python symbols: {names}; output truncated."
+        response["truncated"] = True
+    return response
+
+
+def _extract_file(
+    path: Path,
+    canonical_path: str,
+    *,
+    max_entries: int = MAX_SYMBOL_ENTRIES,
+    max_source_bytes: int = MAX_SYMBOL_SOURCE_BYTES,
+) -> PythonSymbolExtraction | PythonSymbolIssue:
+    try:
+        source = _read_python_source(path)
+    except OSError as error:
+        return PythonSymbolIssue("read_failed", f"Could not read file: {error}")
+    if isinstance(source, PythonSymbolIssue):
+        return source
+    extraction = extract_python_symbols(
+        canonical_path,
+        source,
+        max_entries=max_entries,
+        max_source_bytes=max_source_bytes,
+    )
+    return extraction.issue or extraction
 
 
 def _resolve_file(file_path: str):
@@ -190,15 +192,14 @@ def _read_denial(resolution):
 
 @tool(parse_docstring=True)
 def get_code_definitions(file_path: str) -> dict[str, object]:
-    """Extract function and class signatures from one source file.
+    """Extract bounded, exact Python class/function symbols from one source file.
 
     Args:
         file_path: Workspace file, relative or absolute within the workspace.
     """
     resolver = default_workspace_resolver()
-    early_denial = tool_policy_denial(
-        resolver, file_path, current_workspace_access_policy()
-    )
+    policy = current_workspace_access_policy()
+    early_denial = tool_policy_denial(resolver, file_path, policy)
     if early_denial is not None:
         return early_denial
     resolution = resolver.resolve_file(file_path)
@@ -207,33 +208,34 @@ def get_code_definitions(file_path: str) -> dict[str, object]:
     denied = _read_denial(resolution)
     if denied is not None:
         return denied
-    try:
-        content = _definitions(
-            resolution.path, resolution.relative_path or file_path
-        )
-    except ValueError as error:
-        return tool_error(file_path, "unsupported_file_type", str(error))
-    except UnicodeDecodeError:
-        return tool_error(file_path, "encoding_error", "The file is not valid UTF-8.")
-    except OSError as error:
-        return tool_error(file_path, "read_failed", f"Could not read file: {error}")
-    return tool_success(resolution.relative_path or file_path, content)
+    display_path = resolution.relative_path or file_path
+    unsupported = _language_error(resolution.path, display_path)
+    if unsupported is not None:
+        return unsupported
+    extraction = _extract_file(resolution.path, display_path)
+    if isinstance(extraction, PythonSymbolIssue):
+        return _issue_result(display_path, extraction)
+    return _bounded_symbol_response(
+        display_path,
+        list(extraction.symbols),
+        file_hash=extraction.file_hash,
+        truncated=extraction.truncated,
+    )
 
 
 @tool(parse_docstring=True)
 def get_function_implementation(
     file_path: str, function_name: str
 ) -> dict[str, object]:
-    """Extract one function or method implementation from a source file.
+    """Return one uniquely matched Python function or method as an exact source slice.
 
     Args:
         file_path: Workspace file, relative or absolute within the workspace.
-        function_name: Function or method name to find.
+        function_name: Bare or qualified function/method name to find.
     """
     resolver = default_workspace_resolver()
-    early_denial = tool_policy_denial(
-        resolver, file_path, current_workspace_access_policy()
-    )
+    policy = current_workspace_access_policy()
+    early_denial = tool_policy_denial(resolver, file_path, policy)
     if early_denial is not None:
         return early_denial
     resolution = resolver.resolve_file(file_path)
@@ -242,34 +244,92 @@ def get_function_implementation(
     denied = _read_denial(resolution)
     if denied is not None:
         return denied
-    try:
-        content = _function_implementation(
-            resolution.path,
-            resolution.relative_path or file_path,
-            function_name,
+    display_path = resolution.relative_path or file_path
+    unsupported = _language_error(resolution.path, display_path)
+    if unsupported is not None:
+        return unsupported
+    extraction = _extract_file(resolution.path, display_path)
+    if isinstance(extraction, PythonSymbolIssue):
+        return _issue_result(display_path, extraction)
+
+    function_symbols = [
+        symbol
+        for symbol in extraction.symbols
+        if symbol.kind in {"function", "method"}
+    ]
+    if "." in function_name:
+        matches = [
+            symbol
+            for symbol in function_symbols
+            if symbol.qualified_symbol == function_name
+        ]
+    else:
+        matches = [
+            symbol
+            for symbol in function_symbols
+            if symbol.qualified_symbol.rsplit(".", 1)[-1] == function_name
+        ]
+    if extraction.truncated:
+        result = tool_error(
+            display_path,
+            "symbol_index_truncated",
+            "The bounded Python symbol index was truncated; uniqueness cannot "
+            "be established.",
         )
-    except ValueError as error:
-        return tool_error(file_path, "unsupported_file_type", str(error))
-    except UnicodeDecodeError:
-        return tool_error(file_path, "encoding_error", "The file is not valid UTF-8.")
-    except OSError as error:
-        return tool_error(file_path, "read_failed", f"Could not read file: {error}")
-    if content is None:
+        result["truncated"] = True
+        result["candidates"] = [
+            {
+                "qualified_symbol": symbol.qualified_symbol,
+                "kind": symbol.kind,
+                "start_line": symbol.start_line,
+                "end_line": symbol.end_line,
+            }
+            for symbol in matches[:MAX_SYMBOL_ENTRIES]
+        ]
+        return _bounded_candidate_result(result)
+    if not matches:
         return tool_error(
-            file_path,
+            display_path,
             "definition_not_found",
-            f"Function or method {function_name!r} was not found.",
+            "No matching Python function or method was found.",
         )
-    return tool_success(resolution.relative_path or file_path, content)
+    if len(matches) != 1:
+        return _bounded_candidate_result({
+            "ok": False,
+            "path": display_path,
+            "error_code": "ambiguous_symbol",
+            "message": "Multiple Python symbols match; use a qualified symbol name.",
+            "candidates": [
+                {
+                    "qualified_symbol": symbol.qualified_symbol,
+                    "kind": symbol.kind,
+                    "start_line": symbol.start_line,
+                    "end_line": symbol.end_line,
+                    "start_byte": symbol.start_byte,
+                    "end_byte": symbol.end_byte,
+                }
+                for symbol in matches
+            ],
+            "truncated": False,
+        })
+    return _bounded_symbol_response(
+        display_path, matches, file_hash=extraction.file_hash, truncated=False
+    )
 
 
 @tool(parse_docstring=True)
 def get_code_definitions_multi(file_paths: list[str]) -> dict[str, object]:
-    """Extract definitions from several workspace files.
+    """Extract bounded exact Python symbols from several workspace files.
 
     Args:
         file_paths: Workspace files to inspect.
     """
+    if len(file_paths) > MAX_CODE_SYMBOL_FILES:
+        return tool_error(
+            "<multiple>",
+            "file_limit_exceeded",
+            f"At most {MAX_CODE_SYMBOL_FILES} files can be inspected at once.",
+        )
     resolver = default_workspace_resolver()
     policy = current_workspace_access_policy()
     for file_path in file_paths:
@@ -278,38 +338,66 @@ def get_code_definitions_multi(file_paths: list[str]) -> dict[str, object]:
             return early_denial
     resolutions = [resolver.resolve_file(file_path) for file_path in file_paths]
     for resolution in resolutions:
-        if not resolution.ok:
+        if not resolution.ok or resolution.path is None:
             return tool_rejection(resolution)
         denied = _read_denial(resolution)
         if denied is not None:
             return denied
-    contents: list[str] = []
-    for resolution in resolutions:
+
+    symbols: list[PythonSymbol] = []
+    truncated = False
+    output_source_bytes = 0
+    for index, resolution in enumerate(resolutions):
         assert resolution.path is not None
-        try:
-            contents.append(
-                _definitions(
-                    resolution.path,
-                    resolution.relative_path or resolution.requested_path,
+        display_path = resolution.relative_path or resolution.requested_path
+        unsupported = _language_error(resolution.path, display_path)
+        if unsupported is not None:
+            return unsupported
+        remaining_entries = MAX_SYMBOL_ENTRIES - len(symbols)
+        remaining_source_bytes = MAX_SYMBOL_SOURCE_BYTES - output_source_bytes
+        extraction = _extract_file(
+            resolution.path,
+            display_path,
+            max_entries=remaining_entries,
+            max_source_bytes=remaining_source_bytes,
+        )
+        if isinstance(extraction, PythonSymbolIssue):
+            return _issue_result(display_path, extraction)
+        symbols.extend(extraction.symbols)
+        output_source_bytes += sum(
+            len(symbol.source.encode("utf-8")) for symbol in extraction.symbols
+        )
+        if extraction.truncated:
+            truncated = True
+            break
+        if len(symbols) >= MAX_SYMBOL_ENTRIES and index + 1 < len(resolutions):
+            truncated = True
+            break
+    result = _bounded_symbol_response(
+        "<multiple>", symbols, file_hash=None, truncated=truncated
+    )
+    if result.get("ok"):
+        result["truncated"] = bool(result["truncated"]) or truncated
+        while len(
+            json.dumps(result, ensure_ascii=False).encode("utf-8")
+        ) > MAX_CODE_SYMBOL_OUTPUT_BYTES:
+            kept = result["symbols"]
+            assert isinstance(kept, list)
+            if not kept:
+                return tool_error(
+                    "<multiple>",
+                    "symbol_output_limit",
+                    "Symbol metadata exceeds the fixed output-size limit.",
                 )
+            kept.pop()
+            result["truncated"] = True
+            names = ", ".join(
+                str(item.get("qualified_symbol", ""))
+                for item in kept
+                if isinstance(item, dict)
             )
-        except ValueError as error:
-            return tool_error(
-                resolution.requested_path, "unsupported_file_type", str(error)
-            )
-        except UnicodeDecodeError:
-            return tool_error(
-                resolution.requested_path,
-                "encoding_error",
-                "The file is not valid UTF-8.",
-            )
-        except OSError as error:
-            return tool_error(
-                resolution.requested_path,
-                "read_failed",
-                f"Could not read file: {error}",
-            )
-    return tool_success("<multiple>", "\n".join(contents))
+            result["content"] = f"Python symbols: {names}; output truncated."
+    return result
 
 
 @tool(parse_docstring=True)
