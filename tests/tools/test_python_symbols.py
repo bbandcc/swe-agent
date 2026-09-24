@@ -120,16 +120,16 @@ class PythonSymbolToolTests(unittest.TestCase):
             symbol["source"],
         )
 
-    def test_non_python_symbol_languages_fail_closed_with_search_guidance(self) -> None:
+    def test_typescript_symbol_languages_fail_closed_with_search_guidance(self) -> None:
         with tempfile.TemporaryDirectory() as directory:
             root = Path(directory)
             results = []
-            for suffix in (".js", ".jsx", ".ts", ".tsx"):
+            for suffix in (".ts", ".tsx"):
                 (root / f"sample{suffix}").write_text(
                     "function answer() { return 42; }\n", encoding="utf-8"
                 )
             with patch.dict(os.environ, {"SWE_AGENT_WORKSPACE": str(root)}):
-                for suffix in (".js", ".jsx", ".ts", ".tsx"):
+                for suffix in (".ts", ".tsx"):
                     results.extend(
                         (
                             get_code_definitions.invoke(

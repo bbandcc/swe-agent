@@ -1036,8 +1036,31 @@ S1/S2/S3.1/S3.2/D3-D7a 测试保持通过。compile、11 个 prompt render、roo
 - [x] 公开工具用例覆盖 decorator、async、多行签名、嵌套 class/function/method、同名候选 ambiguity、Unicode、逐字节 source/hash/offset 校验、Python syntax/parser failure、JS/JSX/TS/TSX unsupported 和单文件/多文件输出上限。
 - [x] 真实 compiled ToolNode 返回结构化符号消息并通过原有 Architect/Developer 工具与 policy 回归；workspace/access-policy、S1–S3 和 S4a/S4b 旧回归保持通过。
 - [x] Codex 本地验证：unittest 387 tests OK / 10 skipped；pytest 381 passed / 10 skipped / 190 subtests passed；compileall、11 prompt render、root/start/resume CLI help、`git diff --check` 通过。pytest 有 8 条既有 Tree-sitter FutureWarning；10 个 skip 是既有 Windows 链接能力或平台边界限制。
-- 以上为 Codex 本地验证，不代表 GitHub CI 或独立外部验收；S4c.1 当前等待 ChatGPT Final Gate。
+- 以上是 S4c.1 提交时的 Codex 本地验证快照，不代表 GitHub CI 或独立外部验收。本轮以已审核 HEAD
+  `b8fcb68e123fd19d4542fbf48155240926405d33` 为基线；开始编码前已正常 push 到
+  `origin/review/step3-runtime-recovery`，并复核工作树 clean、ahead/behind 0/0。
 
 ### 已知边界
 
 - 符号 query 只支持 Python `.py`，不提供其他语言 AST。Python source 超过 1 MiB、符号索引或序列化输出达到固定上限时返回结构化拒绝或截断；被截断索引不能用于证明函数名唯一。Tree-sitter 仍产生锁定版本的 FutureWarning。
+
+## D10/S4c.2：JavaScript/JSX 符号正确性
+
+### 固定范围与公开契约
+
+- 基线：已审核的 S4c.1 HEAD `b8fcb68e123fd19d4542fbf48155240926405d33`。本轮只实现 JavaScript/JSX；不实现 TypeScript/TSX、repo map 或 D11 context assembly。
+- 编码前在项目锁定环境实测 `tree-sitter 0.21.3` 与 `tree-sitter-languages 1.10.2`。`javascript` grammar 对 function/class/method/arrow/export 产生对应节点且无 parse error；嵌套 JSX 元素、属性表达式、自闭合元素和 fragment 也以 JSX 节点可靠解析。本轮不升级依赖。
+- `agent.tools.symbol_contract` 提供 Python/JavaScript 共用的 `SourceSymbol`、`SymbolIssue`、`SymbolExtraction` value contract；`codemap.py` 使用静态 suffix→adapter 映射，不建立通用 registry。`.py` 继续走 Python adapter；`.js`、`.jsx`、`.mjs`、`.cjs` 走 JavaScript adapter；`.ts`/`.tsx` 明确返回 `unsupported_language` 并提示 bounded text search。
+- JavaScript adapter 覆盖 function declaration、class/method、async function、嵌套函数、export 和变量绑定的 arrow function。symbol 的源码只取原始 bytes 的 Tree-sitter node range，输出 canonical workspace-relative path、qualified symbol、kind、半开 byte offsets、1-based line range、source hash 与 source。相同名称不唯一时仍结构化返回 `ambiguous_symbol`。
+- 既有 resolver、read policy、hard-link 检查，以及 1 MiB source、128 symbol、131072 字节 source/output、16 文件等 hard caps 保持生效。parse error 与已知 parser/grammar API error 结构化返回；意外运行时异常继续传播。没有改变 semantic schema v7。
+
+### TDD 验收与当前证据
+
+- [x] JavaScript/JSX golden fixtures 覆盖 Unicode byte offsets、export、async、多行 method、嵌套 class/function、arrow function、JSX 元素/属性/表达式/fragment；逐字节验证 source、hash、byte range 与行范围。
+- [x] 公开工具覆盖同名 ambiguity、TS/TSX unsupported、语法与已知 parser 错误、意外异常传播、entry/source/output/file caps；真实 compiled ToolNode 返回 JSX symbol evidence。S4c.1 Python 回归保持通过。
+- [x] Codex 本地全量验证：unittest 395 tests OK / 10 skipped；pytest 389 passed / 10 skipped / 198 subtests passed；Python compileall、11 prompt render、root/start/resume CLI help、`git diff --check` 均通过。pytest 显示 14 条锁定 Tree-sitter 旧 API 的 FutureWarning；10 个 skip 为既有 Windows 链接能力或平台边界限制。
+- 以上是 Codex 本地证据，不代表 GitHub CI 或独立外部验收。S4c.2 提交后停止，等待 ChatGPT Final Gate；不 push 本轮新提交。
+
+### 已知边界
+
+- JavaScript/JSX 以锁定 grammar 为边界；只识别本 adapter 列明的声明与变量绑定 arrow function，不承诺完整 ECMAScript 语义、任意表达式求值或 TypeScript 类型解析。TS/TSX 始终 fail closed。Tree-sitter 仍报告其旧 `Language(path, name)` API FutureWarning。

@@ -3,57 +3,25 @@
 from __future__ import annotations
 
 import hashlib
-from dataclasses import dataclass
 from typing import Any
 
 from tree_sitter_languages import get_parser
 
-MAX_PYTHON_SOURCE_BYTES = 1_048_576
-MAX_SYMBOL_ENTRIES = 128
-MAX_SYMBOL_SOURCE_BYTES = 131_072
+from agent.tools.symbol_contract import (
+    MAX_SYMBOL_ENTRIES,
+    MAX_SYMBOL_INPUT_BYTES,
+    MAX_SYMBOL_SOURCE_BYTES,
+    SourceSymbol,
+    SymbolExtraction,
+    SymbolIssue,
+)
 
+MAX_PYTHON_SOURCE_BYTES = MAX_SYMBOL_INPUT_BYTES
 
-@dataclass(frozen=True, slots=True)
-class PythonSymbol:
-    """One symbol with zero-based half-open byte offsets and 1-based lines."""
-
-    path: str
-    qualified_symbol: str
-    kind: str
-    start_byte: int
-    end_byte: int
-    start_line: int
-    end_line: int
-    source_hash: str
-    source: str
-
-    def to_dict(self) -> dict[str, object]:
-        return {
-            "path": self.path,
-            "qualified_symbol": self.qualified_symbol,
-            "kind": self.kind,
-            "start_byte": self.start_byte,
-            "end_byte": self.end_byte,
-            "start_line": self.start_line,
-            "end_line": self.end_line,
-            "source_hash": self.source_hash,
-            "source": self.source,
-        }
-
-
-@dataclass(frozen=True, slots=True)
-class PythonSymbolIssue:
-    error_code: str
-    message: str
-    details: dict[str, object] | None = None
-
-
-@dataclass(frozen=True, slots=True)
-class PythonSymbolExtraction:
-    symbols: tuple[PythonSymbol, ...]
-    file_hash: str
-    truncated: bool = False
-    issue: PythonSymbolIssue | None = None
+# Keep the Python-named values importable for existing callers.
+PythonSymbol = SourceSymbol
+PythonSymbolIssue = SymbolIssue
+PythonSymbolExtraction = SymbolExtraction
 
 
 def _definition_node(node: Any) -> tuple[Any, Any] | None:
@@ -101,7 +69,7 @@ def extract_python_symbols(
     *,
     max_entries: int = MAX_SYMBOL_ENTRIES,
     max_source_bytes: int = MAX_SYMBOL_SOURCE_BYTES,
-) -> PythonSymbolExtraction:
+) -> SymbolExtraction:
     """Extract bounded Python definitions using Tree-sitter byte ranges.
 
     The source field is decoded only from ``source_bytes[start_byte:end_byte]``;
@@ -110,10 +78,10 @@ def extract_python_symbols(
     """
     file_hash = hashlib.sha256(source_bytes).hexdigest()
     if len(source_bytes) > MAX_PYTHON_SOURCE_BYTES:
-        return PythonSymbolExtraction(
+        return SymbolExtraction(
             (),
             file_hash,
-            issue=PythonSymbolIssue(
+            issue=SymbolIssue(
                 "source_too_large",
                 "Python symbol input exceeds the fixed source-size limit.",
             ),
@@ -123,10 +91,10 @@ def extract_python_symbols(
     try:
         source_bytes.decode("utf-8")
     except UnicodeDecodeError:
-        return PythonSymbolExtraction(
+        return SymbolExtraction(
             (),
             file_hash,
-            issue=PythonSymbolIssue(
+            issue=SymbolIssue(
                 "encoding_error", "The file is not valid UTF-8."
             ),
         )
@@ -135,26 +103,26 @@ def extract_python_symbols(
         parser = get_parser("python")
         tree = parser.parse(source_bytes)
     except (KeyError, TypeError, ValueError):
-        return PythonSymbolExtraction(
+        return SymbolExtraction(
             (),
             file_hash,
-            issue=PythonSymbolIssue(
+            issue=SymbolIssue(
                 "tree_sitter_error",
                 "The installed Tree-sitter Python parser could not process this file.",
             ),
         )
     if tree.root_node.has_error:
-        return PythonSymbolExtraction(
+        return SymbolExtraction(
             (),
             file_hash,
-            issue=PythonSymbolIssue(
+            issue=SymbolIssue(
                 "parse_error",
                 "Tree-sitter could not parse the Python source.",
                 _first_parse_issue(tree.root_node),
             ),
         )
 
-    symbols: list[PythonSymbol] = []
+    symbols: list[SourceSymbol] = []
     emitted_source_bytes = 0
     truncated = False
 
@@ -186,7 +154,7 @@ def extract_python_symbols(
             truncated = True
             break
         symbols.append(
-            PythonSymbol(
+            SourceSymbol(
                 path=canonical_path,
                 qualified_symbol=".".join((*scope, name)),
                 kind=kind,
@@ -208,7 +176,7 @@ def extract_python_symbols(
             (child, (*scope, name), child_scope_kind)
             for child in reversed(body_node.named_children)
         )
-    return PythonSymbolExtraction(
+    return SymbolExtraction(
         tuple(symbols), file_hash, truncated=truncated
     )
 

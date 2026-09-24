@@ -2,6 +2,7 @@
 
 import hashlib
 import json
+from collections.abc import Callable
 from pathlib import Path
 
 from langchain_core.tools import tool
@@ -19,15 +20,18 @@ from agent.tools.read_contract import (
     encode_cursor,
     tool_failure,
 )
-from agent.tools.python_symbols import (
-    MAX_PYTHON_SOURCE_BYTES,
+from agent.tools.symbol_contract import (
     MAX_SYMBOL_ENTRIES,
+    MAX_SYMBOL_INPUT_BYTES,
     MAX_SYMBOL_SOURCE_BYTES,
-    PythonSymbol,
-    PythonSymbolExtraction,
-    PythonSymbolIssue,
+    SourceSymbol,
+    SymbolExtraction,
+    SymbolIssue,
+)
+from agent.tools.python_symbols import (
     extract_python_symbols,
 )
+from agent.tools.javascript_symbols import extract_javascript_symbols
 from agent.workspace import (
     current_workspace_access_policy,
     default_workspace_resolver,
@@ -36,7 +40,14 @@ from agent.workspace import (
 
 MAX_CODE_SYMBOL_OUTPUT_BYTES = 131_072
 MAX_CODE_SYMBOL_FILES = 16
-_UNSUPPORTED_LANGUAGE_SUFFIXES = {".js", ".jsx", ".mjs", ".cjs", ".ts", ".tsx"}
+_SYMBOL_ADAPTERS: dict[str, tuple[Callable[..., SymbolExtraction], str]] = {
+    ".py": (extract_python_symbols, "Python"),
+    ".js": (extract_javascript_symbols, "JavaScript"),
+    ".jsx": (extract_javascript_symbols, "JavaScript/JSX"),
+    ".mjs": (extract_javascript_symbols, "JavaScript"),
+    ".cjs": (extract_javascript_symbols, "JavaScript"),
+}
+_UNSUPPORTED_LANGUAGE_SUFFIXES = {".ts", ".tsx"}
 
 
 def _language_error(path: Path, display_path: str) -> dict[str, object] | None:
@@ -45,36 +56,36 @@ def _language_error(path: Path, display_path: str) -> dict[str, object] | None:
         return tool_error(
             display_path,
             "unsupported_language",
-            "Python symbols are supported here; use search_keyword_in_directory "
-            "for bounded text search of JavaScript or TypeScript files.",
+            "TypeScript/TSX symbols are not supported; use "
+            "search_keyword_in_directory for bounded text search.",
         )
-    if suffix != ".py":
+    if suffix not in _SYMBOL_ADAPTERS:
         return tool_error(
             display_path,
             "unsupported_file_type",
-            f"Python symbol extraction does not support {suffix or '<no extension>'}.",
+            f"Symbol extraction does not support {suffix or '<no extension>'}.",
         )
     return None
 
 
-def _read_python_source(path: Path) -> bytes | PythonSymbolIssue:
+def _read_symbol_source(path: Path) -> bytes | SymbolIssue:
     metadata = path.stat(follow_symlinks=False)
-    if metadata.st_size > MAX_PYTHON_SOURCE_BYTES:
-        return PythonSymbolIssue(
+    if metadata.st_size > MAX_SYMBOL_INPUT_BYTES:
+        return SymbolIssue(
             "source_too_large",
-            "Python symbol input exceeds the fixed source-size limit.",
+            "Symbol input exceeds the fixed source-size limit.",
         )
     with path.open("rb") as source_file:
-        source = source_file.read(MAX_PYTHON_SOURCE_BYTES + 1)
-    if len(source) > MAX_PYTHON_SOURCE_BYTES:
-        return PythonSymbolIssue(
+        source = source_file.read(MAX_SYMBOL_INPUT_BYTES + 1)
+    if len(source) > MAX_SYMBOL_INPUT_BYTES:
+        return SymbolIssue(
             "source_too_large",
-            "Python symbol input exceeds the fixed source-size limit.",
+            "Symbol input exceeds the fixed source-size limit.",
         )
     return source
 
 
-def _issue_result(path: str, issue: PythonSymbolIssue) -> dict[str, object]:
+def _issue_result(path: str, issue: SymbolIssue) -> dict[str, object]:
     result = tool_error(path, issue.error_code, issue.message)
     if issue.details is not None:
         result["details"] = issue.details
@@ -99,19 +110,21 @@ def _bounded_candidate_result(result: dict[str, object]) -> dict[str, object]:
 
 def _bounded_symbol_response(
     path: str,
-    symbols: list[PythonSymbol],
+    symbols: list[SourceSymbol],
     *,
     file_hash: str | None,
     truncated: bool,
+    language: str = "Code",
 ) -> dict[str, object]:
     summary = ", ".join(symbol.qualified_symbol for symbol in symbols)
+    heading = f"{language} symbols"
     response: dict[str, object] = {
         "ok": True,
         "path": path,
         "content": (
-            f"Python symbols: {summary}"
+            f"{heading}: {summary}"
             if summary
-            else "No Python symbols found."
+            else f"No {language.lower()} symbols found."
         ),
         "symbols": [symbol.to_dict() for symbol in symbols],
         "file_hash": file_hash,
@@ -140,7 +153,7 @@ def _bounded_symbol_response(
             for item in current
             if isinstance(item, dict)
         )
-        response["content"] = f"Python symbols: {names}; output truncated."
+        response["content"] = f"{heading}: {names}; output truncated."
         response["truncated"] = True
     return response
 
@@ -151,14 +164,15 @@ def _extract_file(
     *,
     max_entries: int = MAX_SYMBOL_ENTRIES,
     max_source_bytes: int = MAX_SYMBOL_SOURCE_BYTES,
-) -> PythonSymbolExtraction | PythonSymbolIssue:
+) -> SymbolExtraction | SymbolIssue:
     try:
-        source = _read_python_source(path)
+        source = _read_symbol_source(path)
     except OSError as error:
-        return PythonSymbolIssue("read_failed", f"Could not read file: {error}")
-    if isinstance(source, PythonSymbolIssue):
+        return SymbolIssue("read_failed", f"Could not read file: {error}")
+    if isinstance(source, SymbolIssue):
         return source
-    extraction = extract_python_symbols(
+    extractor, _ = _SYMBOL_ADAPTERS[path.suffix.lower()]
+    extraction = extractor(
         canonical_path,
         source,
         max_entries=max_entries,
@@ -192,7 +206,7 @@ def _read_denial(resolution):
 
 @tool(parse_docstring=True)
 def get_code_definitions(file_path: str) -> dict[str, object]:
-    """Extract bounded, exact Python class/function symbols from one source file.
+    """Extract bounded, exact symbols from one supported source file.
 
     Args:
         file_path: Workspace file, relative or absolute within the workspace.
@@ -213,13 +227,15 @@ def get_code_definitions(file_path: str) -> dict[str, object]:
     if unsupported is not None:
         return unsupported
     extraction = _extract_file(resolution.path, display_path)
-    if isinstance(extraction, PythonSymbolIssue):
+    if isinstance(extraction, SymbolIssue):
         return _issue_result(display_path, extraction)
+    _, language = _SYMBOL_ADAPTERS[resolution.path.suffix.lower()]
     return _bounded_symbol_response(
         display_path,
         list(extraction.symbols),
         file_hash=extraction.file_hash,
         truncated=extraction.truncated,
+        language=language,
     )
 
 
@@ -227,7 +243,7 @@ def get_code_definitions(file_path: str) -> dict[str, object]:
 def get_function_implementation(
     file_path: str, function_name: str
 ) -> dict[str, object]:
-    """Return one uniquely matched Python function or method as an exact source slice.
+    """Return one uniquely matched supported-language function or method slice.
 
     Args:
         file_path: Workspace file, relative or absolute within the workspace.
@@ -249,7 +265,7 @@ def get_function_implementation(
     if unsupported is not None:
         return unsupported
     extraction = _extract_file(resolution.path, display_path)
-    if isinstance(extraction, PythonSymbolIssue):
+    if isinstance(extraction, SymbolIssue):
         return _issue_result(display_path, extraction)
 
     function_symbols = [
@@ -273,7 +289,7 @@ def get_function_implementation(
         result = tool_error(
             display_path,
             "symbol_index_truncated",
-            "The bounded Python symbol index was truncated; uniqueness cannot "
+            "The bounded symbol index was truncated; uniqueness cannot "
             "be established.",
         )
         result["truncated"] = True
@@ -291,14 +307,14 @@ def get_function_implementation(
         return tool_error(
             display_path,
             "definition_not_found",
-            "No matching Python function or method was found.",
+            "No matching function or method was found.",
         )
     if len(matches) != 1:
         return _bounded_candidate_result({
             "ok": False,
             "path": display_path,
             "error_code": "ambiguous_symbol",
-            "message": "Multiple Python symbols match; use a qualified symbol name.",
+            "message": "Multiple symbols match; use a qualified symbol name.",
             "candidates": [
                 {
                     "qualified_symbol": symbol.qualified_symbol,
@@ -313,13 +329,17 @@ def get_function_implementation(
             "truncated": False,
         })
     return _bounded_symbol_response(
-        display_path, matches, file_hash=extraction.file_hash, truncated=False
+        display_path,
+        matches,
+        file_hash=extraction.file_hash,
+        truncated=False,
+        language=_SYMBOL_ADAPTERS[resolution.path.suffix.lower()][1],
     )
 
 
 @tool(parse_docstring=True)
 def get_code_definitions_multi(file_paths: list[str]) -> dict[str, object]:
-    """Extract bounded exact Python symbols from several workspace files.
+    """Extract bounded exact symbols from several supported source files.
 
     Args:
         file_paths: Workspace files to inspect.
@@ -344,7 +364,7 @@ def get_code_definitions_multi(file_paths: list[str]) -> dict[str, object]:
         if denied is not None:
             return denied
 
-    symbols: list[PythonSymbol] = []
+    symbols: list[SourceSymbol] = []
     truncated = False
     output_source_bytes = 0
     for index, resolution in enumerate(resolutions):
@@ -361,7 +381,7 @@ def get_code_definitions_multi(file_paths: list[str]) -> dict[str, object]:
             max_entries=remaining_entries,
             max_source_bytes=remaining_source_bytes,
         )
-        if isinstance(extraction, PythonSymbolIssue):
+        if isinstance(extraction, SymbolIssue):
             return _issue_result(display_path, extraction)
         symbols.extend(extraction.symbols)
         output_source_bytes += sum(
@@ -374,7 +394,11 @@ def get_code_definitions_multi(file_paths: list[str]) -> dict[str, object]:
             truncated = True
             break
     result = _bounded_symbol_response(
-        "<multiple>", symbols, file_hash=None, truncated=truncated
+        "<multiple>",
+        symbols,
+        file_hash=None,
+        truncated=truncated,
+        language="Code",
     )
     if result.get("ok"):
         result["truncated"] = bool(result["truncated"]) or truncated
