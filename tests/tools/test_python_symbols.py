@@ -120,24 +120,6 @@ class PythonSymbolToolTests(unittest.TestCase):
             symbol["source"],
         )
 
-    def test_tsx_symbol_language_fails_closed_with_search_guidance(self) -> None:
-        with tempfile.TemporaryDirectory() as directory:
-            root = Path(directory)
-            (root / "sample.tsx").write_text(
-                "function answer() { return 42; }\n", encoding="utf-8"
-            )
-            with patch.dict(os.environ, {"SWE_AGENT_WORKSPACE": str(root)}):
-                results = (
-                    get_code_definitions.invoke({"file_path": "sample.tsx"}),
-                    get_function_implementation.invoke(
-                        {"file_path": "sample.tsx", "function_name": "answer"}
-                    ),
-                )
-        for result in results:
-            self.assertFalse(result["ok"], result)
-            self.assertEqual(result["error_code"], "unsupported_language")
-            self.assertIn("search_keyword_in_directory", result["message"])
-
     def test_python_syntax_error_is_not_reported_as_empty_success(self) -> None:
         with tempfile.TemporaryDirectory() as directory:
             root = Path(directory)

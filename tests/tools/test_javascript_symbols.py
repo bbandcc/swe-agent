@@ -272,16 +272,6 @@ class JavaScriptSymbolToolTests(unittest.TestCase):
         self.assertTrue(qualified["ok"], qualified)
         self.assertEqual(qualified["symbols"][0]["qualified_symbol"], "Worker.run")
 
-    def test_tsx_remains_unsupported(self) -> None:
-        with tempfile.TemporaryDirectory() as directory:
-            root = Path(directory)
-            (root / "sample.tsx").write_text("const View = () => <div />;\n")
-            with patch.dict(os.environ, {"SWE_AGENT_WORKSPACE": str(root)}):
-                result = get_code_definitions.invoke({"file_path": "sample.tsx"})
-        self.assertFalse(result["ok"])
-        self.assertEqual(result["error_code"], "unsupported_language")
-        self.assertIn("search_keyword_in_directory", result["message"])
-
     def test_javascript_syntax_errors_are_structured(self) -> None:
         with tempfile.TemporaryDirectory() as directory:
             root = Path(directory)

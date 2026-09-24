@@ -67,14 +67,16 @@ def _line_range(node: Any) -> tuple[int, int]:
     return start_line, end_line
 
 
-def extract_typescript_symbols(
+def _extract_symbols_for_grammar(
     canonical_path: str,
     source_bytes: bytes,
     *,
+    grammar_name: str,
+    language_name: str,
     max_entries: int = MAX_SYMBOL_ENTRIES,
     max_source_bytes: int = MAX_SYMBOL_SOURCE_BYTES,
 ) -> SymbolExtraction:
-    """Extract bounded TypeScript symbols using exact grammar node byte ranges.
+    """Extract bounded typed-JavaScript symbols from exact grammar byte ranges.
 
     Supported value declarations are functions, classes, methods, and arrows
     assigned to variables. Interface, type alias, and enum declarations are
@@ -87,7 +89,7 @@ def extract_typescript_symbols(
             file_hash,
             issue=SymbolIssue(
                 "source_too_large",
-                "TypeScript symbol input exceeds the fixed source-size limit.",
+                f"{language_name} symbol input exceeds the fixed source-size limit.",
             ),
         )
     if max_entries < 0 or max_source_bytes < 0:
@@ -102,7 +104,7 @@ def extract_typescript_symbols(
         )
 
     try:
-        parser = get_parser("typescript")
+        parser = get_parser(grammar_name)
         tree = parser.parse(source_bytes)
     except (KeyError, TypeError, ValueError):
         return SymbolExtraction(
@@ -110,7 +112,7 @@ def extract_typescript_symbols(
             file_hash,
             issue=SymbolIssue(
                 "tree_sitter_error",
-                "The installed Tree-sitter TypeScript parser could not process this file.",
+                f"The installed Tree-sitter {language_name} parser could not process this file.",
             ),
         )
     if tree.root_node.has_error:
@@ -119,7 +121,7 @@ def extract_typescript_symbols(
             file_hash,
             issue=SymbolIssue(
                 "parse_error",
-                "Tree-sitter could not parse the TypeScript source.",
+                f"Tree-sitter could not parse the {language_name} source.",
                 _first_parse_issue(tree.root_node),
             ),
         )
@@ -224,6 +226,24 @@ def extract_typescript_symbols(
         )
 
     return SymbolExtraction(tuple(symbols), file_hash, truncated=truncated)
+
+
+def extract_typescript_symbols(
+    canonical_path: str,
+    source_bytes: bytes,
+    *,
+    max_entries: int = MAX_SYMBOL_ENTRIES,
+    max_source_bytes: int = MAX_SYMBOL_SOURCE_BYTES,
+) -> SymbolExtraction:
+    """Extract symbols from `.ts` source with the independent TypeScript grammar."""
+    return _extract_symbols_for_grammar(
+        canonical_path,
+        source_bytes,
+        grammar_name="typescript",
+        language_name="TypeScript",
+        max_entries=max_entries,
+        max_source_bytes=max_source_bytes,
+    )
 
 
 __all__ = ["MAX_TYPESCRIPT_SOURCE_BYTES", "extract_typescript_symbols"]
