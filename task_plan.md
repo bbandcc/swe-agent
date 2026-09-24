@@ -11,11 +11,9 @@
 ### 当前状态文件基线
 
 - S3.2 production 技术冻结点：`5850b8370c49f868e90aeffe9e6042f85eaa522c`；D1/S1a、D2/S2b 已冻结，D3/S2c Seal blocker 已通过本地验收。
-- S3.2、D1-D7、S2d/D3 与 S4a/D8 的既有契约保持冻结。S4b/D9 Final Gate 已通过；search、raw read、workspace tree 使用固定代码上限，三者 continuation 均绑定查询及各自版本/位置证据。search 每页最多处理 128 个候选文件、返回 100 条结果并读取/输出不超过 1 MiB，不缓存整次搜索结果；未改变 RunConfig 或 checkpoint 语义，semantic config schema 保持 v7。S4c.1 Python、S4c.2 JavaScript/JSX 与 S4c.3 TypeScript 均已通过技术 Final Gate。S4c.3 已审核技术基线 `d86d1c8ecb08ba2e146518f1d0de784a7f01b095` 已同步 upstream。S4c.4 `.tsx` 精确符号实现与本地验收已完成，等待技术 Final Gate；repo map 与 D11 context assembly 尚未实现。
+- S3.2、D1-D7、S2d/D3 与 S4a/D8 的既有契约保持冻结。S4b/D9 Final Gate 已通过；search、raw read、workspace tree 使用固定代码上限，三者 continuation 均绑定查询及各自版本/位置证据。search 每页最多处理 128 个候选文件、返回 100 条结果并读取/输出不超过 1 MiB，不缓存整次搜索结果；未改变 RunConfig 或 checkpoint 语义，semantic config schema 保持 v7。S4c.1 Python、S4c.2 JavaScript/JSX、S4c.3 TypeScript 与 S4c.4 TSX 均已通过 ChatGPT 技术 Final Gate。S4c.4 冻结 HEAD `3ebefa53da38152381a11bfe8d526cbb3bbe60c8` 已在本轮开工前正常 push 并确认工作树 clean、upstream 正确、ahead/behind 0/0。repo map 与 D11 context assembly 尚未实现。
 - D2/S2b Final Seal 已收窄 library/CLI 的异常边界；`RunSummary.warnings` 只输出 preflight warning code，unexpected `RuntimeError`、`KeyboardInterrupt` 和 `SystemExit` 不被入口吞掉。
-- 本轮最新 Codex 本地验证：unittest 404 tests OK / 10 skipped；pytest 398 passed / 10 skipped / 214 subtests passed；
-  Python compile、11 个 prompt render、root/start/resume 三套 CLI help、`git diff --check` 均通过。
-  pytest 汇总 25 条锁定 Tree-sitter 旧 API 的 FutureWarning；10 个 skip 为既有 Windows 链接能力或平台边界限制。
+- 当前最新 Codex 本地验证（S5a）：unittest 419 tests OK / 10 skipped；pytest 413 passed / 10 skipped / 216 subtests passed；Python compile、11 个 prompt render、root/start/resume CLI help、`git diff --check` 均通过。pytest 汇总 25 条锁定 Tree-sitter 旧 API 的 FutureWarning；10 个 skip 为既有 Windows 链接能力或平台边界限制。
 - 没有 GitHub CI 或独立外部测试证据，不作相应声明。
 - 剩余能力：完整 secret-safe state persistence（当前只覆盖 RunConfig 中已知凭据）、verification rerun/replay、超出当前明确列出的语法子集的完整语言语义、repo map 与 D11 context assembly 仍未实现；当前符号 adapter 只承诺 Python、JavaScript/JSX、TypeScript 和 TSX 的已测试声明/组件范围。D7 policy 只约束使用本 seam 的合作进程和模型可调用工具，不阻止第三方直接写 workspace，也不是 OS sandbox。本轮 EventSink/RunRecord 与 verification artifact 只提供单进程本地 JSONL、结构化记录和有界/脱敏日志，不是完整恢复系统。provider 正向 retry/独立 attempt 语义未实现，当前 durable 只允许单次外部尝试；当前模型 `request_digest` 只代表有界语义输入，身份范围明确为 `PARTIAL`，不能据此安全重放最终 rendered request；exactly-once 不承诺。JUnit XML 是当前唯一可信报告格式，未配置或报告缺失/畸形时保守返回证据不足；多框架 parser registry、扩展 repair 尚未实现。runner 只改写精确匹配的 `--junitxml/--junit-xml` destination 到 owned temporary output，workspace report_path 保持原 bytes/mtime；owned temp cleanup 失败返回结构化 `EXECUTION_ERROR`。S3.4b 对命令已启动但结果未持久化的恢复默认保守返回 `OUTCOME_UNKNOWN`，当前没有 isolated execution seam，因此不支持自动重跑；pytest 对其它 workspace 文件的副作用仍未提供 recovery。S4b raw-read cursor 用文件 stat 元数据摘要识别常规变化，并非全文件快照/强内容锁；tree inventory 最多扫描 4096 项，触及上限会明确标记 truncated，不能续读未扫描后缀。
 - 后续技术切片继续按 MASTER_PLAN §5.2 执行；保留现有 S1/S2/S3 历史编号，不重新开启或重命名 S1。
@@ -1101,8 +1099,29 @@ S1/S2/S3.1/S3.2/D3-D7a 测试保持通过。compile、11 个 prompt render、roo
 - [x] 先增加公开工具 golden 回归，确认旧实现返回 `unsupported_language`；随后实现独立 TSX adapter，逐字节验证 Unicode/source/hash/byte range/line range。
 - [x] 覆盖 TSX grammar 与 TypeScript grammar 差异、ambiguity、parse/grammar error、unexpected exception、source/entry/output/file caps 和真实 compiled ToolNode；Python、JavaScript/JSX、TypeScript 回归保持通过。
 - [x] Codex 本地全量验证：unittest 404 tests OK / 10 skipped；pytest 398 passed / 10 skipped / 214 subtests passed；Python compileall、11 prompt render、root/start/resume CLI help、`git diff --check` 通过。pytest 有 25 条锁定 Tree-sitter 旧 API FutureWarning；10 个 skip 为既有 Windows 链接能力或平台边界限制。
-- 以上是 Codex 本地证据，不代表 GitHub CI 或独立外部验收。S4c.4 本轮实现和本地验收完成，提交后停止并等待 ChatGPT Final Gate；本轮不 push。
+- S4c.4 已通过 ChatGPT Final Gate；以上数字是该阶段提交时的 Codex 本地证据，不代表 GitHub CI 或独立外部验收。S4c/D10 当前全部通过。
 
 ### 已知边界
 
 - 这里只索引既有声明 walker 能识别的 TypeScript function/class/method、变量绑定 arrow 与声明类 symbols；JSX 标签本身不建立 symbol index，组件语义、JSX namespace/type checking 和完整 React 语义不承诺。Tree-sitter binding 仍报告锁定版本旧 API FutureWarning。
+
+## D12/S5a：固定任务 manifest 与离线校验
+
+### 本轮范围
+
+- 基线：已审核 S4c.4 HEAD `3ebefa53da38152381a11bfe8d526cbb3bbe60c8`；开工前已正常 push 并核对 upstream、clean 与 ahead/behind 0/0。
+- 本片只提供 versioned JSON manifest 和离线 validator；不运行真实模型或 check 命令，不实现隔离执行器、CI、S4d 或评分服务。
+- 外部机制只借鉴固定 revision、分别记录目标测试与回归检查的思路；SWE-bench 固定源码 [grading.py](https://github.com/SWE-bench/SWE-bench/blob/02e7a74ffd0b707aab73d203fe87bdc7c76afc8e/swebench/harness/grading.py) 明确按 FAIL_TO_PASS / PASS_TO_PASS 结果分类。本项目 manifest 不复制其 harness 或评分逻辑，不将自建任务称为 SWE-bench Verified，也不据此报告解决率。
+
+### 公开 contract 与数据来源
+
+- `agent.evaluation.load_task_manifest` / `validate_task_manifest` 校验 schema v1、canonical JSON manifest hash、每个 task text hash、重复 ID、完整 40 位已存在 Git commit、目标仓库身份、allowed edit scope、baseline/target/regression 的 argv checks、oracle 文件 hash、环境摘要、预算与 split/stratum。校验 Git 只使用固定 argv、`shell=False`、5 秒 timeout；validator 不执行 manifest 中的任何 check。
+- `evals/s5a/tasks.v1.json` 收录 4 个历史符号实现 acceptance seed，来源分别锚定到项目 S4c.1–S4c.4 的目标基线、实现 commit、源码变更范围和 pinned 测试/fixture SHA-256。task text 明确标为基于 commit subject 与测试归纳，不伪称原始 issue 文本。
+- 当前 manifest canonical SHA-256：`d641748705705c2c440f5507d8e92bde2e0a64463e8249122d0beecc8abc902d`。schema v1 的 checks 限定为 `python -m unittest` + 显式测试模块；这是离线校验 contract，不是执行器支持范围声明。
+- 当前素材没有独立仓库/issue 任务集，也没有可证明独立性的 holdout；因此只冻结 4 个来源可追溯 seed（2 train、2 dev，按语言分层），不伪造 20 项或 holdout。oracle 仅声明 evaluator-only；本片没有隔离执行器，不能保证测试路径对未来 Agent 运行时不可见。
+- 每项预算固定 max_steps=100、deadline=1800 秒、max_cost=2 美元；成本 cap 是未实测的试点候选，不是质量/成本校准结果或硬上限。当前没有运行真实模型、任务求解、CI 或独立外部验收。
+- manifest SHA-256 用于发现未同步更新的内容，不是签名；真实性仍依赖受审查的 Git 配置。validator 是离线 library seam，不执行 argv checks，也没有 Agent 接入，因此 `evaluator_only_declared` 只是可信配置声明，不能证明运行时隔离。
+- [x] 公开 seam 覆盖合法来源清单、缺字段、任务/manifest hash tamper、重复 task id、scope/oracle 冲突、浮动/未知 revision、非法路径与 argv、仓库/环境不匹配、oracle 文件 hash 不匹配和重复 JSON key。
+- [x] Codex 本地验证：unittest 419 tests OK / 10 skipped；pytest 413 passed / 10 skipped / 216 subtests passed；Python compile、11 个 prompt render、root/start/resume CLI help、`git diff --check` 均通过。pytest 的 25 条 FutureWarning 来自既有锁定 Tree-sitter API；10 个 skip 是既有 Windows 链接能力或平台限制。未运行 GitHub CI 或独立外部验收。
+- 最终拆分 public facade、manifest validation 与只读 Git evidence 后，validator 专项回归再通过 unittest 15 tests、pytest 15 passed / 2 subtests；compileall 也重新通过。
+- S5a manifest 实现完成，等待 ChatGPT Final Gate；不进入 S4d 或 S5b。

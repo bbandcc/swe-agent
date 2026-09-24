@@ -1,0 +1,483 @@
+{
+  "schema_version": 1,
+  "manifest_id": "s5a-history-seed-v1",
+  "manifest_sha256": "d641748705705c2c440f5507d8e92bde2e0a64463e8249122d0beecc8abc902d",
+  "tasks": [
+    {
+      "task_id": "symbols-python-exact-source-v1",
+      "task_text": "Add Python symbol extraction with qualified declarations, exact UTF-8 byte ranges and hashes, original source slices, and fail-closed ambiguity handling.",
+      "task_text_sha256": "5409a2786b82f64886c04595946bb984499bc01303075e11e04ef09d6f8c3b0c",
+      "target": {
+        "repo": "https://github.com/bbandcc/swe-agent.git",
+        "revision": "7ed6bc9ee41b0f5586c0da4c980d790afb59f945"
+      },
+      "allowed_edit_scope": [
+        {
+          "path": "agent/tools/codemap.py",
+          "operation": "modify"
+        },
+        {
+          "path": "agent/tools/python_symbols.py",
+          "operation": "create"
+        }
+      ],
+      "checks": {
+        "baseline": [
+          {
+            "check_id": "python-workspace-baseline",
+            "tests_revision": "7ed6bc9ee41b0f5586c0da4c980d790afb59f945",
+            "argv": [
+              "python",
+              "-m",
+              "unittest",
+              "tests.tools.test_workspace_boundary"
+            ],
+            "shell": false,
+            "cwd": ".",
+            "timeout_seconds": 180.0
+          }
+        ],
+        "target": [
+          {
+            "check_id": "python-target-oracle",
+            "tests_revision": "b8fcb68e123fd19d4542fbf48155240926405d33",
+            "argv": [
+              "python",
+              "-m",
+              "unittest",
+              "tests.tools.test_python_symbols"
+            ],
+            "shell": false,
+            "cwd": ".",
+            "timeout_seconds": 180.0
+          }
+        ],
+        "regression": [
+          {
+            "check_id": "python-language-regressions",
+            "tests_revision": "b8fcb68e123fd19d4542fbf48155240926405d33",
+            "argv": [
+              "python",
+              "-m",
+              "unittest",
+              "tests.tools.test_python_symbols",
+              "tests.tools.test_workspace_boundary"
+            ],
+            "shell": false,
+            "cwd": ".",
+            "timeout_seconds": 180.0
+          }
+        ]
+      },
+      "oracle": {
+        "revision": "b8fcb68e123fd19d4542fbf48155240926405d33",
+        "test_files": [
+          {
+            "path": "tests/tools/test_python_symbols.py",
+            "sha256": "6c9219de5541d0550a67977a0aaebdf68b8bbbaead3b5c356fc064bb38ed7217"
+          },
+          {
+            "path": "tests/tools/test_workspace_boundary.py",
+            "sha256": "27932efcd6f236f70e672c75f7dd1a77e88e86c8a28f91ed66c5b3067642c1f6"
+          }
+        ],
+        "visibility": "evaluator_only_declared"
+      },
+      "environment": {
+        "os_family": "Windows",
+        "architecture": "AMD64",
+        "python_version": "3.12",
+        "lock_path": "uv.lock",
+        "lock_sha256": "c270b21033292b4c578ca30cbe06a79718a33f272d2a05570aaaa31f57dca04f"
+      },
+      "budget": {
+        "max_steps": 100,
+        "max_cost_usd": 2.0,
+        "deadline_seconds": 1800.0,
+        "calibration": "provisional_unmeasured"
+      },
+      "known_environment_failures": [
+        "tests.tools.test_workspace_boundary may skip ordinary symlink creation when Windows privilege is unavailable; junction coverage depends on platform support."
+      ],
+      "split": "train",
+      "stratum": "language:python",
+      "provenance": {
+        "kind": "historical_acceptance_slice",
+        "commit": "b8fcb68e123fd19d4542fbf48155240926405d33",
+        "subject": "feat(S4): 增加 Python 精确符号提取",
+        "task_text_basis": "commit_subject_and_pinned_tests"
+      }
+    },
+    {
+      "task_id": "symbols-javascript-exact-source-v1",
+      "task_text": "Add JavaScript and JSX symbol extraction with exact source slices, deterministic ambiguity handling, and bounded structured results.",
+      "task_text_sha256": "a0eb432b39b44e3dcd96417cedf1f8ad9de68c13e2c66487d24b8a1fc719ac75",
+      "target": {
+        "repo": "https://github.com/bbandcc/swe-agent.git",
+        "revision": "b8fcb68e123fd19d4542fbf48155240926405d33"
+      },
+      "allowed_edit_scope": [
+        {
+          "path": "agent/tools/codemap.py",
+          "operation": "modify"
+        },
+        {
+          "path": "agent/tools/python_symbols.py",
+          "operation": "modify"
+        },
+        {
+          "path": "agent/tools/javascript_symbols.py",
+          "operation": "create"
+        },
+        {
+          "path": "agent/tools/symbol_contract.py",
+          "operation": "create"
+        }
+      ],
+      "checks": {
+        "baseline": [
+          {
+            "check_id": "javascript-workspace-baseline",
+            "tests_revision": "b8fcb68e123fd19d4542fbf48155240926405d33",
+            "argv": [
+              "python",
+              "-m",
+              "unittest",
+              "tests.tools.test_workspace_boundary"
+            ],
+            "shell": false,
+            "cwd": ".",
+            "timeout_seconds": 180.0
+          }
+        ],
+        "target": [
+          {
+            "check_id": "javascript-target-oracle",
+            "tests_revision": "c25094f5b383c625994c59ca49fd77018115eb07",
+            "argv": [
+              "python",
+              "-m",
+              "unittest",
+              "tests.tools.test_javascript_symbols"
+            ],
+            "shell": false,
+            "cwd": ".",
+            "timeout_seconds": 180.0
+          }
+        ],
+        "regression": [
+          {
+            "check_id": "javascript-language-regressions",
+            "tests_revision": "c25094f5b383c625994c59ca49fd77018115eb07",
+            "argv": [
+              "python",
+              "-m",
+              "unittest",
+              "tests.tools.test_python_symbols"
+            ],
+            "shell": false,
+            "cwd": ".",
+            "timeout_seconds": 180.0
+          }
+        ]
+      },
+      "oracle": {
+        "revision": "c25094f5b383c625994c59ca49fd77018115eb07",
+        "test_files": [
+          {
+            "path": "tests/tools/test_javascript_symbols.py",
+            "sha256": "546b4208214aa90ef174fe912afc8cc76f054bed123a55e13491738df4ab8f18"
+          },
+          {
+            "path": "tests/tools/test_python_symbols.py",
+            "sha256": "c8088fdf71fe42cc8338bab0f3272df77ca57c40d321838461d02315e510465d"
+          },
+          {
+            "path": "tests/tools/fixtures/javascript_symbols.js",
+            "sha256": "bdf37833b4177a35dde7caa524c770905a977b3b99c4d41acaf8d01d3aa81e90"
+          },
+          {
+            "path": "tests/tools/fixtures/javascript_symbols.jsx",
+            "sha256": "648bd7421c09635e9295b37cb80ade8cd7d8c1d0e32f0138a13c2bdb26675abc"
+          }
+        ],
+        "visibility": "evaluator_only_declared"
+      },
+      "environment": {
+        "os_family": "Windows",
+        "architecture": "AMD64",
+        "python_version": "3.12",
+        "lock_path": "uv.lock",
+        "lock_sha256": "c270b21033292b4c578ca30cbe06a79718a33f272d2a05570aaaa31f57dca04f"
+      },
+      "budget": {
+        "max_steps": 100,
+        "max_cost_usd": 2.0,
+        "deadline_seconds": 1800.0,
+        "calibration": "provisional_unmeasured"
+      },
+      "known_environment_failures": [
+        "tests.tools.test_workspace_boundary may skip ordinary symlink creation when Windows privilege is unavailable; junction coverage depends on platform support."
+      ],
+      "split": "train",
+      "stratum": "language:javascript",
+      "provenance": {
+        "kind": "historical_acceptance_slice",
+        "commit": "c25094f5b383c625994c59ca49fd77018115eb07",
+        "subject": "feat(S4): 增加 JavaScript 精确符号提取",
+        "task_text_basis": "commit_subject_and_pinned_tests"
+      }
+    },
+    {
+      "task_id": "symbols-typescript-exact-source-v1",
+      "task_text": "Add .ts symbol extraction for typed declarations and generic arrows with exact source ranges; keep .tsx unsupported.",
+      "task_text_sha256": "6f0e5f80322ad95a0bdf29c4d38b358031f63fc759bb0198c137c9204819f4cc",
+      "target": {
+        "repo": "https://github.com/bbandcc/swe-agent.git",
+        "revision": "c25094f5b383c625994c59ca49fd77018115eb07"
+      },
+      "allowed_edit_scope": [
+        {
+          "path": "agent/tools/codemap.py",
+          "operation": "modify"
+        },
+        {
+          "path": "agent/tools/typescript_symbols.py",
+          "operation": "create"
+        }
+      ],
+      "checks": {
+        "baseline": [
+          {
+            "check_id": "typescript-workspace-baseline",
+            "tests_revision": "c25094f5b383c625994c59ca49fd77018115eb07",
+            "argv": [
+              "python",
+              "-m",
+              "unittest",
+              "tests.tools.test_workspace_boundary"
+            ],
+            "shell": false,
+            "cwd": ".",
+            "timeout_seconds": 180.0
+          }
+        ],
+        "target": [
+          {
+            "check_id": "typescript-target-oracle",
+            "tests_revision": "d86d1c8ecb08ba2e146518f1d0de784a7f01b095",
+            "argv": [
+              "python",
+              "-m",
+              "unittest",
+              "tests.tools.test_typescript_symbols"
+            ],
+            "shell": false,
+            "cwd": ".",
+            "timeout_seconds": 180.0
+          }
+        ],
+        "regression": [
+          {
+            "check_id": "typescript-language-regressions",
+            "tests_revision": "d86d1c8ecb08ba2e146518f1d0de784a7f01b095",
+            "argv": [
+              "python",
+              "-m",
+              "unittest",
+              "tests.tools.test_python_symbols",
+              "tests.tools.test_javascript_symbols"
+            ],
+            "shell": false,
+            "cwd": ".",
+            "timeout_seconds": 180.0
+          }
+        ]
+      },
+      "oracle": {
+        "revision": "d86d1c8ecb08ba2e146518f1d0de784a7f01b095",
+        "test_files": [
+          {
+            "path": "tests/tools/test_typescript_symbols.py",
+            "sha256": "7184245799748b8f54e599044db68a43cd8f83fdc3952d01bd0efdef1c265b45"
+          },
+          {
+            "path": "tests/tools/test_javascript_symbols.py",
+            "sha256": "6f34b369597da054fd1cb7fcb3262475c0af6848afbc7f96d876cd9467088e95"
+          },
+          {
+            "path": "tests/tools/test_python_symbols.py",
+            "sha256": "67906191d9bca0140473dae043839d6c7f47b05d7e88f3309b590ac3c18ca11f"
+          },
+          {
+            "path": "tests/tools/fixtures/typescript_symbols.ts",
+            "sha256": "5475c8958767f7fbe031a8f34d967de0e95d792b098a9d89629f19dd3cc7041c"
+          },
+          {
+            "path": "tests/tools/fixtures/javascript_symbols.js",
+            "sha256": "bdf37833b4177a35dde7caa524c770905a977b3b99c4d41acaf8d01d3aa81e90"
+          },
+          {
+            "path": "tests/tools/fixtures/javascript_symbols.jsx",
+            "sha256": "648bd7421c09635e9295b37cb80ade8cd7d8c1d0e32f0138a13c2bdb26675abc"
+          }
+        ],
+        "visibility": "evaluator_only_declared"
+      },
+      "environment": {
+        "os_family": "Windows",
+        "architecture": "AMD64",
+        "python_version": "3.12",
+        "lock_path": "uv.lock",
+        "lock_sha256": "c270b21033292b4c578ca30cbe06a79718a33f272d2a05570aaaa31f57dca04f"
+      },
+      "budget": {
+        "max_steps": 100,
+        "max_cost_usd": 2.0,
+        "deadline_seconds": 1800.0,
+        "calibration": "provisional_unmeasured"
+      },
+      "known_environment_failures": [
+        "tests.tools.test_workspace_boundary may skip ordinary symlink creation when Windows privilege is unavailable; junction coverage depends on platform support."
+      ],
+      "split": "dev",
+      "stratum": "language:typescript",
+      "provenance": {
+        "kind": "historical_acceptance_slice",
+        "commit": "d86d1c8ecb08ba2e146518f1d0de784a7f01b095",
+        "subject": "feat(S4): 增加 TypeScript 精确符号提取",
+        "task_text_basis": "commit_subject_and_pinned_tests"
+      }
+    },
+    {
+      "task_id": "symbols-tsx-exact-source-v1",
+      "task_text": "Add a dedicated TSX grammar adapter that returns exact source ranges for the supported declarations and leaves broader framework semantics unsupported.",
+      "task_text_sha256": "f4eb274b79d84b83656544f397f5c75adb0bb9460045778b49ec1a1e4b1adead",
+      "target": {
+        "repo": "https://github.com/bbandcc/swe-agent.git",
+        "revision": "c8b0840812a7b2f1d7d56450bdea908d623a7606"
+      },
+      "allowed_edit_scope": [
+        {
+          "path": "agent/tools/tsx_symbols.py",
+          "operation": "create"
+        },
+        {
+          "path": "agent/tools/typescript_symbols.py",
+          "operation": "modify"
+        }
+      ],
+      "checks": {
+        "baseline": [
+          {
+            "check_id": "tsx-workspace-baseline",
+            "tests_revision": "c8b0840812a7b2f1d7d56450bdea908d623a7606",
+            "argv": [
+              "python",
+              "-m",
+              "unittest",
+              "tests.tools.test_workspace_boundary"
+            ],
+            "shell": false,
+            "cwd": ".",
+            "timeout_seconds": 180.0
+          }
+        ],
+        "target": [
+          {
+            "check_id": "tsx-target-oracle",
+            "tests_revision": "3ebefa53da38152381a11bfe8d526cbb3bbe60c8",
+            "argv": [
+              "python",
+              "-m",
+              "unittest",
+              "tests.tools.test_tsx_symbols"
+            ],
+            "shell": false,
+            "cwd": ".",
+            "timeout_seconds": 180.0
+          }
+        ],
+        "regression": [
+          {
+            "check_id": "tsx-language-regressions",
+            "tests_revision": "3ebefa53da38152381a11bfe8d526cbb3bbe60c8",
+            "argv": [
+              "python",
+              "-m",
+              "unittest",
+              "tests.tools.test_python_symbols",
+              "tests.tools.test_javascript_symbols",
+              "tests.tools.test_typescript_symbols"
+            ],
+            "shell": false,
+            "cwd": ".",
+            "timeout_seconds": 180.0
+          }
+        ]
+      },
+      "oracle": {
+        "revision": "3ebefa53da38152381a11bfe8d526cbb3bbe60c8",
+        "test_files": [
+          {
+            "path": "tests/tools/test_tsx_symbols.py",
+            "sha256": "5d3e645d3ebf4858cf5a1f985ef288854112a26bd29cb1a3825049ae4d50bb70"
+          },
+          {
+            "path": "tests/tools/test_typescript_symbols.py",
+            "sha256": "7184245799748b8f54e599044db68a43cd8f83fdc3952d01bd0efdef1c265b45"
+          },
+          {
+            "path": "tests/tools/test_javascript_symbols.py",
+            "sha256": "1c0812716633465ceb58b92f61291258e6f3029660f01c826ec69e7a7ad5e962"
+          },
+          {
+            "path": "tests/tools/test_python_symbols.py",
+            "sha256": "a3f2fc6f01e18f6c7ad163db96e7c430da5cb6e2c2b27d1e1d2169cf2c5fab9c"
+          },
+          {
+            "path": "tests/tools/fixtures/tsx_symbols.tsx",
+            "sha256": "3a8eb5b1c9da30cbe4ae2345b993b4c584c0ec256397cf31e5550a056537b4dd"
+          },
+          {
+            "path": "tests/tools/fixtures/typescript_symbols.ts",
+            "sha256": "5475c8958767f7fbe031a8f34d967de0e95d792b098a9d89629f19dd3cc7041c"
+          },
+          {
+            "path": "tests/tools/fixtures/javascript_symbols.js",
+            "sha256": "bdf37833b4177a35dde7caa524c770905a977b3b99c4d41acaf8d01d3aa81e90"
+          },
+          {
+            "path": "tests/tools/fixtures/javascript_symbols.jsx",
+            "sha256": "648bd7421c09635e9295b37cb80ade8cd7d8c1d0e32f0138a13c2bdb26675abc"
+          }
+        ],
+        "visibility": "evaluator_only_declared"
+      },
+      "environment": {
+        "os_family": "Windows",
+        "architecture": "AMD64",
+        "python_version": "3.12",
+        "lock_path": "uv.lock",
+        "lock_sha256": "c270b21033292b4c578ca30cbe06a79718a33f272d2a05570aaaa31f57dca04f"
+      },
+      "budget": {
+        "max_steps": 100,
+        "max_cost_usd": 2.0,
+        "deadline_seconds": 1800.0,
+        "calibration": "provisional_unmeasured"
+      },
+      "known_environment_failures": [
+        "tests.tools.test_workspace_boundary may skip ordinary symlink creation when Windows privilege is unavailable; junction coverage depends on platform support."
+      ],
+      "split": "dev",
+      "stratum": "language:tsx",
+      "provenance": {
+        "kind": "historical_acceptance_slice",
+        "commit": "3ebefa53da38152381a11bfe8d526cbb3bbe60c8",
+        "subject": "feat(S4): 增加 TSX 精确符号提取",
+        "task_text_basis": "commit_subject_and_pinned_tests"
+      }
+    }
+  ]
+}
