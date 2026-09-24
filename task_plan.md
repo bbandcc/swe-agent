@@ -11,7 +11,7 @@
 ### 当前状态文件基线
 
 - S3.2 production 技术冻结点：`5850b8370c49f868e90aeffe9e6042f85eaa522c`；D1/S1a、D2/S2b 已冻结，D3/S2c Seal blocker 已通过本地验收。
-- S3.2、D1-D7、S2d/D3 与 S4a/D8 的既有契约保持冻结。S4b/D9 Final Gate 已通过；search、raw read、workspace tree 使用固定代码上限，三者 continuation 均绑定查询及各自版本/位置证据。search 每页最多处理 128 个候选文件、返回 100 条结果并读取/输出不超过 1 MiB，不缓存整次搜索结果；未改变 RunConfig 或 checkpoint 语义，semantic config schema 保持 v7。S4c.1 Python、S4c.2 JavaScript/JSX 与 S4c.3 TypeScript 均已通过 ChatGPT 技术 Final Gate。当前 HEAD `d86d1c8ecb08ba2e146518f1d0de784a7f01b095` 已与 `origin/review/step3-runtime-recovery` 同步，工作树 clean、ahead/behind 0/0。
+- S3.2、D1-D7、S2d/D3 与 S4a/D8 的既有契约保持冻结。S4b/D9 Final Gate 已通过；search、raw read、workspace tree 使用固定代码上限，三者 continuation 均绑定查询及各自版本/位置证据。search 每页最多处理 128 个候选文件、返回 100 条结果并读取/输出不超过 1 MiB，不缓存整次搜索结果；未改变 RunConfig 或 checkpoint 语义，semantic config schema 保持 v7。S4c.1 Python、S4c.2 JavaScript/JSX 与 S4c.3 TypeScript 均已通过技术 Final Gate。S4c.3 已审核技术基线 `d86d1c8ecb08ba2e146518f1d0de784a7f01b095` 已同步 upstream。TSX、repo map 与 D11 context assembly 尚未实现。
 - D2/S2b Final Seal 已收窄 library/CLI 的异常边界；`RunSummary.warnings` 只输出 preflight warning code，unexpected `RuntimeError`、`KeyboardInterrupt` 和 `SystemExit` 不被入口吞掉。
 - 本轮最新 Codex 本地验证：unittest 400 tests OK / 10 skipped；pytest 394 passed / 10 skipped / 208 subtests passed；
   Python compile、11 个 prompt render、root/start/resume 三套 CLI help、`git diff --check` 均通过。
@@ -1080,7 +1080,7 @@ S1/S2/S3.1/S3.2/D3-D7a 测试保持通过。compile、11 个 prompt render、roo
 - [x] TypeScript golden fixture 覆盖 Unicode byte offsets、export/async、nested function/class/method、变量绑定 generic arrow、类型注解、generic function/class/method，以及 interface/type alias/enum；逐字节核对 source、hash、offset 与行范围。
 - [x] 公开工具测试覆盖 ambiguity、parse/grammar error、unexpected exception、source/entry/output/file caps，并通过真实 compiled ToolNode 验证 `.ts` symbol evidence；Python 与 JavaScript/JSX 回归保持通过，`.tsx` 继续 fail closed。
 - [x] Codex 本地全量验证：unittest 400 tests OK / 10 skipped；pytest 394 passed / 10 skipped / 208 subtests passed；Python compileall、11 prompt render、root/start/resume CLI help、`git diff --check` 均通过。pytest 有 19 条锁定 Tree-sitter 旧 API FutureWarning；10 个 skip 是既有 Windows 链接能力或平台边界限制。
-- S4c.3 技术 Final Gate 已通过。以上是 Codex 本地验证证据，不代表 GitHub CI 或独立外部验收。当前已审核提交 `d86d1c8ecb08ba2e146518f1d0de784a7f01b095` 已与 upstream 同步；工作树 clean、ahead/behind 0/0。
+- S4c.3 技术 Final Gate 已通过。以上是 Codex 本地验证证据，不代表 GitHub CI 或独立外部验收。作为该阶段历史事实，技术基线 `d86d1c8ecb08ba2e146518f1d0de784a7f01b095` 已同步 upstream。
 
 ### 已知边界
 
