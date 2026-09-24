@@ -11,15 +11,15 @@
 ### 当前状态文件基线
 
 - S3.2 production 技术冻结点：`5850b8370c49f868e90aeffe9e6042f85eaa522c`；D1/S1a、D2/S2b 已冻结，D3/S2c Seal blocker 已通过本地验收。
-- S3.2、D1-D7、S2d/D3 与 S4a/D8 的既有契约保持冻结。S4b/D9 Final Gate 已通过；search、raw read、workspace tree 使用固定代码上限，三者 continuation 均绑定查询及各自版本/位置证据。search 每页最多处理 128 个候选文件、返回 100 条结果并读取/输出不超过 1 MiB，不缓存整次搜索结果；未改变 RunConfig 或 checkpoint 语义，semantic config schema 保持 v7。当前 S4c.1 只实现 Python 符号正确性，正在等待本轮 Final Gate。
+- S3.2、D1-D7、S2d/D3 与 S4a/D8 的既有契约保持冻结。S4b/D9 Final Gate 已通过；search、raw read、workspace tree 使用固定代码上限，三者 continuation 均绑定查询及各自版本/位置证据。search 每页最多处理 128 个候选文件、返回 100 条结果并读取/输出不超过 1 MiB，不缓存整次搜索结果；未改变 RunConfig 或 checkpoint 语义，semantic config schema 保持 v7。S4c.1 Python、S4c.2 JavaScript/JSX 已提交并等待 Final Gate；本轮完成 S4c.3 的 `.ts` 符号提取，`.tsx` 仍明确不支持。
 - D2/S2b Final Seal 已收窄 library/CLI 的异常边界；`RunSummary.warnings` 只输出 preflight warning code，unexpected `RuntimeError`、`KeyboardInterrupt` 和 `SystemExit` 不被入口吞掉。
-- 本轮最新 Codex 本地验证：unittest 387 tests OK / 10 skipped；pytest 381 passed / 10 skipped / 190 subtests passed；
+- 本轮最新 Codex 本地验证：unittest 400 tests OK / 10 skipped；pytest 394 passed / 10 skipped / 208 subtests passed；
   Python compile、11 个 prompt render、root/start/resume 三套 CLI help、`git diff --check` 均通过。
-  pytest 汇总 8 条锁定 Tree-sitter 旧 API 的 FutureWarning；10 个 skip 为既有 Windows 链接能力或平台边界限制。
+  pytest 汇总 19 条锁定 Tree-sitter 旧 API 的 FutureWarning；10 个 skip 为既有 Windows 链接能力或平台边界限制。
 - 没有 GitHub CI 或独立外部测试证据，不作相应声明。
-- 剩余能力：完整 secret-safe state persistence（当前只覆盖 RunConfig 中已知凭据）、verification rerun/replay、S4c JS/TS 符号解析、repo map 与 D11 context assembly 仍未实现；当前 S4c.1 仅处理 `.py`。D7 policy 只约束使用本 seam 的合作进程和模型可调用工具，不阻止第三方直接写 workspace，也不是 OS sandbox。本轮 EventSink/RunRecord 与 verification artifact 只提供单进程本地 JSONL、结构化记录和有界/脱敏日志，不是完整恢复系统。provider 正向 retry/独立 attempt 语义未实现，当前 durable 只允许单次外部尝试；当前模型 `request_digest` 只代表有界语义输入，身份范围明确为 `PARTIAL`，不能据此安全重放最终 rendered request；exactly-once 不承诺。JUnit XML 是当前唯一可信报告格式，未配置或报告缺失/畸形时保守返回证据不足；多框架 parser registry、扩展 repair 尚未实现。runner 只改写精确匹配的 `--junitxml/--junit-xml` destination 到 owned temporary output，workspace report_path 保持原 bytes/mtime；owned temp cleanup 失败返回结构化 `EXECUTION_ERROR`。S3.4b 对命令已启动但结果未持久化的恢复默认保守返回 `OUTCOME_UNKNOWN`，当前没有 isolated execution seam，因此不支持自动重跑；pytest 对其它 workspace 文件的副作用仍未提供 recovery。S4b raw-read cursor 用文件 stat 元数据摘要识别常规变化，并非全文件快照/强内容锁；tree inventory 最多扫描 4096 项，触及上限会明确标记 truncated，不能续读未扫描后缀。
+- 剩余能力：完整 secret-safe state persistence（当前只覆盖 RunConfig 中已知凭据）、verification rerun/replay、S4c TSX 符号解析、repo map 与 D11 context assembly 仍未实现；当前符号 adapter 只承诺 Python、JavaScript/JSX 和本轮列出的 TypeScript 声明类型，不代表完整语言语义。D7 policy 只约束使用本 seam 的合作进程和模型可调用工具，不阻止第三方直接写 workspace，也不是 OS sandbox。本轮 EventSink/RunRecord 与 verification artifact 只提供单进程本地 JSONL、结构化记录和有界/脱敏日志，不是完整恢复系统。provider 正向 retry/独立 attempt 语义未实现，当前 durable 只允许单次外部尝试；当前模型 `request_digest` 只代表有界语义输入，身份范围明确为 `PARTIAL`，不能据此安全重放最终 rendered request；exactly-once 不承诺。JUnit XML 是当前唯一可信报告格式，未配置或报告缺失/畸形时保守返回证据不足；多框架 parser registry、扩展 repair 尚未实现。runner 只改写精确匹配的 `--junitxml/--junit-xml` destination 到 owned temporary output，workspace report_path 保持原 bytes/mtime；owned temp cleanup 失败返回结构化 `EXECUTION_ERROR`。S3.4b 对命令已启动但结果未持久化的恢复默认保守返回 `OUTCOME_UNKNOWN`，当前没有 isolated execution seam，因此不支持自动重跑；pytest 对其它 workspace 文件的副作用仍未提供 recovery。S4b raw-read cursor 用文件 stat 元数据摘要识别常规变化，并非全文件快照/强内容锁；tree inventory 最多扫描 4096 项，触及上限会明确标记 truncated，不能续读未扫描后缀。
 - 后续技术切片继续按 MASTER_PLAN §5.2 执行；保留现有 S1/S2/S3 历史编号，不重新开启或重命名 S1。
-- MASTER_PLAN 对应：当前实现事实覆盖 S3.2、D1/S1a、D2/S2b、D3/S2c、D4/S3.2a、D5/S3.4a、D5/S3.4b、D6/S3.3a、S3.3b、S3.3c、D7/S3.5a、S3.5b Final Seal、S2d/D3 受控多文件 repair、D8/S4a 工具消息完整传递、D9/S4b 有界读取及 D10/S4c.1 Python 符号提取；S4c 其余部分仍未实现。没有 GitHub CI 或独立外部测试证据。
+- MASTER_PLAN 对应：当前实现事实覆盖 S3.2、D1/S1a、D2/S2b、D3/S2c、D4/S3.2a、D5/S3.4a、D5/S3.4b、D6/S3.3a、S3.3b、S3.3c、D7/S3.5a、S3.5b Final Seal、S2d/D3 受控多文件 repair、D8/S4a 工具消息完整传递、D9/S4b 有界读取及 D10/S4c.1 Python、S4c.2 JavaScript/JSX、S4c.3 TypeScript 符号提取；S4c 仍有 TSX 与 D11 context assembly 未实现。没有 GitHub CI 或独立外部测试证据。
 
 ## 当前文档任务：独立 MASTER PLAN（2026-09-16）
 
@@ -1064,3 +1064,24 @@ S1/S2/S3.1/S3.2/D3-D7a 测试保持通过。compile、11 个 prompt render、roo
 ### 已知边界
 
 - JavaScript/JSX 以锁定 grammar 为边界；只识别本 adapter 列明的声明与变量绑定 arrow function，不承诺完整 ECMAScript 语义、任意表达式求值或 TypeScript 类型解析。TS/TSX 始终 fail closed。Tree-sitter 仍报告其旧 `Language(path, name)` API FutureWarning。
+
+## D10/S4c.3：TypeScript `.ts` 符号正确性
+
+### 固定范围与公开契约
+
+- 基线：已审核的 S4c.2 HEAD `c25094f5b383c625994c59ca49fd77018115eb07`。编码前已确认工作区 clean、upstream 为 `origin/review/step3-runtime-recovery` 且 ahead/behind 为 0/0；正常 push 成功后复核相同 HEAD 与 clean、0/0 状态。本轮只实现 `.ts`，不实现 `.tsx`、repo map 或 D11 context assembly。
+- 在锁定的 `tree-sitter 0.21.3` 与 `tree-sitter-languages 1.10.2` 下实际探测 `typescript` grammar；函数、class、method、arrow、export、generic/type annotation 以及 `interface_declaration`、`type_alias_declaration`、`enum_declaration` 均可解析且 probe fixture 无 parse error。本轮未升级依赖。
+- 复用 `SourceSymbol` / `SymbolExtraction`，并在 `codemap.py` 静态 suffix→adapter 映射增加 `.ts`；`.tsx` 保持 `unsupported_language` 并提示 bounded text search。
+- TypeScript adapter 输出 function、class、method、interface、type_alias、enum 六类 symbol；支持 async/nested/export、变量绑定 arrow、类型注解和 generic 参数。interface 成员签名及 type expression 不作为运行时方法索引。源码、hash 和半开 byte range 均来自原始 UTF-8 bytes 的 Tree-sitter node range；返回 canonical path 与 1-based 行范围。重复名称按既有 seam 返回 `ambiguous_symbol`。
+- syntax error、明确的 grammar/parser API 错误结构化返回；unexpected exception 继续传播。source、entry、serialized output、multi-file caps、resolver/access-policy/hard-link 边界沿用既有实现；semantic config schema 保持 v7。
+
+### TDD 验收与当前证据
+
+- [x] TypeScript golden fixture 覆盖 Unicode byte offsets、export/async、nested function/class/method、变量绑定 generic arrow、类型注解、generic function/class/method，以及 interface/type alias/enum；逐字节核对 source、hash、offset 与行范围。
+- [x] 公开工具测试覆盖 ambiguity、parse/grammar error、unexpected exception、source/entry/output/file caps，并通过真实 compiled ToolNode 验证 `.ts` symbol evidence；Python 与 JavaScript/JSX 回归保持通过，`.tsx` 继续 fail closed。
+- [x] Codex 本地全量验证：unittest 400 tests OK / 10 skipped；pytest 394 passed / 10 skipped / 208 subtests passed；Python compileall、11 prompt render、root/start/resume CLI help、`git diff --check` 均通过。pytest 有 19 条锁定 Tree-sitter 旧 API FutureWarning；10 个 skip 是既有 Windows 链接能力或平台边界限制。
+- 以上是 Codex 本地验证证据，不代表 GitHub CI 或独立外部验收。完成本地验收后提交 S4c.3，停止并等待 ChatGPT Final Gate；不 push 本轮提交。
+
+### 已知边界
+
+- 这里只解析 adapter 明确列出的 TypeScript 声明，不承诺完整 TypeScript 类型系统或语义；interface/type alias 的内部成员不拆成独立 symbol。`.tsx` 未实现。锁定 Tree-sitter Python binding 仍发出旧 `Language(path, name)` API FutureWarning。

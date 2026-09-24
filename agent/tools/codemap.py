@@ -32,6 +32,7 @@ from agent.tools.python_symbols import (
     extract_python_symbols,
 )
 from agent.tools.javascript_symbols import extract_javascript_symbols
+from agent.tools.typescript_symbols import extract_typescript_symbols
 from agent.workspace import (
     current_workspace_access_policy,
     default_workspace_resolver,
@@ -46,8 +47,9 @@ _SYMBOL_ADAPTERS: dict[str, tuple[Callable[..., SymbolExtraction], str]] = {
     ".jsx": (extract_javascript_symbols, "JavaScript/JSX"),
     ".mjs": (extract_javascript_symbols, "JavaScript"),
     ".cjs": (extract_javascript_symbols, "JavaScript"),
+    ".ts": (extract_typescript_symbols, "TypeScript"),
 }
-_UNSUPPORTED_LANGUAGE_SUFFIXES = {".ts", ".tsx"}
+_UNSUPPORTED_LANGUAGE_SUFFIXES = {".tsx"}
 
 
 def _language_error(path: Path, display_path: str) -> dict[str, object] | None:
@@ -56,7 +58,7 @@ def _language_error(path: Path, display_path: str) -> dict[str, object] | None:
         return tool_error(
             display_path,
             "unsupported_language",
-            "TypeScript/TSX symbols are not supported; use "
+            "TSX symbol extraction is not supported; use "
             "search_keyword_in_directory for bounded text search.",
         )
     if suffix not in _SYMBOL_ADAPTERS:

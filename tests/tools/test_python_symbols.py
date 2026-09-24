@@ -120,30 +120,19 @@ class PythonSymbolToolTests(unittest.TestCase):
             symbol["source"],
         )
 
-    def test_typescript_symbol_languages_fail_closed_with_search_guidance(self) -> None:
+    def test_tsx_symbol_language_fails_closed_with_search_guidance(self) -> None:
         with tempfile.TemporaryDirectory() as directory:
             root = Path(directory)
-            results = []
-            for suffix in (".ts", ".tsx"):
-                (root / f"sample{suffix}").write_text(
-                    "function answer() { return 42; }\n", encoding="utf-8"
-                )
+            (root / "sample.tsx").write_text(
+                "function answer() { return 42; }\n", encoding="utf-8"
+            )
             with patch.dict(os.environ, {"SWE_AGENT_WORKSPACE": str(root)}):
-                for suffix in (".ts", ".tsx"):
-                    results.extend(
-                        (
-                            get_code_definitions.invoke(
-                                {"file_path": f"sample{suffix}"}
-                            ),
-                            get_function_implementation.invoke(
-                                {
-                                    "file_path": f"sample{suffix}",
-                                    "function_name": "answer",
-                                }
-                            ),
-                        )
-                    )
-
+                results = (
+                    get_code_definitions.invoke({"file_path": "sample.tsx"}),
+                    get_function_implementation.invoke(
+                        {"file_path": "sample.tsx", "function_name": "answer"}
+                    ),
+                )
         for result in results:
             self.assertFalse(result["ok"], result)
             self.assertEqual(result["error_code"], "unsupported_language")
