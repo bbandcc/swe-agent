@@ -11,7 +11,7 @@
 ### 当前状态文件基线
 
 - S3.2 production 技术冻结点：`5850b8370c49f868e90aeffe9e6042f85eaa522c`；D1/S1a、D2/S2b 已冻结，D3/S2c Seal blocker 已通过本地验收。
-- S3.2、D1-D7、S2d/D3 与 S4a/D8 的既有契约保持冻结。S4b/D9 Final Gate 已通过；search、raw read、workspace tree 使用固定代码上限，三者 continuation 均绑定查询及各自版本/位置证据。search 每页最多处理 128 个候选文件、返回 100 条结果并读取/输出不超过 1 MiB，不缓存整次搜索结果；未改变 RunConfig 或 checkpoint 语义，semantic config schema 保持 v7。S4c.1 Python、S4c.2 JavaScript/JSX 已提交并等待 Final Gate；本轮完成 S4c.3 的 `.ts` 符号提取，`.tsx` 仍明确不支持。
+- S3.2、D1-D7、S2d/D3 与 S4a/D8 的既有契约保持冻结。S4b/D9 Final Gate 已通过；search、raw read、workspace tree 使用固定代码上限，三者 continuation 均绑定查询及各自版本/位置证据。search 每页最多处理 128 个候选文件、返回 100 条结果并读取/输出不超过 1 MiB，不缓存整次搜索结果；未改变 RunConfig 或 checkpoint 语义，semantic config schema 保持 v7。S4c.1 Python、S4c.2 JavaScript/JSX 与 S4c.3 TypeScript 均已通过 ChatGPT 技术 Final Gate。当前 HEAD `d86d1c8ecb08ba2e146518f1d0de784a7f01b095` 已与 `origin/review/step3-runtime-recovery` 同步，工作树 clean、ahead/behind 0/0。
 - D2/S2b Final Seal 已收窄 library/CLI 的异常边界；`RunSummary.warnings` 只输出 preflight warning code，unexpected `RuntimeError`、`KeyboardInterrupt` 和 `SystemExit` 不被入口吞掉。
 - 本轮最新 Codex 本地验证：unittest 400 tests OK / 10 skipped；pytest 394 passed / 10 skipped / 208 subtests passed；
   Python compile、11 个 prompt render、root/start/resume 三套 CLI help、`git diff --check` 均通过。
@@ -1036,7 +1036,7 @@ S1/S2/S3.1/S3.2/D3-D7a 测试保持通过。compile、11 个 prompt render、roo
 - [x] 公开工具用例覆盖 decorator、async、多行签名、嵌套 class/function/method、同名候选 ambiguity、Unicode、逐字节 source/hash/offset 校验、Python syntax/parser failure、JS/JSX/TS/TSX unsupported 和单文件/多文件输出上限。
 - [x] 真实 compiled ToolNode 返回结构化符号消息并通过原有 Architect/Developer 工具与 policy 回归；workspace/access-policy、S1–S3 和 S4a/S4b 旧回归保持通过。
 - [x] Codex 本地验证：unittest 387 tests OK / 10 skipped；pytest 381 passed / 10 skipped / 190 subtests passed；compileall、11 prompt render、root/start/resume CLI help、`git diff --check` 通过。pytest 有 8 条既有 Tree-sitter FutureWarning；10 个 skip 是既有 Windows 链接能力或平台边界限制。
-- 以上是 S4c.1 提交时的 Codex 本地验证快照，不代表 GitHub CI 或独立外部验收。本轮以已审核 HEAD
+- S4c.1 已通过 ChatGPT Final Gate。以上是该阶段提交时的 Codex 本地验证快照，不代表 GitHub CI 或独立外部验收。本轮以已审核 HEAD
   `b8fcb68e123fd19d4542fbf48155240926405d33` 为基线；开始编码前已正常 push 到
   `origin/review/step3-runtime-recovery`，并复核工作树 clean、ahead/behind 0/0。
 
@@ -1059,7 +1059,7 @@ S1/S2/S3.1/S3.2/D3-D7a 测试保持通过。compile、11 个 prompt render、roo
 - [x] JavaScript/JSX golden fixtures 覆盖 Unicode byte offsets、export、async、多行 method、嵌套 class/function、arrow function、JSX 元素/属性/表达式/fragment；逐字节验证 source、hash、byte range 与行范围。
 - [x] 公开工具覆盖同名 ambiguity、TS/TSX unsupported、语法与已知 parser 错误、意外异常传播、entry/source/output/file caps；真实 compiled ToolNode 返回 JSX symbol evidence。S4c.1 Python 回归保持通过。
 - [x] Codex 本地全量验证：unittest 395 tests OK / 10 skipped；pytest 389 passed / 10 skipped / 198 subtests passed；Python compileall、11 prompt render、root/start/resume CLI help、`git diff --check` 均通过。pytest 显示 14 条锁定 Tree-sitter 旧 API 的 FutureWarning；10 个 skip 为既有 Windows 链接能力或平台边界限制。
-- 以上是 Codex 本地证据，不代表 GitHub CI 或独立外部验收。S4c.2 提交后停止，等待 ChatGPT Final Gate；不 push 本轮新提交。
+- S4c.2 已通过 ChatGPT Final Gate。以上是该阶段提交时的 Codex 本地证据，不代表 GitHub CI 或独立外部验收。
 
 ### 已知边界
 
@@ -1080,7 +1080,7 @@ S1/S2/S3.1/S3.2/D3-D7a 测试保持通过。compile、11 个 prompt render、roo
 - [x] TypeScript golden fixture 覆盖 Unicode byte offsets、export/async、nested function/class/method、变量绑定 generic arrow、类型注解、generic function/class/method，以及 interface/type alias/enum；逐字节核对 source、hash、offset 与行范围。
 - [x] 公开工具测试覆盖 ambiguity、parse/grammar error、unexpected exception、source/entry/output/file caps，并通过真实 compiled ToolNode 验证 `.ts` symbol evidence；Python 与 JavaScript/JSX 回归保持通过，`.tsx` 继续 fail closed。
 - [x] Codex 本地全量验证：unittest 400 tests OK / 10 skipped；pytest 394 passed / 10 skipped / 208 subtests passed；Python compileall、11 prompt render、root/start/resume CLI help、`git diff --check` 均通过。pytest 有 19 条锁定 Tree-sitter 旧 API FutureWarning；10 个 skip 是既有 Windows 链接能力或平台边界限制。
-- 以上是 Codex 本地验证证据，不代表 GitHub CI 或独立外部验收。完成本地验收后提交 S4c.3，停止并等待 ChatGPT Final Gate；不 push 本轮提交。
+- S4c.3 技术 Final Gate 已通过。以上是 Codex 本地验证证据，不代表 GitHub CI 或独立外部验收。当前已审核提交 `d86d1c8ecb08ba2e146518f1d0de784a7f01b095` 已与 upstream 同步；工作树 clean、ahead/behind 0/0。
 
 ### 已知边界
 
