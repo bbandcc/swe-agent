@@ -11,9 +11,9 @@
 ### 当前状态文件基线
 
 - S3.2 production 技术冻结点：`5850b8370c49f868e90aeffe9e6042f85eaa522c`；D1/S1a、D2/S2b 已冻结，D3/S2c Seal blocker 已通过本地验收。
-- S3.2、D1-D7、S2d/D3 与 S4a/D8 的既有契约保持冻结。S4b/D9 Final Gate 已通过；search、raw read、workspace tree 使用固定代码上限，三者 continuation 均绑定查询及各自版本/位置证据。search 每页最多处理 128 个候选文件、返回 100 条结果并读取/输出不超过 1 MiB，不缓存整次搜索结果；未改变 RunConfig 或 checkpoint 语义，semantic config schema 保持 v7。S4c.1 Python、S4c.2 JavaScript/JSX、S4c.3 TypeScript 与 S4c.4 TSX 均已通过 ChatGPT 技术 Final Gate。S4c.4 冻结 HEAD `3ebefa53da38152381a11bfe8d526cbb3bbe60c8` 已在本轮开工前正常 push 并确认工作树 clean、upstream 正确、ahead/behind 0/0。repo map 与 D11 context assembly 尚未实现。
+- S3.2、D1-D7、S2d/D3 与 S4a/D8 的既有契约保持冻结。S4b/D9 曾通过 Final Gate；全项目审计在本 slice 重新打开 S4b，仅处理 production tree completeness evidence 缺口。search、raw read、workspace tree 使用固定代码上限，三者 continuation 均绑定查询及各自版本/位置证据；search 每页最多处理 128 个候选文件、返回 100 条结果并读取/输出不超过 1 MiB，不缓存整次搜索结果。未改变 RunConfig 或 checkpoint 语义，semantic config schema 保持 v7。S4c.1 Python、S4c.2 JavaScript/JSX、S4c.3 TypeScript 与 S4c.4 TSX 均已通过 ChatGPT 技术 Final Gate。S4c.4 冻结 HEAD `3ebefa53da38152381a11bfe8d526cbb3bbe60c8` 已在更早阶段正常 push；repo map 与 D11 context assembly 尚未实现。
 - D2/S2b Final Seal 已收窄 library/CLI 的异常边界；`RunSummary.warnings` 只输出 preflight warning code，unexpected `RuntimeError`、`KeyboardInterrupt` 和 `SystemExit` 不被入口吞掉。
-- 当前最新 Codex 本地验证（S5a Final Seal）：unittest 421 tests OK / 10 skipped；pytest 415 passed / 10 skipped / 216 subtests passed；compileall 与 `git diff --check` 通过。pytest 的 25 条 FutureWarning 来自锁定 Tree-sitter 旧 API；10 个 skip 为既有 Windows 链接能力或平台边界限制。
+- 当前最新 Codex 本地验证（S4b tree evidence slice）：unittest 425 tests OK / 10 skipped；pytest 419 passed / 10 skipped / 216 subtests passed；compileall 与 `git diff --check` 通过。pytest 的 25 条 FutureWarning 来自锁定 Tree-sitter 旧 API；10 个 skip 为既有 Windows 链接能力或平台边界限制。
 - 没有 GitHub CI 或独立外部测试证据，不作相应声明。
 - 剩余能力：完整 secret-safe state persistence（当前只覆盖 RunConfig 中已知凭据）、verification rerun/replay、超出当前明确列出的语法子集的完整语言语义、repo map 与 D11 context assembly 仍未实现；当前符号 adapter 只承诺 Python、JavaScript/JSX、TypeScript 和 TSX 的已测试声明/组件范围。D7 policy 只约束使用本 seam 的合作进程和模型可调用工具，不阻止第三方直接写 workspace，也不是 OS sandbox。本轮 EventSink/RunRecord 与 verification artifact 只提供单进程本地 JSONL、结构化记录和有界/脱敏日志，不是完整恢复系统。provider 正向 retry/独立 attempt 语义未实现，当前 durable 只允许单次外部尝试；当前模型 `request_digest` 只代表有界语义输入，身份范围明确为 `PARTIAL`，不能据此安全重放最终 rendered request；exactly-once 不承诺。JUnit XML 是当前唯一可信报告格式，未配置或报告缺失/畸形时保守返回证据不足；多框架 parser registry、扩展 repair 尚未实现。runner 只改写精确匹配的 `--junitxml/--junit-xml` destination 到 owned temporary output，workspace report_path 保持原 bytes/mtime；owned temp cleanup 失败返回结构化 `EXECUTION_ERROR`。S3.4b 对命令已启动但结果未持久化的恢复默认保守返回 `OUTCOME_UNKNOWN`，当前没有 isolated execution seam，因此不支持自动重跑；pytest 对其它 workspace 文件的副作用仍未提供 recovery。S4b raw-read cursor 用文件 stat 元数据摘要识别常规变化，并非全文件快照/强内容锁；tree inventory 最多扫描 4096 项，触及上限会明确标记 truncated，不能续读未扫描后缀。
 - 后续技术切片继续按 MASTER_PLAN §5.2 执行；保留现有 S1/S2/S3 历史编号，不重新开启或重命名 S1。
@@ -1019,6 +1019,15 @@ S1/S2/S3.1/S3.2/D3-D7a 测试保持通过。compile、11 个 prompt render、roo
 - raw cursor 的文件版本使用可移植 stat 元数据摘要，不是全文件快照或强并发锁；每页 `content_hash` 只覆盖返回的 page bytes。
 - tree 最多扫描 4096 项；达到该上限时报告 truncated，未扫描后缀不可继续获取。保护策略与 OS 层隔离边界保持原契约。
 
+### D9/S4b Final Seal follow-up：production tree completeness evidence
+
+- 基线：`1cee4b0603be850286d1769d14785dc6882ef49c`（S5a 已通过此前 ChatGPT Final Gate）；本 slice 开始前确认该 HEAD 已同步 upstream，branch/upstream 正确、工作树 clean、ahead/behind 0/0。全项目审计重新打开 S4b，本轮只修 production tree evidence 传递，不进入后续优化。
+- Architect 与 Developer 共用 `agent/common/workspace_tree_evidence.py` 确定性 renderer；两个 production runtime loader 将 `get_files_structure()` 的结构化结果传入模型上下文。成功树明确显示 `COMPLETE` 或 `INCOMPLETE (TRUNCATED)`、truncated 标记、path/hash、现有 range/warnings/limits 与 `continuation_available`；opaque cursor 不进入上下文，也不自动读取下一页。失败树显示 `FAILED`、结构化 error code/message 和已有诊断字段，失败 path 不回显。
+- 真实 production loader/compiled graph 回归使用 `default_architect_runtime()` 与 `default_developer_runtime()` 的 loader：130-file workspace 的首屏在两个 Agent 模型输入中均显式 incomplete；小型完整 workspace 保持 complete；扫描失败保留 scan_failed；hidden oracle 路径与 canary 不进入 tree 或其 metadata。未修改 tree enumeration、scan/sort 方式、hard caps、resolver、policy、link/hardlink 规则、依赖或 semantic schema。
+- [x] Slice 专项 4 个 compiled graph unittest 通过；受影响 Architect/Developer、D9 bounded tree 与 access-policy 子集 pytest 56 passed / 5 subtests passed。
+- [x] Codex 本地全量验证：unittest 425 tests OK / 10 skipped；pytest 419 passed / 10 skipped / 216 subtests passed；compileall、`git diff --check` 通过。pytest 有 25 条锁定 Tree-sitter API FutureWarning；10 个 skip 是既有 Windows 链接能力或平台限制。未运行 GitHub CI 或独立外部验收。
+- 本 slice 等待 ChatGPT Final Gate；此处不自行标记 PASS。
+
 ## D10/S4c.1：Python 符号正确性
 
 ### 固定范围与公开契约
@@ -1124,4 +1133,4 @@ S1/S2/S3.1/S3.2/D3-D7a 测试保持通过。compile、11 个 prompt render、roo
 - manifest SHA-256 用于发现未同步更新的内容，不是签名；真实性仍依赖受审查的 Git 配置。validator 是离线 library seam，不执行 argv checks，也没有 Agent 接入，因此 `evaluator_only_declared` 只是可信配置声明，不能证明运行时隔离。
 - [x] 公开 seam 覆盖合法来源清单、缺字段、任务/manifest hash tamper、重复 task id、scope/oracle 冲突、浮动/未知 revision、非法路径与 argv、仓库/环境不匹配、oracle 文件 hash 不匹配、重复 JSON key、四个历史任务的 curated implementation scope，以及 pinned target→oracle diff 之外的路径拒绝（`scope_not_in_change`）。
 - [x] Final Seal Codex 本地验证：manifest 专项 unittest 17 tests OK；pytest 17 passed / 2 subtests passed；全量 unittest 421 tests OK / 10 skipped；全量 pytest 415 passed / 10 skipped / 216 subtests passed；compileall、`git diff --check` 通过。pytest 的 25 条 FutureWarning 来自锁定 Tree-sitter 旧 API；10 个 skip 是既有 Windows 链接能力或平台限制。未运行 GitHub CI 或独立外部验收。
-- S5a Final Seal 修改完成，等待 ChatGPT Final Gate；不进入 S5d、S5b 或 S4d。
+- S5a Final Seal 已通过此前 ChatGPT Final Gate；本轮 S4b tree evidence slice 状态见 D9/S4b follow-up。

@@ -8,6 +8,7 @@ from typing import Any
 from langchain_core.output_parsers import JsonOutputParser
 
 from agent.architect.models import ResearchEvaluation, ResearchStep
+from agent.common.workspace_tree_evidence import render_workspace_tree_evidence
 from agent.common.entities import ImplementationPlan
 from agent.config import build_chat_model
 from agent.config import ModelSettings
@@ -188,4 +189,4 @@ def durable_architect_runtime(
 
 def _load_codebase_structure() -> str:
     result = get_files_structure.invoke({"directory": "."})
-    return str(result.get("content", result))
+    return render_workspace_tree_evidence(result)

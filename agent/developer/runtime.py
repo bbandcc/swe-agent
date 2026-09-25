@@ -7,6 +7,7 @@ from typing import Any
 
 from langchain_core.output_parsers import StrOutputParser
 
+from agent.common.workspace_tree_evidence import render_workspace_tree_evidence
 from agent.config import build_chat_model
 from agent.config import ModelSettings
 from agent.developer.editing import DeveloperEditExecutor
@@ -172,4 +173,4 @@ def durable_developer_runtime(
 
 def _load_codebase_structure() -> str:
     result = get_files_structure.invoke({"directory": "."})
-    return str(result.get("content", result))
+    return render_workspace_tree_evidence(result)

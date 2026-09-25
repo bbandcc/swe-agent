@@ -2,6 +2,7 @@ import tempfile
 import unittest
 from pathlib import Path
 from typing import Annotated, TypedDict
+from unittest.mock import patch
 
 from langchain_core.messages import AIMessage, AnyMessage, HumanMessage, ToolMessage
 from langchain_core.tools import tool
@@ -15,6 +16,7 @@ from agent.architect.graph import (
     ResearchStep,
     create_architect_workflow,
 )
+from agent.architect.runtime import default_architect_runtime
 from agent.common.entities import (
     AtomicTask,
     ImplementationPlan,
@@ -23,9 +25,12 @@ from agent.common.entities import (
 )
 from agent.developer.editing import DeveloperEditExecutor
 from agent.developer.graph import DeveloperRuntime, create_developer_workflow
+from agent.developer.runtime import default_developer_runtime
 from agent.developer.state import DeveloperErrorCode, DeveloperStatus
 from agent.editing import EditStatus, WorkspaceEditor
 from agent.graph import create_workflow_graph
+from agent.tools.write import get_files_structure
+from agent.workspace import WorkspaceAccessPolicy, workspace_root_scope
 
 
 class ToolLoopState(TypedDict):
@@ -63,6 +68,154 @@ def developer_codemap(path: str) -> dict[str, object]:
 
 
 class GraphIntegrationTests(unittest.TestCase):
+    @staticmethod
+    def _architect_tree_graph(loader, observed, access_policy):
+        def plan(values):
+            observed.append(values["codebase_structure"])
+            return ResearchStep(reasoning="inspect", hypothesis="find target")
+
+        runtime = ArchitectRuntime(
+            plan_next_step=plan,
+            check_research_step=lambda _: ResearchEvaluation(
+                reasoning="useful", is_valid=True
+            ),
+            conduct_research=lambda _: AIMessage(content="research complete"),
+            extract_implementation_plan=lambda _: ImplementationPlan(
+                status=PlanStatus.NO_CHANGES,
+                no_change_reason="No implementation is required.",
+                tasks=[],
+            ),
+            load_codebase_structure=loader,
+        )
+        return create_architect_workflow(
+            runtime, research_tools=[], access_policy=access_policy
+        ).invoke(
+            {"implementation_research_scratchpad": [HumanMessage(content="inspect")]}
+        )
+
+    def test_architect_model_input_preserves_truncated_production_tree_evidence(self) -> None:
+        with tempfile.TemporaryDirectory() as directory:
+            root = Path(directory)
+            for index in range(130):
+                (root / f"module-{index:03}.py").write_text(
+                    f"value_{index} = {index}\n", encoding="utf-8"
+                )
+            policy = WorkspaceAccessPolicy()
+            loader = default_architect_runtime().load_codebase_structure
+            observed: list[str] = []
+            with workspace_root_scope(root, access_policy=policy):
+                raw_result = get_files_structure.invoke({"directory": "."})
+                self._architect_tree_graph(loader, observed, policy)
+
+        self.assertTrue(raw_result["truncated"])
+        self.assertIsInstance(raw_result["continuation"], str)
+        self.assertIn("UNTRUSTED WORKSPACE EVIDENCE", observed[0])
+        self.assertIn("status: INCOMPLETE (TRUNCATED)", observed[0])
+        self.assertIn("range:", observed[0])
+        self.assertIn("warnings:", observed[0])
+        self.assertIn("limits:", observed[0])
+        self.assertIn("continuation_available: true", observed[0])
+        self.assertNotIn(raw_result["continuation"], observed[0])
+
+    def test_developer_model_input_preserves_truncated_production_tree_evidence(self) -> None:
+        with tempfile.TemporaryDirectory() as directory:
+            root = Path(directory)
+            target = root / "app.py"
+            target.write_text("value = 1\n", encoding="utf-8", newline="")
+            for index in range(130):
+                (root / f"module-{index:03}.py").write_text(
+                    f"value_{index} = {index}\n", encoding="utf-8"
+                )
+            policy = WorkspaceAccessPolicy()
+            observed: list[str] = []
+            loader = default_developer_runtime().load_codebase_structure
+            plan = ImplementationPlan(
+                tasks=[
+                    ImplementationTask(
+                        file_path="workspace_repo/app.py",
+                        logical_task="update value",
+                        atomic_tasks=[AtomicTask(atomic_task="set value to two")],
+                    )
+                ]
+            )
+            executor = DeveloperEditExecutor(
+                WorkspaceEditor(root, access_policy=policy)
+            )
+            runtime = DeveloperRuntime(
+                edit_executor=lambda: executor,
+                load_codebase_structure=loader,
+                research_atomic_task=lambda values: (
+                    observed.append(values["codebase_structure"])
+                    or AIMessage(content="ready")
+                ),
+                propose_existing_file_edit=lambda _: (
+                    "<<<<<<< SEARCH\nvalue = 1\n=======\n"
+                    "value = 2\n>>>>>>> REPLACE"
+                ),
+                propose_new_file=lambda _: self.fail("new-file model was called"),
+            )
+
+            with workspace_root_scope(root, access_policy=policy):
+                result = create_developer_workflow(
+                    runtime, research_tools=[], access_policy=policy
+                ).invoke({"implementation_plan": plan})
+
+        self.assertEqual(result["developer_status"], DeveloperStatus.COMPLETED)
+        self.assertIn("UNTRUSTED WORKSPACE EVIDENCE", observed[0])
+        self.assertIn("status: INCOMPLETE (TRUNCATED)", observed[0])
+        self.assertIn("continuation_available: true", observed[0])
+
+    def test_complete_small_tree_is_not_marked_incomplete_and_hides_policy_paths(self) -> None:
+        with tempfile.TemporaryDirectory() as directory:
+            root = Path(directory)
+            (root / "public.py").write_text("value = 1\n", encoding="utf-8")
+            hidden = root / "private-oracle"
+            hidden.mkdir()
+            (hidden / "expected.txt").write_text(
+                "TREE-POLICY-CANARY", encoding="utf-8"
+            )
+            policy = WorkspaceAccessPolicy(hidden_paths=("private-oracle",))
+            observed: list[str] = []
+
+            with workspace_root_scope(root, access_policy=policy):
+                self._architect_tree_graph(
+                    default_architect_runtime().load_codebase_structure,
+                    observed,
+                    policy,
+                )
+
+        self.assertIn("UNTRUSTED WORKSPACE EVIDENCE", observed[0])
+        self.assertIn("status: COMPLETE", observed[0])
+        self.assertIn("truncated: false", observed[0])
+        self.assertNotIn("INCOMPLETE", observed[0])
+        self.assertNotIn("private-oracle", observed[0])
+        self.assertNotIn("expected.txt", observed[0])
+        self.assertNotIn("TREE-POLICY-CANARY", observed[0])
+
+    def test_failed_tree_scan_is_explicit_in_architect_model_input(self) -> None:
+        with tempfile.TemporaryDirectory() as directory:
+            root = Path(directory)
+            (root / "app.py").write_text("value = 1\n", encoding="utf-8")
+            policy = WorkspaceAccessPolicy()
+            observed: list[str] = []
+            with (
+                patch(
+                    "agent.tools.write._bounded_tree_entries",
+                    side_effect=OSError("injected scan failure"),
+                ),
+                workspace_root_scope(root, access_policy=policy),
+            ):
+                self._architect_tree_graph(
+                    default_architect_runtime().load_codebase_structure,
+                    observed,
+                    policy,
+                )
+
+        self.assertIn("UNTRUSTED WORKSPACE EVIDENCE", observed[0])
+        self.assertIn("status: FAILED", observed[0])
+        self.assertIn('error_code: "scan_failed"', observed[0])
+        self.assertNotIn("status: COMPLETE", observed[0])
+
     def test_compiled_architect_renders_all_tool_results_before_next_model(self) -> None:
         observed: list[list[AnyMessage]] = []
         calls = 0
