@@ -11,9 +11,11 @@ from agent.tools.read_contract import (
     MAX_SEARCH_BYTES,
     MAX_SEARCH_FILES,
     MAX_SEARCH_RESULTS,
+    MAX_TREE_SCAN_ENTRIES,
 )
 from agent.tools.search import search_keyword_in_directory
 from agent.tools.write import get_files_structure
+from agent.workspace import WorkspaceAccessPolicy, workspace_root_scope
 
 
 class BoundedReadToolTests(unittest.TestCase):
@@ -568,16 +570,49 @@ class BoundedReadToolTests(unittest.TestCase):
         self.assertEqual(result["content"].splitlines(), ["nested", "child.py"])
 
     def test_tree_scan_cap_counts_entries_denied_by_link_policy(self) -> None:
-        limits = get_files_structure.invoke({"directory": "."})["limits"]
-        names = [
-            f"linked-{index:04}.py"
-            for index in range(limits["max_scanned_entries"] + 1)
-        ]
+        class Entry:
+            def __init__(self, name: str, is_directory: bool) -> None:
+                self.name = name
+                self._is_directory = is_directory
+
+            def is_dir(self, *, follow_symlinks: bool = True) -> bool:
+                return self._is_directory
+
+            def is_file(self, *, follow_symlinks: bool = True) -> bool:
+                return not self._is_directory
+
+            def is_symlink(self) -> bool:
+                return False
+
+        class GuardedScandir:
+            def __init__(self) -> None:
+                self.consumed = 0
+
+            def __enter__(self):
+                return self
+
+            def __exit__(self, *_args):
+                return False
+
+            def __iter__(self):
+                return self
+
+            def __next__(self):
+                if self.consumed >= MAX_TREE_SCAN_ENTRIES + 1:
+                    raise AssertionError("tree traversal consumed an unbounded suffix")
+                index = self.consumed
+                self.consumed += 1
+                if index % 3 == 0:
+                    return Entry(".git", True)
+                if index % 3 == 1:
+                    return Entry("oracle", True)
+                return Entry(f"linked-{index:05}.py", False)
+
+        scanner = GuardedScandir()
+        policy = WorkspaceAccessPolicy(oracle_paths=("oracle",))
         with (
-            patch(
-                "agent.tools.write.os.walk",
-                return_value=[(str(self.root), [], names)],
-            ),
+            workspace_root_scope(self.root, access_policy=policy),
+            patch("agent.tools.write.os.scandir", return_value=scanner),
             patch(
                 "agent.tools.write._is_link_or_junction",
                 side_effect=lambda path: path.name.startswith("linked-"),
@@ -589,6 +624,60 @@ class BoundedReadToolTests(unittest.TestCase):
         self.assertTrue(result["truncated"])
         self.assertIn("tree_scan_entry_limit_reached", result["warnings"])
         self.assertEqual(result["range"]["total_entries"], 0)
+        self.assertEqual(scanner.consumed, MAX_TREE_SCAN_ENTRIES + 1)
+        self.assertEqual(
+            result["limits"]["max_scanned_entries"], MAX_TREE_SCAN_ENTRIES
+        )
+
+    def test_tree_public_tool_does_not_materialize_oversized_directory(self) -> None:
+        (self.root / "entry.py").write_text("entry\n", encoding="utf-8")
+
+        class Entry:
+            name = "entry.py"
+
+            def is_dir(self, *, follow_symlinks: bool = True) -> bool:
+                return False
+
+            def is_file(self, *, follow_symlinks: bool = True) -> bool:
+                return True
+
+            def is_symlink(self) -> bool:
+                return False
+
+        class GuardedScandir:
+            def __init__(self) -> None:
+                self.consumed = 0
+
+            def __enter__(self):
+                return self
+
+            def __exit__(self, *_args):
+                return False
+
+            def __iter__(self):
+                return self
+
+            def __next__(self):
+                if self.consumed >= MAX_TREE_SCAN_ENTRIES + 1:
+                    raise AssertionError("tree traversal consumed an unbounded suffix")
+                self.consumed += 1
+                return Entry()
+
+        scanner = GuardedScandir()
+        policy = WorkspaceAccessPolicy(hidden_paths=("entry.py",))
+        with (
+            workspace_root_scope(self.root, access_policy=policy),
+            patch("agent.tools.write.os.scandir", return_value=scanner),
+        ):
+            result = get_files_structure.invoke({"directory": "."})
+
+        self.assertTrue(result["ok"], result)
+        self.assertTrue(result["truncated"])
+        self.assertIn("tree_scan_entry_limit_reached", result["warnings"])
+        self.assertLessEqual(
+            result["range"]["entry_count"], result["limits"]["max_entries"]
+        )
+        self.assertEqual(scanner.consumed, MAX_TREE_SCAN_ENTRIES + 1)
 
 
 def _sha256(value: bytes) -> str:

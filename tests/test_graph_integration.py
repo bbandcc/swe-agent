@@ -29,6 +29,7 @@ from agent.developer.runtime import default_developer_runtime
 from agent.developer.state import DeveloperErrorCode, DeveloperStatus
 from agent.editing import EditStatus, WorkspaceEditor
 from agent.graph import create_workflow_graph
+from agent.tools.read_contract import MAX_TREE_SCAN_ENTRIES
 from agent.tools.write import get_files_structure
 from agent.workspace import WorkspaceAccessPolicy, workspace_root_scope
 
@@ -116,6 +117,65 @@ class GraphIntegrationTests(unittest.TestCase):
         self.assertIn("limits:", observed[0])
         self.assertIn("continuation_available: true", observed[0])
         self.assertNotIn(raw_result["continuation"], observed[0])
+
+    def test_architect_model_input_reports_tree_scan_cap_as_incomplete(self) -> None:
+        class ProtectedEntry:
+            name = "private"
+
+            def is_dir(self, *, follow_symlinks: bool = True) -> bool:
+                raise AssertionError("protected path metadata must not be inspected")
+
+        class GuardedScandir:
+            def __init__(self) -> None:
+                self.consumed = 0
+
+            def __enter__(self):
+                return self
+
+            def __exit__(self, *_args):
+                return False
+
+            def __iter__(self):
+                return self
+
+            def __next__(self):
+                if self.consumed >= MAX_TREE_SCAN_ENTRIES + 1:
+                    raise AssertionError("tree traversal consumed an unbounded suffix")
+                self.consumed += 1
+                return ProtectedEntry()
+
+        with tempfile.TemporaryDirectory() as directory:
+            root = Path(directory)
+            policy = WorkspaceAccessPolicy(hidden_paths=("private",))
+            observed: list[str] = []
+
+            scanners: list[GuardedScandir] = []
+
+            def create_scanner(*_args):
+                scanner = GuardedScandir()
+                scanners.append(scanner)
+                return scanner
+
+            with (
+                workspace_root_scope(root, access_policy=policy),
+                patch("agent.tools.write.os.scandir", side_effect=create_scanner),
+            ):
+                self._architect_tree_graph(
+                    default_architect_runtime().load_codebase_structure,
+                    observed,
+                    policy,
+                )
+
+        self.assertTrue(scanners)
+        self.assertTrue(
+            all(scanner.consumed == MAX_TREE_SCAN_ENTRIES + 1 for scanner in scanners)
+        )
+        self.assertIn("status: INCOMPLETE (TRUNCATED)", observed[0])
+        self.assertIn("tree_scan_entry_limit_reached", observed[0])
+        self.assertIn("range:", observed[0])
+        self.assertIn("max_scanned_entries", observed[0])
+        self.assertIn("continuation_available: false", observed[0])
+        self.assertNotIn("private", observed[0])
 
     def test_developer_model_input_preserves_truncated_production_tree_evidence(self) -> None:
         with tempfile.TemporaryDirectory() as directory:

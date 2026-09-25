@@ -50,33 +50,60 @@ def _bounded_tree_entries(
     scan_truncated = False
     scanned_entries = 0
     scan_errors: list[OSError] = []
+    pending_directories: list[tuple[Path, int]] = [(directory, 0)]
 
-    def on_walk_error(error: OSError) -> None:
-        scan_errors.append(error)
-
-    for root, directories, files in os.walk(
-        directory, topdown=True, onerror=on_walk_error, followlinks=False
-    ):
-        root_path = Path(root)
-        relative_root = root_path.relative_to(directory)
-        depth = len(relative_root.parts)
+    while pending_directories:
+        root_path, depth = pending_directories.pop()
         if depth >= max_depth:
-            directories[:] = []
-            files = []
             continue
-        candidates = sorted(
-            [(name, "directory") for name in directories]
-            + [(name, "file") for name in files]
-        )
-        safe_directories: list[str] = []
-        for name, kind in candidates:
-            if scanned_entries >= MAX_TREE_SCAN_ENTRIES:
-                scan_truncated = True
-                break
-            scanned_entries += 1
-            path = root_path / name
-            if _is_protected(path, workspace_root, access_policy):
+
+        # Retain only names/types from entries already charged to the global
+        # budget.  A single extra DirEntry may be consumed to prove truncation.
+        candidates: list[tuple[str, str | None]] = []
+        try:
+            with os.scandir(root_path) as directory_entries:
+                while scanned_entries < MAX_TREE_SCAN_ENTRIES:
+                    try:
+                        item = next(directory_entries)
+                    except StopIteration:
+                        break
+                    scanned_entries += 1
+                    name = item.name
+                    path = root_path / name
+                    if _is_protected(path, workspace_root, access_policy):
+                        candidates.append((name, None))
+                        continue
+                    try:
+                        kind = (
+                            "directory"
+                            if item.is_dir(follow_symlinks=False)
+                            else "file"
+                        )
+                    except OSError as error:
+                        scan_errors.append(error)
+                        candidates.append((name, None))
+                        continue
+                    candidates.append((name, kind))
+
+                if scanned_entries >= MAX_TREE_SCAN_ENTRIES:
+                    try:
+                        next(directory_entries)
+                    except StopIteration:
+                        pass
+                    else:
+                        scan_truncated = True
+        except OSError as error:
+            scan_errors.append(error)
+
+        safe_directories: list[tuple[Path, int]] = []
+        # Reverse-pop keeps only the bounded candidate list live while entries
+        # are rendered; the final result is sorted independently below.
+        candidates.sort(reverse=True)
+        while candidates:
+            name, kind = candidates.pop()
+            if kind is None:
                 continue
+            path = root_path / name
             if kind == "directory":
                 if (
                     name.casefold() in IGNORED_DIRECTORY_NAMES
@@ -100,22 +127,42 @@ def _bounded_tree_entries(
                 warnings.append("tree_entry_metadata_unavailable")
                 continue
             relative = resolution.relative_path or name
-            entry = {
-                "path": relative,
-                "kind": kind,
-                "depth": depth + 1,
-                "size": metadata.st_size if kind == "file" else None,
-                "mtime_ns": getattr(metadata, "st_mtime_ns", None),
-                "ctime_ns": getattr(metadata, "st_ctime_ns", None),
-                "device": getattr(metadata, "st_dev", None),
-                "inode": getattr(metadata, "st_ino", None),
-            }
-            entries.append(entry)
+            entries.append(
+                {
+                    "path": relative,
+                    "kind": kind,
+                    "depth": depth + 1,
+                    "size": metadata.st_size if kind == "file" else None,
+                    "mtime_ns": getattr(metadata, "st_mtime_ns", None),
+                    "ctime_ns": getattr(metadata, "st_ctime_ns", None),
+                    "device": getattr(metadata, "st_dev", None),
+                    "inode": getattr(metadata, "st_ino", None),
+                }
+            )
             if kind == "directory" and depth + 1 < max_depth:
-                safe_directories.append(name)
-        directories[:] = safe_directories
+                safe_directories.append((path, depth + 1))
+
+        # candidates were consumed in ascending name order, so reverse insertion
+        # makes the next depth-first directory the lexicographically first one.
+        pending_directories.extend(reversed(safe_directories))
         if scan_truncated:
             break
+        if scanned_entries >= MAX_TREE_SCAN_ENTRIES:
+            if pending_directories:
+                next_directory, _next_depth = pending_directories.pop()
+                try:
+                    with os.scandir(next_directory) as remaining_entries:
+                        try:
+                            next(remaining_entries)
+                        except StopIteration:
+                            if pending_directories:
+                                scan_truncated = True
+                        else:
+                            scan_truncated = True
+                except OSError as error:
+                    scan_errors.append(error)
+            break
+
     if scan_errors:
         warnings.extend(
             f"tree_scan_error:{type(error).__name__}" for error in scan_errors
