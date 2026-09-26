@@ -14,6 +14,7 @@ from agent.tools.read_contract import (
     MAX_SEARCH_BYTES,
     MAX_SEARCH_FILES,
     MAX_SEARCH_RESULTS,
+    MAX_SEARCH_SCAN_ENTRIES,
     MAX_SEARCH_TERM_CHARS,
     clip_utf8,
     content_version,
@@ -145,6 +146,8 @@ def _search_directory(
     scanned_bytes = 0
     files_scanned = 0
     files_considered = 0
+    scan_entries = 0
+    scan_truncated = False
     scan_errors: list[OSError] = []
     paused_at: tuple[int, int, Path] | None = None
     paused_path: str | None = None
@@ -168,9 +171,6 @@ def _search_directory(
         bool(cursor_state["line_reported"]) if cursor_state is not None else False
     )
     candidate_index = 0
-
-    def on_walk_error(error: OSError) -> None:
-        scan_errors.append(error)
 
     def record_directory_evidence(path: Path) -> None:
         resolution = resolver.resolve_directory(str(path))
@@ -214,26 +214,66 @@ def _search_directory(
         rendered.append(clipped)
         return True
 
+    def read_directory_entries(
+        path: Path, remaining: int
+    ) -> tuple[list[os.DirEntry[str]], bool]:
+        entries: list[os.DirEntry[str]] = []
+        reached_limit = remaining <= 0
+        if reached_limit:
+            return entries, reached_limit
+        with os.scandir(path) as scanner:
+            iterator = iter(scanner)
+            while len(entries) < remaining:
+                try:
+                    entries.append(next(iterator))
+                except StopIteration:
+                    break
+            if len(entries) >= remaining:
+                reached_limit = True
+                # One extra entry only confirms that the unscanned suffix exists.
+                try:
+                    next(iterator)
+                except StopIteration:
+                    pass
+        return entries, reached_limit
+
     try:
-        walker = os.walk(
-            directory, topdown=True, onerror=on_walk_error, followlinks=False
-        )
-        for root, directories, files in walker:
-            root_path = Path(root)
-            safe_directories: list[str] = []
-            for name in directories:
-                path = root_path / name
-                if _is_protected(path, workspace_root, access_policy):
-                    continue
-                if name.casefold() in IGNORED_DIRECTORY_NAMES:
-                    continue
-                if not _is_link_or_junction(path):
-                    safe_directories.append(name)
-            directories[:] = sorted(safe_directories)
-            for name in sorted(files):
+        pending_directories = [directory]
+        while pending_directories:
+            root_path = pending_directories.pop()
+            try:
+                entries, reached_limit = read_directory_entries(
+                    root_path, MAX_SEARCH_SCAN_ENTRIES - scan_entries
+                )
+            except OSError as error:
+                if root_path == directory:
+                    raise
+                scan_errors.append(error)
+                continue
+            scan_entries += len(entries)
+            safe_directories: list[Path] = []
+            files = []
+            for entry in sorted(entries, key=lambda item: item.name):
+                name = entry.name
                 candidate = root_path / name
                 if _is_protected(candidate, workspace_root, access_policy):
                     continue
+                try:
+                    is_directory = entry.is_dir()
+                except OSError as error:
+                    scan_errors.append(error)
+                    continue
+                if is_directory:
+                    if name.casefold() in IGNORED_DIRECTORY_NAMES:
+                        continue
+                    if not _is_link_or_junction(candidate):
+                        safe_directories.append(candidate)
+                    continue
+                files.append(entry)
+            scan_truncated = scan_truncated or reached_limit
+            for entry in files:
+                name = entry.name
+                candidate = root_path / name
                 if not _is_supported(candidate):
                     continue
                 current_index = candidate_index
@@ -393,6 +433,9 @@ def _search_directory(
                     break
             if paused_at is not None:
                 break
+            if scan_truncated:
+                break
+            pending_directories.extend(reversed(safe_directories))
     except OSError:
         return _DirectorySearchResult(
             results=[],
@@ -411,6 +454,8 @@ def _search_directory(
     if scan_errors:
         for error in scan_errors:
             warnings.append(f"directory_scan_error:{type(error).__name__}")
+    if scan_truncated:
+        warnings.append("directory_scan_entry_limit_reached")
     content = "\n".join(rendered) if rendered else "No matches found."
     content, clipped = clip_utf8(content, MAX_SEARCH_BYTES)
     if clipped and paused_at is None:
@@ -424,7 +469,10 @@ def _search_directory(
         ).encode("utf-8")
     ) + len(content.encode("utf-8"))
     continuation = None
-    if paused_at is not None:
+    # A stateless search cursor would replay the prefix on the next call. Once
+    # this request hits the scan cap, fail closed instead of issuing a cursor
+    # that might repeatedly rescan that prefix without reaching later entries.
+    if paused_at is not None and not scan_truncated:
         next_index, next_line, parent = paused_at
         record_directory_evidence(parent)
         file_evidence_items = sorted(file_evidence.items())
@@ -470,7 +518,7 @@ def _search_directory(
         files_considered=files_considered,
         warnings=warnings,
         skipped_files=skipped_files,
-        truncated=continuation is not None,
+        truncated=scan_truncated or continuation is not None,
         evidence_bytes=evidence_bytes,
         continuation=continuation,
     )
@@ -586,6 +634,7 @@ def search_keyword_in_directory(
             "max_files": MAX_SEARCH_FILES,
             "max_results": MAX_SEARCH_RESULTS,
             "max_bytes": MAX_SEARCH_BYTES,
+            "max_scanned_entries": MAX_SEARCH_SCAN_ENTRIES,
         },
     }
 

@@ -11,6 +11,7 @@ from agent.tools.read_contract import (
     MAX_SEARCH_BYTES,
     MAX_SEARCH_FILES,
     MAX_SEARCH_RESULTS,
+    MAX_SEARCH_SCAN_ENTRIES,
     MAX_TREE_SCAN_ENTRIES,
 )
 from agent.tools.search import search_keyword_in_directory
@@ -169,13 +170,155 @@ class BoundedReadToolTests(unittest.TestCase):
 
     def test_search_reports_scan_errors_without_silent_success(self) -> None:
         (self.root / "file.py").write_text("needle\n", encoding="utf-8")
-        with patch("agent.tools.search.os.walk", side_effect=PermissionError("denied")):
+        with patch("agent.tools.search.os.scandir", side_effect=PermissionError("denied")):
             result = search_keyword_in_directory.invoke(
                 {"directory": ".", "search_term": "needle"}
             )
 
         self.assertFalse(result["ok"])
         self.assertEqual(result["error_code"], "scan_failed")
+
+    def test_search_bounds_public_directory_enumeration_and_fails_closed(self) -> None:
+        class Entry:
+            def __init__(self, name: str) -> None:
+                self.name = name
+
+            def is_dir(self, *, follow_symlinks: bool = True) -> bool:
+                return False
+
+            def is_symlink(self) -> bool:
+                return False
+
+        class GuardedScandir:
+            def __init__(self) -> None:
+                self.consumed = 0
+
+            def __enter__(self):
+                return self
+
+            def __exit__(self, *_args):
+                return False
+
+            def __iter__(self):
+                return self
+
+            def __next__(self):
+                if self.consumed >= MAX_SEARCH_SCAN_ENTRIES + 1:
+                    raise AssertionError("search enumerated beyond its hard bound")
+                index = self.consumed
+                self.consumed += 1
+                if index == MAX_SEARCH_SCAN_ENTRIES:
+                    return Entry("late-supported-match.py")
+                return Entry(f"unsupported-{index:05}.bin")
+
+        scanner = GuardedScandir()
+        with patch("agent.tools.search.os.scandir", return_value=scanner):
+            result = search_keyword_in_directory.invoke(
+                {"directory": ".", "search_term": "needle"}
+            )
+
+        self.assertTrue(result["ok"], result)
+        self.assertEqual(scanner.consumed, MAX_SEARCH_SCAN_ENTRIES + 1)
+        self.assertTrue(result["truncated"])
+        self.assertIn("directory_scan_entry_limit_reached", result["warnings"])
+        self.assertIsNone(result["continuation"])
+        self.assertNotIn("late-supported-match.py", result["content"])
+        self.assertEqual(result["results"], [])
+        self.assertEqual(
+            result["limits"]["max_scanned_entries"], MAX_SEARCH_SCAN_ENTRIES
+        )
+
+    def test_search_filtered_entries_consume_scan_budget_without_leaking_names(
+        self,
+    ) -> None:
+        class Entry:
+            def __init__(self, name: str, *, is_directory: bool = False) -> None:
+                self.name = name
+                self._is_directory = is_directory
+
+            def is_dir(self, *, follow_symlinks: bool = True) -> bool:
+                if self.name in {".git", "oracle"}:
+                    raise AssertionError("protected path metadata was probed")
+                return self._is_directory
+
+            def is_symlink(self) -> bool:
+                return False
+
+        class GuardedScandir:
+            def __init__(self) -> None:
+                self.consumed = 0
+
+            def __enter__(self):
+                return self
+
+            def __exit__(self, *_args):
+                return False
+
+            def __iter__(self):
+                return self
+
+            def __next__(self):
+                if self.consumed >= MAX_SEARCH_SCAN_ENTRIES + 1:
+                    raise AssertionError("search enumerated beyond its hard bound")
+                index = self.consumed
+                self.consumed += 1
+                entries = (
+                    Entry(".git", is_directory=True),
+                    Entry("oracle", is_directory=True),
+                    Entry("node_modules", is_directory=True),
+                    Entry("unsafe-link.py"),
+                    Entry("unsupported.bin"),
+                    Entry(".env.private-canary"),
+                )
+                if index == MAX_SEARCH_SCAN_ENTRIES:
+                    return Entry("late-supported-match.py")
+                return entries[index % len(entries)]
+
+        scanner = GuardedScandir()
+        policy = WorkspaceAccessPolicy(oracle_paths=("oracle",))
+        with (
+            workspace_root_scope(self.root, access_policy=policy),
+            patch("agent.tools.search.os.scandir", return_value=scanner),
+            patch(
+                "agent.tools.search._is_link_or_junction",
+                side_effect=lambda path: path.name == "unsafe-link.py",
+            ),
+        ):
+            result = search_keyword_in_directory.invoke(
+                {"directory": ".", "search_term": "needle"}
+            )
+
+        self.assertTrue(result["ok"], result)
+        self.assertEqual(scanner.consumed, MAX_SEARCH_SCAN_ENTRIES + 1)
+        self.assertTrue(result["truncated"])
+        self.assertIn("directory_scan_entry_limit_reached", result["warnings"])
+        self.assertIsNone(result["continuation"])
+        self.assertEqual(result["results"], [])
+        self.assertEqual(result["content"], "No matches found.")
+        serialized = json.dumps(result, ensure_ascii=False)
+        for protected_name in (".git", "oracle", ".env.private-canary"):
+            self.assertNotIn(protected_name, serialized)
+        self.assertNotIn("late-supported-match.py", serialized)
+
+    def test_search_preserves_order_for_a_complete_small_workspace(self) -> None:
+        (self.root / "b.py").write_text("needle\n", encoding="utf-8")
+        (self.root / "a.py").write_text("needle\n", encoding="utf-8")
+        for directory, name in (("z", "d.py"), ("a", "c.py")):
+            nested = self.root / directory
+            nested.mkdir()
+            (nested / name).write_text("needle\n", encoding="utf-8")
+
+        result = search_keyword_in_directory.invoke(
+            {"directory": ".", "search_term": "needle", "context": 0}
+        )
+
+        self.assertTrue(result["ok"], result)
+        self.assertFalse(result["truncated"])
+        self.assertIsNone(result["continuation"])
+        self.assertEqual(
+            [item["path"] for item in result["results"]],
+            ["a.py", "b.py", "a/c.py", "z/d.py"],
+        )
 
     def test_search_result_cap_continuation_has_no_duplicates_or_gaps(self) -> None:
         expected = set()
