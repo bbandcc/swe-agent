@@ -228,6 +228,137 @@ class BoundedReadToolTests(unittest.TestCase):
             result["limits"]["max_scanned_entries"], MAX_SEARCH_SCAN_ENTRIES
         )
 
+    def test_search_exact_scan_cap_with_eof_is_complete(self) -> None:
+        class Entry:
+            def __init__(self, name: str) -> None:
+                self.name = name
+
+            def is_dir(self, *, follow_symlinks: bool = True) -> bool:
+                return False
+
+            def is_symlink(self) -> bool:
+                return False
+
+        class ExactCapScandir:
+            def __init__(self) -> None:
+                self.entries = [
+                    Entry(f"unsupported-{index:05}.bin")
+                    for index in range(MAX_SEARCH_SCAN_ENTRIES)
+                ]
+                self.consumed = 0
+                self.next_calls = 0
+
+            def __enter__(self):
+                return self
+
+            def __exit__(self, *_args):
+                return False
+
+            def __iter__(self):
+                return self
+
+            def __next__(self):
+                self.next_calls += 1
+                if self.consumed == len(self.entries):
+                    raise StopIteration
+                entry = self.entries[self.consumed]
+                self.consumed += 1
+                return entry
+
+        scanner = ExactCapScandir()
+        with patch("agent.tools.search.os.scandir", return_value=scanner):
+            result = search_keyword_in_directory.invoke(
+                {"directory": ".", "search_term": "needle"}
+            )
+
+        self.assertTrue(result["ok"], result)
+        self.assertEqual(scanner.consumed, MAX_SEARCH_SCAN_ENTRIES)
+        self.assertEqual(scanner.next_calls, MAX_SEARCH_SCAN_ENTRIES + 1)
+        self.assertFalse(result["truncated"])
+        self.assertNotIn("directory_scan_entry_limit_reached", result["warnings"])
+        self.assertIsNone(result["continuation"])
+
+    def test_search_exact_scan_cap_checks_pending_directories(self) -> None:
+        class Entry:
+            def __init__(
+                self, name: str, *, is_directory: bool = False
+            ) -> None:
+                self.name = name
+                self._is_directory = is_directory
+
+            def is_dir(self, *, follow_symlinks: bool = True) -> bool:
+                return self._is_directory
+
+            def is_symlink(self) -> bool:
+                return False
+
+        class Scandir:
+            def __init__(self, entries) -> None:
+                self.entries = list(entries)
+                self.consumed = 0
+
+            def __enter__(self):
+                return self
+
+            def __exit__(self, *_args):
+                return False
+
+            def __iter__(self):
+                return self
+
+            def __next__(self):
+                if self.consumed >= len(self.entries):
+                    raise StopIteration
+                entry = self.entries[self.consumed]
+                self.consumed += 1
+                return entry
+
+        def run_case(child_name: str, child_entries):
+            child_path = self.root / child_name
+            child_path.mkdir()
+            parent_scanner = Scandir(
+                [
+                    Entry(f"unsupported-{index:05}.bin")
+                    for index in range(MAX_SEARCH_SCAN_ENTRIES - 1)
+                ]
+                + [Entry(child_name, is_directory=True)]
+            )
+            child_scanner = Scandir(child_entries)
+
+            def scanner_for(path):
+                candidate = Path(path)
+                if candidate == self.root:
+                    return parent_scanner
+                if candidate == child_path:
+                    return child_scanner
+                raise AssertionError(f"unexpected directory scan: {candidate}")
+
+            with patch("agent.tools.search.os.scandir", side_effect=scanner_for):
+                result = search_keyword_in_directory.invoke(
+                    {"directory": ".", "search_term": "needle"}
+                )
+            self.assertEqual(parent_scanner.consumed, MAX_SEARCH_SCAN_ENTRIES)
+            return result, child_scanner
+
+        empty_result, empty_scanner = run_case("empty-pending", [])
+        self.assertTrue(empty_result["ok"], empty_result)
+        self.assertFalse(empty_result["truncated"])
+        self.assertNotIn(
+            "directory_scan_entry_limit_reached", empty_result["warnings"]
+        )
+        self.assertEqual(empty_scanner.consumed, 0)
+
+        incomplete_result, nonempty_scanner = run_case(
+            "nonempty-pending", [Entry("later.py")]
+        )
+        self.assertTrue(incomplete_result["ok"], incomplete_result)
+        self.assertTrue(incomplete_result["truncated"])
+        self.assertIn(
+            "directory_scan_entry_limit_reached", incomplete_result["warnings"]
+        )
+        self.assertEqual(nonempty_scanner.consumed, 1)
+        self.assertIsNone(incomplete_result["continuation"])
+
     def test_search_filtered_entries_consume_scan_budget_without_leaking_names(
         self,
     ) -> None:

@@ -217,32 +217,37 @@ def _search_directory(
     def read_directory_entries(
         path: Path, remaining: int
     ) -> tuple[list[os.DirEntry[str]], bool]:
+        """Return bounded entries and whether an unscanned suffix exists."""
         entries: list[os.DirEntry[str]] = []
-        reached_limit = remaining <= 0
-        if reached_limit:
-            return entries, reached_limit
         with os.scandir(path) as scanner:
             iterator = iter(scanner)
+            if remaining <= 0:
+                try:
+                    next(iterator)
+                except StopIteration:
+                    return entries, False
+                return entries, True
             while len(entries) < remaining:
                 try:
                     entries.append(next(iterator))
                 except StopIteration:
                     break
             if len(entries) >= remaining:
-                reached_limit = True
                 # One extra entry only confirms that the unscanned suffix exists.
                 try:
                     next(iterator)
                 except StopIteration:
                     pass
-        return entries, reached_limit
+                else:
+                    return entries, True
+        return entries, False
 
     try:
         pending_directories = [directory]
         while pending_directories:
             root_path = pending_directories.pop()
             try:
-                entries, reached_limit = read_directory_entries(
+                entries, has_unscanned_suffix = read_directory_entries(
                     root_path, MAX_SEARCH_SCAN_ENTRIES - scan_entries
                 )
             except OSError as error:
@@ -270,7 +275,7 @@ def _search_directory(
                         safe_directories.append(candidate)
                     continue
                 files.append(entry)
-            scan_truncated = scan_truncated or reached_limit
+            scan_truncated = scan_truncated or has_unscanned_suffix
             for entry in files:
                 name = entry.name
                 candidate = root_path / name
