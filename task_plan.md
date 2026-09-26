@@ -16,12 +16,12 @@
 - 本轮文档治理的生产代码基线为 `eba39a66ba16c68cb5fba8f5dcf064646bd69918`。本轮开工时 branch/upstream 为 `review/step3-runtime-recovery` / `origin/review/step3-runtime-recovery`，HEAD 与 remote-tracking HEAD 一致，工作树 clean、ahead/behind `0/0`。这些 Git 数字记录本轮文档修改前的开工状态。
 - 此前排定的四项技术 blocker（D9/S4b tree evidence、tree enumeration、search enumeration + exact-cap repair，以及 D7/S3.5b bounded Git evidence）均已通过 ChatGPT Final Gate 并同步；S5a Final Seal 也已通过并同步。
 - project-state Final Seal 已通过 ChatGPT Final Gate。状态文档提交 `3f30b756367d91c44893ade404adfcb0850f3d32` 与 `8ec2a1d6934e55b588d278cdb6750e9340b4c6c7` 已正常 push；该 Final Gate 同步基线 HEAD 为 `8ec2a1d6934e55b588d278cdb6750e9340b4c6c7`，branch/upstream 为 `review/step3-runtime-recovery` / `origin/review/step3-runtime-recovery`，工作树 clean、ahead/behind `0/0`。
-- 基于固定审核 HEAD `ea81eb561061076296f04d7cab66b3e1b8c20d91` 的 full-project re-audit blocker repair 已完成本地验证，仍等待 ChatGPT full-project re-audit Final Gate；不自行宣称 re-audit PASS，`S5d.1` 尚未开始。
+- 基于固定审核 HEAD `ea81eb561061076296f04d7cab66b3e1b8c20d91` 的 full-project re-audit blocker repair 提交 `4469758f80e0e84b9b5bd1f17bf6d8ca50565860` 已通过 ChatGPT Final Gate 并同步 upstream；这不等同于 GitHub CI 或独立外部测试证据。
 - 本轮仅修复锁定测试依赖、贡献文档、WorkspaceEditor 契约措辞及 S5a 离线测试 helper；生产 validator/runtime 行为未改。pytest 仅属于 `[dependency-groups].dev`；`uv.lock` 只新增 pytest 与 iniconfig、pluggy、Pygments，不升级现有 runtime 包。
 - 四个历史 seed 的 target/oracle revisions、allowed scopes、oracle hashes 与 historical `lock_sha256` 均未修改。测试 helper 对 source-backed offline validation 使用清单自身的 historical environment；另有回归证明显式传入当前环境仍返回 `ENVIRONMENT_MISMATCH`，且 target revision 的 lock blob 不匹配仍 fail closed。
 - 本轮使用 workspace 外 uv 环境/cache，`uv sync --locked` 成功，Python 3.12.3、pytest 8.4.2。首次 re-audit 暴露的 pytest 缺失所致 8 failures + 1 error 已消失；修正历史测试语义后，unittest 438 tests OK / 10 skipped，pytest 432 passed / 10 skipped / 25 warnings，S5a 专项 unittest 19 tests OK，S1–S5a 关键 seam unittest 442 tests OK / 10 skipped。
 - compileall、11 prompt render、root/start/resume CLI help、`git diff --check` 均通过。pytest 的 25 条 FutureWarning 来自锁定 Tree-sitter 旧 API，10 项 skip 为既有 Windows link capability 限制。没有 GitHub CI、真实模型或 benchmark 证据；本地测试通过不等于 full-project audit PASS。
-- 若 re-audit 通过，后续顺序严格沿用 `MASTER_PLAN.md`：`S5d.1 可复现安装` → `S5d.2` → `S5b.1` → `S5b.2` → `S4d`。S4d 不提前于 S5b.2；repo map、embedding 与 S4e 不作为默认必做项。
+- 本轮当前只实施 `MASTER_PLAN.md` 的 S5d.1 可复现安装；后续顺序仍为 `S5d.2` → `S5b.1` → `S5b.2` → `S4d`。S4d 不提前于 S5b.2；repo map、embedding 与 S4e 不作为默认必做项。
 - S3.2 production 技术冻结点：`5850b8370c49f868e90aeffe9e6042f85eaa522c`；S3.2、D1-D6、D7/S3.5a、D7/S3.5b、S2d/D3、S4a/D8 及 S4b/S4c 既有实现保持其各自已验收契约。S4c.1 Python、S4c.2 JavaScript/JSX、S4c.3 TypeScript、S4c.4 TSX 均已通过 ChatGPT 技术 Final Gate；S4c.4 冻结 HEAD `3ebefa53da38152381a11bfe8d526cbb3bbe60c8` 已正常 push。TSX、repo map 与 D11 context assembly 之外的能力边界继续按各阶段记录；符号 adapter 只承诺已测试的语言和声明/组件范围。
 - D2/S2b Final Seal 已收窄 library/CLI 的异常边界；`RunSummary.warnings` 只输出 preflight warning code，unexpected `RuntimeError`、`KeyboardInterrupt` 和 `SystemExit` 不被入口吞掉。
 - 最近一次代码 slice 的 Codex 本地验证（D7/S3.5b workspace revision evidence）：unittest 436 tests OK / 10 skipped；pytest 430 passed / 10 skipped / 218 subtests passed；`python -m compileall -q agent tests` 与 `git diff --check` 通过。revision 专项 unittest 9 tests OK；workspace revision、Agent revision、RunRecord/trajectory、access policy/admission、verification runner/workflow/recovery 相关 unittest 132 tests OK / 6 skipped。pytest 的 25 条 FutureWarning 来自锁定 Tree-sitter 旧 API；10 项 skip 未改变既有平台/能力边界。这些是该 slice 的本地证据，不是本轮 full-project re-audit 结果。
@@ -29,6 +29,22 @@
 - 剩余能力：完整 secret-safe state persistence（当前只覆盖 RunConfig 中已知凭据）、verification rerun/replay、超出当前明确列出的语法子集的完整语言语义、repo map 与 D11 context assembly 仍未实现；当前符号 adapter 只承诺 Python、JavaScript/JSX、TypeScript 和 TSX 的已测试声明/组件范围。D7 policy 只约束使用本 seam 的合作进程和模型可调用工具，不阻止第三方直接写 workspace，也不是 OS sandbox。本轮 EventSink/RunRecord 与 verification artifact 只提供单进程本地 JSONL、结构化记录和有界/脱敏日志，不是完整恢复系统。provider 正向 retry/独立 attempt 语义未实现，当前 durable 只允许单次外部尝试；当前模型 `request_digest` 只代表有界语义输入，身份范围明确为 `PARTIAL`，不能据此安全重放最终 rendered request；exactly-once 不承诺。JUnit XML 是当前唯一可信报告格式，未配置或报告缺失/畸形时保守返回证据不足；多框架 parser registry、扩展 repair 尚未实现。runner 只改写精确匹配的 `--junitxml/--junit-xml` destination 到 owned temporary output，workspace report_path 保持原 bytes/mtime；owned temp cleanup 失败返回结构化 `EXECUTION_ERROR`。S3.4b 对命令已启动但结果未持久化的恢复默认保守返回 `OUTCOME_UNKNOWN`，当前没有 isolated execution seam，因此不支持自动重跑；pytest 对其它 workspace 文件的副作用仍未提供 recovery。S4b raw-read cursor 用文件 stat 元数据摘要识别常规变化，并非全文件快照/强内容锁；tree 和 search enumeration 各自最多计入 4096 个目录项，search 允许最多 cap+1 个消费条目确认后缀，仅在确认存在未扫描后缀时返回 truncated/warning 且不给 continuation；tree 未扫描后缀也没有 continuation。
 - 后续技术切片继续按 MASTER_PLAN §5.2 执行；保留现有 S1/S2/S3 历史编号，不重新开启或重命名 S1。
 - MASTER_PLAN 对应：当前实现事实覆盖 S3.2、D1/S1a、D2/S2b、D3/S2c、D4/S3.2a、D5/S3.4a、D5/S3.4b、D6/S3.3a、S3.3b、S3.3c、D7/S3.5a、S3.5b Final Seal、S2d/D3 受控多文件 repair、D8/S4a 工具消息完整传递、D9/S4b 有界读取及 D10/S4c.1 Python、S4c.2 JavaScript/JSX、S4c.3 TypeScript、S4c.4 TSX 符号提取；D11 context assembly 尚未实现。没有 GitHub CI 或独立外部测试证据。
+
+## 当前技术任务：S5d.1 可复现安装
+
+- 状态：本地实现与必需验证已完成；等待 ChatGPT S5d.1 Final Gate，未进入 S5d.2。
+- 基线：`4469758f80e0e84b9b5bd1f17bf6d8ca50565860`；branch/upstream 为 `review/step3-runtime-recovery` / `origin/review/step3-runtime-recovery`；执行 `git fetch origin` 后 local 与 remote HEAD 一致、工作树 clean、ahead/behind `0/0`。
+- 范围：prompt 显式 UTF-8、wheel package-data、非仓库 cwd、外部 clean wheel install 与安装入口一致性；不进入 S5d.2、CI、S5b、S4d 或其它优化。
+- [x] 阅读 MASTER_PLAN D12/S5d.1、AGENTS、task_plan、pyproject/uv.lock、prompt loader、11 个 prompt、相关测试与安装文档。
+- [x] 通过公开 `markdown_to_prompt_template` 增加 11 prompt UTF-8/render 与非仓库 cwd 测试；先运行确认旧 loader 未传 encoding 时失败，再修复。
+- [x] Clean source copy 经 `uv build --wheel --no-build-isolation` 生成 wheel；wheel 检查确认 production package 与 11 个 prompt 文件齐全。外部 Python 3.12 环境由 `uv sync --locked --no-install-project --no-dev` 准备，wheel 安装后从非 repo cwd、无 `PYTHONPATH` 导入并 render 全部 prompts；模块路径和 distribution metadata 证明不是 editable install。
+- [x] 最小 production 修复：prompt 两处 Markdown text open 均显式 `encoding="utf-8"`；现有 setuptools package-data 已由实际 wheel 检查证明有效，因此没有改 packaging 配置或依赖。
+- [x] README 安装/运行/测试命令统一使用 `--locked`；CONTRIBUTING 原有入口已核对一致。`pyproject.toml` 和 `uv.lock` 未改变，没有依赖或 packaging 配置变化。
+- [x] 使用外部 cache/project environment 执行 `uv sync --locked` 成功；uv `0.12.1`，Python `3.12.3`。
+- [x] 全量 unittest：440 tests，0 failures/errors，10 skipped；全量 pytest：434 passed、10 skipped、25 warnings。S5d.1 专项 2 tests 通过；S1–S5a 关键 seam 模块显式回归 420 tests，0 failures/errors，10 skipped。
+- [x] `python -m compileall -q agent tests`、11 prompt render、root/start/resume CLI help、`git diff --check` 均通过。README 与测试文档中的 canonical `uv` 入口已复核。
+- [ ] 全部验证通过后独立提交 `fix(S5): 封闭可复现安装契约`，不 push；提交后等待 ChatGPT Final Gate。
+- 已知限制：pytest 的 25 条 warning 是锁定 Tree-sitter 旧 API 的 FutureWarning；10 项 skip 是 Windows 当前 symlink/junction 能力边界。临时 wheel 环境使用 `--link-mode copy`，避免与执行测试的 Windows Python 共享已加载 `.pyd` hardlink。没有 GitHub CI、真实模型或 benchmark 证据；本地 S5d.1 验证不等于 Final Gate。
 
 ## 当前文档任务：独立 MASTER PLAN（2026-09-16）
 

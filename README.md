@@ -13,7 +13,7 @@ This repository evolves the original LangTalks project through small, independen
 Run the deterministic and fake-model integration tests with:
 
 ```bash
-uv run python -m unittest discover -s tests -v
+uv run --locked python -m unittest discover -s tests -v
 ```
 
 See [UPSTREAM.md](UPSTREAM.md) for the pinned source revision and [AGENTS.md](AGENTS.md) for the incremental engineering rules.
@@ -239,7 +239,7 @@ cd swe-agent
 2. **Set up environment**
 ```powershell
 # Install dependencies with uv
-uv sync
+uv sync --locked
 
 # Create environment file
 Copy-Item .env.example .env
@@ -254,7 +254,7 @@ git clone https://github.com/browser-use/browser-use ./workspace_repo
 4. **Run the agent**
 ```powershell
 # Start LangGraph server
-uv run langgraph dev
+uv run --locked langgraph dev
 
 ```
 
@@ -312,10 +312,10 @@ static/               # Documentation images
 ### Running Tests
 ```bash
 # Run all tests
-uv run python -m unittest discover -s tests -v
+uv run --locked python -m unittest discover -s tests -v
 
 # Run specific test modules
-uv run python -m unittest tests.developer.test_workflow -v
+uv run --locked python -m unittest tests.developer.test_workflow -v
 ```
 
 Run the real model compatibility smoke after setting `DEEPSEEK_API_KEY` in
@@ -323,7 +323,7 @@ Run the real model compatibility smoke after setting `DEEPSEEK_API_KEY` in
 and structured output:
 
 ```powershell
-uv run python scripts/smoke_model.py
+uv run --locked python scripts/smoke_model.py
 ```
 
 ## 📁 Main Directory Files
@@ -393,7 +393,7 @@ We welcome contributions! This project aims to push the boundaries of AI-powered
 2. **Create a feature branch** (`git checkout -b feature/amazing-feature`)
 3. **Make your changes** following the existing code patterns
 4. **Add tests** for new functionality
-5. **Ensure tests pass** (`uv run python -m unittest discover -s tests -v`)
+5. **Ensure tests pass** (`uv run --locked python -m unittest discover -s tests -v`)
 6. **Update documentation** if needed
 7. **Commit your changes** (`git commit -m 'Add amazing feature'`)
 8. **Push to the branch** (`git push origin feature/amazing-feature`)
@@ -407,10 +407,10 @@ git clone https://github.com/langtalks/swe-agent.git
 cd swe-agent
 
 # Set up development environment
-uv sync
+uv sync --locked
 
 # Run tests to ensure everything works
-uv run python -m unittest discover -s tests -v
+uv run --locked python -m unittest discover -s tests -v
 ```
 
 ## 📊 Technical Details

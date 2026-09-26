@@ -75,7 +75,7 @@ def _validate_markdown_for_prompt_template_and_strip_content(file_path: str) -> 
     :param file_path:
     :return:
     """
-    with open(file_path, "r") as f:
+    with open(file_path, "r", encoding="utf-8") as f:
         markdown_content = f.read()
 
     # Extract input_variables
@@ -135,7 +135,7 @@ def markdown_to_prompt_template(relative_prompt_path: str) -> Union[PromptTempla
     absolute_prompt_path = (
         f"{os.path.dirname(os.path.abspath(__file__))}/../{relative_prompt_path}"
     )
-    with open(absolute_prompt_path, "r") as f:
+    with open(absolute_prompt_path, "r", encoding="utf-8") as f:
         markdown_content = f.read()
 
     # Define the regex pattern to match _type
