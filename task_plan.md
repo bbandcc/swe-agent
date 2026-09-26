@@ -11,7 +11,7 @@
 ### 当前状态文件基线
 
 - S5a Final Seal 已通过此前 ChatGPT Final Gate，并已同步 upstream。
-- D9/S4b 本次全项目审计排定的三个 blocker 均已封口、通过 ChatGPT Final Gate 并 push：production tree completeness evidence 的最终审核提交为 `25e0222d57e606a48de5ae16aaaa527c3348a61f`；tree filesystem enumeration hard bound 的最终审核提交为 `436e03e926ee8a7505066312bd74b6fdb63defc3`；search filesystem enumeration hard bound 的最终审核 HEAD 为 `39c8e3fccb9fc8ffa66c57968f2a573a5a1e2415`。search 中间提交 `aeb2ad0448f5a4b56cdcb1708641e1c71cb22662` 曾因 exact-cap false truncation 未通过 Final Gate，已由 `39c8e3f...` 修复并通过 Gate、push。search/tree enumeration 均使用独立 4096 项预算并在过滤前计入目录及 ignored、protected、unsupported、link/unsafe entries；只有确认存在未扫描后缀才报告 truncated，search 在该截断边界不提供 continuation，避免无状态 cursor 重扫造成 livelock。现有 query/evidence-bound cursor、raw/tree 读取上限及语义保持。RunConfig/checkpoint 未因这些 slice 改变，semantic config schema 保持 v7。
+- D9/S4b 本次全项目审计排定的三个 blocker 均已封口、通过 ChatGPT Final Gate 并 push：production tree completeness evidence 的最终审核提交为 `25e0222d57e606a48de5ae16aaaa527c3348a61f`；tree filesystem enumeration hard bound 的最终审核提交为 `436e03e926ee8a7505066312bd74b6fdb63defc3`；search filesystem enumeration hard bound 的最终审核 HEAD 为 `39c8e3fccb9fc8ffa66c57968f2a573a5a1e2415`。search 中间提交 `aeb2ad0448f5a4b56cdcb1708641e1c71cb22662` 曾因 exact-cap false truncation 未通过 Final Gate，已由 `39c8e3f...` 修复并通过 Gate、push。tree enumeration 使用独立 4096 项预算，过滤前计入目录及 ignored、protected、unsafe/link/hardlink entries；预算用尽后进行常数级 lookahead，发现额外项或仍有未检查目录而无法证明完整时报告 truncated / warning，未扫描后缀无 continuation。search 使用独立 4096 项预算并在过滤前计入目录、ignored、protected、unsupported、link/unsafe entries；只有确认存在未扫描后缀才报告 truncated，且该截断边界不提供 continuation，避免无状态 cursor 重扫造成 livelock。现有 query/evidence-bound cursor、raw/tree 读取上限及语义保持。RunConfig/checkpoint 未因这些 slice 改变，semantic config schema 保持 v7。
 - D7/S3.5b workspace revision bounded Git evidence 的 Final Seal `eba39a66ba16c68cb5fba8f5dcf064646bd69918` 已通过 ChatGPT Final Gate 并 push。workspace revision Git stdout 上限为 1 MiB、stderr 上限为 64 KiB；status、HEAD、diff 增量读取，overflow/timeout/query failure 返回 `UNKNOWN / QUERY_FAILED`，不以 partial output 生成可信 digest；RunRecord v2 与 semantic config schema v7 未改变。
 - 本轮文档治理的生产代码基线为 `eba39a66ba16c68cb5fba8f5dcf064646bd69918`。本轮开工时 branch/upstream 为 `review/step3-runtime-recovery` / `origin/review/step3-runtime-recovery`，HEAD 与 remote-tracking HEAD 一致，工作树 clean、ahead/behind `0/0`。这些 Git 数字记录本轮文档修改前的开工状态。
 - 这四项已排定 blocker 均已通过 Final Gate 并同步，但下一轮独立 full-project re-audit 尚未执行；因此不宣称整个项目 audit PASS。完成本次状态治理并通过其 Final Gate 后，下一步只能是 full-project re-audit；只有 re-audit 确认 blockers 均已封口，才进入 `MASTER_PLAN.md` §5.2 的下一实施阶段。
@@ -1023,7 +1023,7 @@ S1/S2/S3.1/S3.2/D3-D7a 测试保持通过。compile、11 个 prompt render、roo
 
 - 支持文件类型由后缀白名单定义，不是任意文本探测。search continuation 是无状态位置游标，不缓存全量结果；每次调用会确定性重走目录项前缀以定位候选序号，实际读取/处理的候选文件、扫描字节、结果数和返回 evidence 仍受每页硬上限约束。游标校验其携带的本页文件/目录 stat evidence，不是整个 workspace 的强快照。跨页大文件的单条结果以 `content_hash_scope=scanned_segment` 标明摘要只覆盖匹配所在扫描片段；该路径无法提供跨页上下文行时会返回 `chunked_file_context_limited` warning。
 - raw cursor 的文件版本使用可移植 stat 元数据摘要，不是全文件快照或强并发锁；每页 `content_hash` 只覆盖返回的 page bytes。
-- tree 最多扫描 4096 项；达到该上限时报告 truncated，未扫描后缀不可继续获取。保护策略与 OS 层隔离边界保持原契约。
+- tree 目录项扫描预算固定为 4096；达到预算后最多进行常数级额外探测，以判断当前目录或待处理目录是否仍可能有未扫描内容。探测发现额外目录项，或有限探测后仍有未检查的待处理目录、无法证明扫描已完整时，返回 `truncated` / scan-limit warning；未扫描后缀没有 continuation。protected path、path/link 边界及 OS 层隔离契约保持不变。
 
 ### D9/S4b Final Seal follow-up：production tree completeness evidence
 
