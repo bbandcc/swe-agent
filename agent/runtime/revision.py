@@ -2,16 +2,29 @@
 
 from __future__ import annotations
 
-import math
 import hashlib
+import math
+import os
 import re
 import subprocess
+import threading
+import time
 from collections.abc import Mapping
 from dataclasses import dataclass
 from enum import Enum
 from pathlib import Path
+from typing import TYPE_CHECKING, BinaryIO
+
+if TYPE_CHECKING:
+    from agent.verification.process_tree import ProcessTree
 
 _GIT_REVISION_PATTERN = re.compile(r"^[0-9a-f]{40}(?:[0-9a-f]{24})?$")
+_WORKSPACE_REVISION_STDOUT_MAX_BYTES = 1_048_576
+_WORKSPACE_REVISION_STDERR_MAX_BYTES = 65_536
+_GIT_PIPE_READ_CHUNK_BYTES = 16_384
+_GIT_PROCESS_POLL_SECONDS = 0.05
+_GIT_PROCESS_REAP_TIMEOUT_SECONDS = 2.0
+_GIT_PIPE_JOIN_TIMEOUT_SECONDS = 2.0
 
 
 class AgentRevisionStatus(str, Enum):
@@ -249,13 +262,13 @@ def detect_workspace_revision(
         raise ValueError("timeout_seconds must be a finite positive number.")
     prefix = [git_executable, "-C", str(Path(root).absolute())]
     try:
-        status = _run_git_bytes(
+        status = _run_git_bounded(
             [*prefix, "status", "--porcelain=v1", "--untracked-files=all"],
             timeout_seconds,
         )
     except FileNotFoundError:
         return WorkspaceRevision.unknown(WorkspaceRevisionReason.GIT_UNAVAILABLE)
-    except (OSError, subprocess.TimeoutExpired):
+    except (OSError, subprocess.TimeoutExpired, _GitOutputLimitExceeded):
         return WorkspaceRevision.unknown(WorkspaceRevisionReason.QUERY_FAILED)
     if status.returncode != 0:
         reason = (
@@ -265,12 +278,12 @@ def detect_workspace_revision(
         )
         return WorkspaceRevision.unknown(reason)
     try:
-        head = _run_git_bytes([*prefix, "rev-parse", "HEAD"], timeout_seconds)
-        diff = _run_git_bytes(
+        head = _run_git_bounded([*prefix, "rev-parse", "HEAD"], timeout_seconds)
+        diff = _run_git_bounded(
             [*prefix, "diff", "--no-ext-diff", "--binary", "HEAD"],
             timeout_seconds,
         )
-    except (OSError, subprocess.TimeoutExpired):
+    except (OSError, subprocess.TimeoutExpired, _GitOutputLimitExceeded):
         return WorkspaceRevision.unknown(WorkspaceRevisionReason.QUERY_FAILED)
     commit_sha = head.stdout.decode("ascii", errors="ignore").strip().lower()
     if head.returncode != 0 or not _GIT_REVISION_PATTERN.fullmatch(commit_sha):
@@ -286,14 +299,160 @@ def detect_workspace_revision(
     )
 
 
-def _run_git_bytes(
+class _GitOutputLimitExceeded(Exception):
+    """A required workspace Git stream exceeded its complete-evidence limit."""
+
+
+class _BoundedGitPipe:
+    def __init__(self, max_bytes: int, overflow: threading.Event) -> None:
+        self.max_bytes = max_bytes
+        self.overflow = overflow
+        self.data = bytearray()
+        self.error: BaseException | None = None
+
+    def drain(self, stream: BinaryIO) -> None:
+        try:
+            while True:
+                remaining = self.max_bytes - len(self.data)
+                chunk = stream.read(
+                    min(_GIT_PIPE_READ_CHUNK_BYTES, remaining + 1)
+                )
+                if not chunk:
+                    return
+                accepted = min(len(chunk), remaining)
+                if accepted:
+                    self.data.extend(chunk[:accepted])
+                if len(chunk) > remaining:
+                    self.overflow.set()
+                    return
+        except BaseException as error:
+            self.error = error
+            self.overflow.set()
+
+
+def _run_git_bounded(
     argv: list[str], timeout_seconds: float
 ) -> subprocess.CompletedProcess[bytes]:
-    return subprocess.run(
+    """Read both Git pipes incrementally and reject incomplete evidence."""
+    # Import lazily to keep module initialization independent of verification.
+    from agent.verification.process_tree import ProcessTree
+
+    process = subprocess.Popen(
         argv,
+        stdin=subprocess.DEVNULL,
         stdout=subprocess.PIPE,
         stderr=subprocess.PIPE,
-        check=False,
-        timeout=timeout_seconds,
         shell=False,
+        bufsize=0,
+        start_new_session=os.name == "posix",
+        creationflags=(
+            subprocess.CREATE_NEW_PROCESS_GROUP if os.name == "nt" else 0
+        ),
     )
+    process_tree = ProcessTree(process)
+    if process.stdout is None or process.stderr is None:
+        _terminate_and_reap_git(process, process_tree)
+        process_tree.close()
+        raise OSError("Git output pipes could not be opened.")
+
+    overflow = threading.Event()
+    stdout_capture = _BoundedGitPipe(
+        _WORKSPACE_REVISION_STDOUT_MAX_BYTES, overflow
+    )
+    stderr_capture = _BoundedGitPipe(
+        _WORKSPACE_REVISION_STDERR_MAX_BYTES, overflow
+    )
+    readers = [
+        threading.Thread(
+            target=stdout_capture.drain,
+            args=(process.stdout,),
+            daemon=True,
+        ),
+        threading.Thread(
+            target=stderr_capture.drain,
+            args=(process.stderr,),
+            daemon=True,
+        ),
+    ]
+    started_readers: list[threading.Thread] = []
+    deadline = time.monotonic() + timeout_seconds
+    terminated = False
+    try:
+        for reader in readers:
+            reader.start()
+            started_readers.append(reader)
+        while True:
+            if overflow.is_set():
+                _terminate_and_reap_git(process, process_tree)
+                terminated = True
+                _join_git_readers(started_readers)
+                _raise_git_pipe_error(stdout_capture, stderr_capture)
+                raise _GitOutputLimitExceeded
+            remaining = deadline - time.monotonic()
+            if remaining <= 0:
+                _terminate_and_reap_git(process, process_tree)
+                terminated = True
+                raise subprocess.TimeoutExpired(argv, timeout_seconds)
+            try:
+                return_code = process.wait(
+                    timeout=min(remaining, _GIT_PROCESS_POLL_SECONDS)
+                )
+                break
+            except subprocess.TimeoutExpired:
+                continue
+
+        _join_git_readers(started_readers)
+        _raise_git_pipe_error(stdout_capture, stderr_capture)
+        if overflow.is_set():
+            raise _GitOutputLimitExceeded
+        return subprocess.CompletedProcess(
+            argv,
+            return_code,
+            bytes(stdout_capture.data),
+            bytes(stderr_capture.data),
+        )
+    except BaseException:
+        if not terminated:
+            _terminate_and_reap_git(process, process_tree)
+        _join_git_readers(started_readers)
+        raise
+    finally:
+        try:
+            if all(not reader.is_alive() for reader in started_readers):
+                process.stdout.close()
+                process.stderr.close()
+        finally:
+            process_tree.close()
+
+
+def _terminate_and_reap_git(
+    process: subprocess.Popen[bytes], process_tree: ProcessTree
+) -> None:
+    """Kill and reap the owned Git process using finite waits only."""
+    process_tree.terminate()
+    try:
+        process.wait(timeout=_GIT_PROCESS_REAP_TIMEOUT_SECONDS)
+        return
+    except subprocess.TimeoutExpired:
+        try:
+            process.kill()
+        except OSError:
+            pass
+    process.wait(timeout=_GIT_PROCESS_REAP_TIMEOUT_SECONDS)
+
+
+def _join_git_readers(readers: list[threading.Thread]) -> None:
+    deadline = time.monotonic() + _GIT_PIPE_JOIN_TIMEOUT_SECONDS
+    for reader in readers:
+        reader.join(timeout=max(0.0, deadline - time.monotonic()))
+    if any(reader.is_alive() for reader in readers):
+        raise OSError("Git output pipes did not close after process exit.")
+
+
+def _raise_git_pipe_error(
+    stdout_capture: _BoundedGitPipe,
+    stderr_capture: _BoundedGitPipe,
+) -> None:
+    for capture in (stdout_capture, stderr_capture):
+        if capture.error is not None:
+            raise capture.error
