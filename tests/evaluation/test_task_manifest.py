@@ -28,6 +28,10 @@ class TaskManifestTests(unittest.TestCase):
         self._rehash(document)
         return document
 
+    def _historical_environment(self) -> dict[str, str]:
+        tasks = self._document()["tasks"]
+        return dict(tasks[0]["environment"])
+
     def _validate(
         self,
         document: object,
@@ -39,7 +43,9 @@ class TaskManifestTests(unittest.TestCase):
             repository_root=REPOSITORY_ROOT,
             expected_repository=TRUSTED_REPOSITORY,
             expected_environment=(
-                expected_environment or environment_summary(REPOSITORY_ROOT)
+                expected_environment
+                if expected_environment is not None
+                else self._historical_environment()
             ),
         )
 
@@ -48,12 +54,38 @@ class TaskManifestTests(unittest.TestCase):
         document["manifest_sha256"] = manifest_content_hash(document)
 
     def test_source_backed_seed_manifest_validates_offline(self) -> None:
-        result = self._validate(self._document())
+        document = self._document()
+        environments = [task["environment"] for task in document["tasks"]]
+        self.assertTrue(all(environment == environments[0] for environment in environments))
+        self.assertEqual(environments[0], self._historical_environment())
+
+        result = self._validate(document)
 
         self.assertTrue(result.valid, result.issues)
         self.assertEqual(result.manifest_id, "s5a-history-seed-v1")
         self.assertGreaterEqual(len(result.task_ids), 1)
         self.assertEqual(len(result.task_ids), len(set(result.task_ids)))
+
+    def test_historical_seed_validation_is_independent_of_current_lock(self) -> None:
+        document = self._document()
+        historical_environment = self._historical_environment()
+        current_environment = environment_summary(REPOSITORY_ROOT)
+        self.assertNotEqual(
+            historical_environment["lock_sha256"], current_environment["lock_sha256"]
+        )
+
+        result = self._validate(document)
+
+        self.assertTrue(result.valid, result.issues)
+
+    def test_historical_seed_rejects_current_workspace_environment(self) -> None:
+        result = self._validate(
+            self._document(), expected_environment=environment_summary(REPOSITORY_ROOT)
+        )
+
+        self.assertIn(
+            "environment_mismatch", {issue.code.value for issue in result.issues}
+        )
 
     def test_historical_seed_scopes_include_curated_implementation_files(self) -> None:
         document = self._document()

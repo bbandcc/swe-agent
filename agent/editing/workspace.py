@@ -207,7 +207,7 @@ class WorkspaceEditor:
         return stage_transaction(transaction, proposal)
 
     def commit(self, transaction: WorkspaceTransaction) -> EditResult:
-        """Recheck the baseline and replace or create the target exactly once."""
+        """Recheck the baseline before one deterministic replace or create attempt."""
         denied = self._access_denied(transaction.path, write=True)
         if denied is not None:
             return denied

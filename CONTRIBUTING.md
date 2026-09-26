@@ -11,7 +11,8 @@ Welcome to the LangTalks community! We're excited to have you contribute to the 
 - Python 3.12+
 - uv (Python package manager)
 - Git
-- Anthropic API key (for testing)
+
+The deterministic test suite uses fake models and does not require an API key.
 
 ### Development Setup
 
@@ -24,25 +25,26 @@ cd swe-agent-langgraph
 
 2. **Environment Setup**
 ```bash
-# Install dependencies
-uv sync --dev
+# Install the locked production and development/test dependencies
+uv sync --locked
 
 # Set up environment variables
 cp .env.example .env
 # Add your API keys to .env
 
-# Activate the virtual environment
-source .venv/bin/activate
+# Run commands through uv; manual environment activation is optional
 ```
 
 3. **Verify Setup**
 ```bash
-# Run tests to ensure everything works
-uv run pytest
+# Canonical full test suite (same entry as README)
+uv run --locked python -m unittest discover -s tests -v
 
-# Check code formatting
-uv run black --check .
-uv run isort --check-only .
+# Additional pytest compatibility run; pytest is in the locked dev group
+uv run --locked python -m pytest
+
+# Compile production and test modules
+uv run --locked python -m compileall -q agent tests
 ```
 
 ## 🎯 How to Contribute
@@ -58,7 +60,7 @@ We're looking for contributions in these key areas:
 - **Product Manager Agent**: High-level requirement analysis
 
 #### 🔧 **Development Tools & Quality**
-- **Linter Integration**: ESLint, Black, Pylint workflow integration
+- **Future tooling**: Linter integration (not currently configured)
 - **Benchmarking Framework**: Performance and quality metrics
 - **Code Semantic Indexing**: Advanced code understanding
 
@@ -89,7 +91,7 @@ git checkout -b fix/issue-description
 ### 2. **Development Guidelines**
 
 #### Code Style
-- **Python**: Follow PEP 8, use Black for formatting
+- **Python**: Follow PEP 8 and the style of nearby code
 - **Type Hints**: Required for all new code
 - **Docstrings**: Use Google style for functions and classes
 - **Variable Names**: Descriptive and meaningful
@@ -103,24 +105,18 @@ git checkout -b fix/issue-description
 #### Testing Requirements
 - **Unit Tests**: Required for all new functionality
 - **Integration Tests**: For agent workflows
-- **Test Coverage**: Maintain >80% coverage
-- **Fixtures**: Use pytest fixtures for common test data
+- **Fixtures**: Reuse the existing unittest/pytest test patterns
 
-### 3. **Code Quality Checks**
+### 3. **Configured Checks**
 ```bash
-# Format code
-uv run black .
-uv run isort .
-
-# Type checking
-uv run mypy agent/
-
-# Linting
-uv run flake8 agent/
-
-# Run tests
-uv run pytest --cov=agent
+# Canonical tests, pytest compatibility run, and compile check
+uv run --locked python -m unittest discover -s tests -v
+uv run --locked python -m pytest
+uv run --locked python -m compileall -q agent tests
 ```
+
+Black, isort, mypy, flake8, and coverage reporting are not currently configured
+project gates. Do not treat commands for those tools as available checks.
 
 ### 4. **Commit Guidelines**
 
@@ -150,11 +146,10 @@ git push origin feature/your-feature-name
    - Clear description of changes
    - Reference to related issues
    - Screenshots/demos if applicable
-   - Test results and coverage
+   - Test results
 
 3. **PR Checklist**:
    - [ ] Tests pass
-   - [ ] Code formatted with Black
    - [ ] Type hints added
    - [ ] Documentation updated
    - [ ] Changelog entry added (if applicable)
@@ -163,18 +158,18 @@ git push origin feature/your-feature-name
 
 ### Running Tests
 ```bash
-# All tests
-uv run pytest
+# Canonical full suite
+uv run --locked python -m unittest discover -s tests -v
 
-# Specific test file
-uv run pytest tests/test_architect.py
+# Specific test module
+uv run --locked python -m unittest tests.developer.test_workflow -v
 
-# With coverage
-uv run pytest --cov=agent --cov-report=html
-
-# Integration tests only
-uv run pytest tests/integration/
+# Pytest compatibility run
+uv run --locked python -m pytest
 ```
+
+The project does not currently configure a coverage plugin or a separate
+integration-test directory.
 
 ### Writing Tests
 
