@@ -21,7 +21,7 @@
 - 四个历史 seed 的 target/oracle revisions、allowed scopes、oracle hashes 与 historical `lock_sha256` 均未修改。测试 helper 对 source-backed offline validation 使用清单自身的 historical environment；另有回归证明显式传入当前环境仍返回 `ENVIRONMENT_MISMATCH`，且 target revision 的 lock blob 不匹配仍 fail closed。
 - 本轮使用 workspace 外 uv 环境/cache，`uv sync --locked` 成功，Python 3.12.3、pytest 8.4.2。首次 re-audit 暴露的 pytest 缺失所致 8 failures + 1 error 已消失；修正历史测试语义后，unittest 438 tests OK / 10 skipped，pytest 432 passed / 10 skipped / 25 warnings，S5a 专项 unittest 19 tests OK，S1–S5a 关键 seam unittest 442 tests OK / 10 skipped。
 - compileall、11 prompt render、root/start/resume CLI help、`git diff --check` 均通过。pytest 的 25 条 FutureWarning 来自锁定 Tree-sitter 旧 API，10 项 skip 为既有 Windows link capability 限制。没有 GitHub CI、真实模型或 benchmark 证据；本地测试通过不等于 full-project audit PASS。
-- 本轮当前只实施 `MASTER_PLAN.md` 的 S5d.1 可复现安装；后续顺序仍为 `S5d.2` → `S5b.1` → `S5b.2` → `S4d`。S4d 不提前于 S5b.2；repo map、embedding 与 S4e 不作为默认必做项。
+- S5d.1 实现提交 `05082eb2e33d4880a38918fcc3462226a2ea3798` 已通过 ChatGPT Technical Final Gate，尚未 push；当前只进行 project-state Final Seal，等待 project-state Final Gate 与 upstream 同步，尚未进入 S5d.2。后续顺序仍为 `S5d.2` → `S5b.1` → `S5b.2` → `S4d`；S4d 不提前于 S5b.2，repo map、embedding 与 S4e 不作为默认必做项。
 - S3.2 production 技术冻结点：`5850b8370c49f868e90aeffe9e6042f85eaa522c`；S3.2、D1-D6、D7/S3.5a、D7/S3.5b、S2d/D3、S4a/D8 及 S4b/S4c 既有实现保持其各自已验收契约。S4c.1 Python、S4c.2 JavaScript/JSX、S4c.3 TypeScript、S4c.4 TSX 均已通过 ChatGPT 技术 Final Gate；S4c.4 冻结 HEAD `3ebefa53da38152381a11bfe8d526cbb3bbe60c8` 已正常 push。TSX、repo map 与 D11 context assembly 之外的能力边界继续按各阶段记录；符号 adapter 只承诺已测试的语言和声明/组件范围。
 - D2/S2b Final Seal 已收窄 library/CLI 的异常边界；`RunSummary.warnings` 只输出 preflight warning code，unexpected `RuntimeError`、`KeyboardInterrupt` 和 `SystemExit` 不被入口吞掉。
 - 最近一次代码 slice 的 Codex 本地验证（D7/S3.5b workspace revision evidence）：unittest 436 tests OK / 10 skipped；pytest 430 passed / 10 skipped / 218 subtests passed；`python -m compileall -q agent tests` 与 `git diff --check` 通过。revision 专项 unittest 9 tests OK；workspace revision、Agent revision、RunRecord/trajectory、access policy/admission、verification runner/workflow/recovery 相关 unittest 132 tests OK / 6 skipped。pytest 的 25 条 FutureWarning 来自锁定 Tree-sitter 旧 API；10 项 skip 未改变既有平台/能力边界。这些是该 slice 的本地证据，不是本轮 full-project re-audit 结果。
@@ -32,7 +32,7 @@
 
 ## 当前技术任务：S5d.1 可复现安装
 
-- 状态：本地实现与必需验证已完成；等待 ChatGPT S5d.1 Final Gate，未进入 S5d.2。
+- 状态：S5d.1 实现提交 `05082eb2e33d4880a38918fcc3462226a2ea3798`（`fix(S5): 封闭可复现安装契约`）已完成并通过 ChatGPT Technical Final Gate；尚未 push，未进入 S5d.2；等待 project-state Final Gate 和 upstream 同步。
 - 基线：`4469758f80e0e84b9b5bd1f17bf6d8ca50565860`；branch/upstream 为 `review/step3-runtime-recovery` / `origin/review/step3-runtime-recovery`；执行 `git fetch origin` 后 local 与 remote HEAD 一致、工作树 clean、ahead/behind `0/0`。
 - 范围：prompt 显式 UTF-8、wheel package-data、非仓库 cwd、外部 clean wheel install 与安装入口一致性；不进入 S5d.2、CI、S5b、S4d 或其它优化。
 - [x] 阅读 MASTER_PLAN D12/S5d.1、AGENTS、task_plan、pyproject/uv.lock、prompt loader、11 个 prompt、相关测试与安装文档。
@@ -43,8 +43,8 @@
 - [x] 使用外部 cache/project environment 执行 `uv sync --locked` 成功；uv `0.12.1`，Python `3.12.3`。
 - [x] 全量 unittest：440 tests，0 failures/errors，10 skipped；全量 pytest：434 passed、10 skipped、25 warnings。S5d.1 专项 2 tests 通过；S1–S5a 关键 seam 模块显式回归 420 tests，0 failures/errors，10 skipped。
 - [x] `python -m compileall -q agent tests`、11 prompt render、root/start/resume CLI help、`git diff --check` 均通过。README 与测试文档中的 canonical `uv` 入口已复核。
-- [ ] 全部验证通过后独立提交 `fix(S5): 封闭可复现安装契约`，不 push；提交后等待 ChatGPT Final Gate。
-- 已知限制：pytest 的 25 条 warning 是锁定 Tree-sitter 旧 API 的 FutureWarning；10 项 skip 是 Windows 当前 symlink/junction 能力边界。临时 wheel 环境使用 `--link-mode copy`，避免与执行测试的 Windows Python 共享已加载 `.pyd` hardlink。没有 GitHub CI、真实模型或 benchmark 证据；本地 S5d.1 验证不等于 Final Gate。
+- [x] 验证通过后已独立提交 `05082eb2e33d4880a38918fcc3462226a2ea3798`：`fix(S5): 封闭可复现安装契约`；未 amend、未 push。
+- 已知限制：unittest / pytest / seam / wheel 和其它运行数字均为 Codex 本地执行证据；pytest 的 25 条 warning 是锁定 Tree-sitter 旧 API 的 FutureWarning；10 项 skip 是 Windows 当前 symlink/junction 能力边界。临时 wheel 环境使用 `--link-mode copy`，避免与执行测试的 Windows Python 共享已加载 `.pyd` hardlink。没有 GitHub CI、真实模型或 benchmark 证据；S5d.2 尚未开始。
 
 ## 当前文档任务：独立 MASTER PLAN（2026-09-16）
 
