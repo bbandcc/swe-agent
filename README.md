@@ -223,7 +223,7 @@ Final Result: Modified codebase
 
 ## 📋 Prerequisites
 
-- Python 3.12+
+- Python 3.12 (the locked development and CI baseline)
 - uv (Python package manager)
 - DeepSeek API key (the production default is `deepseek-v4-flash` through the
   official LangChain DeepSeek provider)
@@ -238,7 +238,7 @@ cd swe-agent
 
 2. **Set up environment**
 ```powershell
-# Install dependencies with uv
+# Install the locked runtime and development/test dependencies
 uv sync --locked
 
 # Create environment file
@@ -311,12 +311,19 @@ static/               # Documentation images
 
 ### Running Tests
 ```bash
-# Run all tests
+# Canonical full suite
 uv run --locked python -m unittest discover -s tests -v
 
-# Run specific test modules
-uv run --locked python -m unittest tests.developer.test_workflow -v
+# Pytest compatibility run (pytest is locked in the dev dependency group)
+uv run --locked python -m pytest
+
+# Compile production and test packages
+uv run --locked python -m compileall -q agent tests
 ```
+
+GitHub Actions runs these gates on Python 3.12 for Ubuntu and Windows. Link,
+junction, and case-specific skips are reported with their individual reasons;
+the workflow does not require a fixed total skip count.
 
 Run the real model compatibility smoke after setting `DEEPSEEK_API_KEY` in
 `.env` or the ignored `.env.local`. It checks plain text, a forced tool call,

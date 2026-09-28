@@ -8,7 +8,7 @@ Welcome to the LangTalks community! We're excited to have you contribute to the 
 
 ### Prerequisites
 
-- Python 3.12+
+- Python 3.12 (the locked development and CI baseline)
 - uv (Python package manager)
 - Git
 

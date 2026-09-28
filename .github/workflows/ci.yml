@@ -1,0 +1,53 @@
+name: CI
+
+on:
+  push:
+  pull_request:
+  workflow_dispatch:
+
+permissions:
+  contents: read
+
+jobs:
+  test:
+    name: Python 3.12 (${{ matrix.os }})
+    runs-on: ${{ matrix.os }}
+    strategy:
+      fail-fast: false
+      matrix:
+        os: [ubuntu-latest, windows-latest]
+    env:
+      # Keep platform/capability skip reasons visible without pinning a count.
+      PYTEST_ADDOPTS: "-rs"
+    steps:
+      - name: Check out source
+        uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
+        with:
+          persist-credentials: false
+
+      - name: Install locked uv and Python
+        uses: astral-sh/setup-uv@c771a70e6277c0a99b617c7a806ffedaca235ff9 # v9.0.0
+        with:
+          version: "0.12.1"
+          python-version: "3.12"
+
+      - name: Sync locked project environment
+        run: |
+          uv --version
+          uv sync --locked
+          uv run --locked python -c "import sys; assert sys.version_info[:2] == (3, 12), sys.version; print(sys.version)"
+
+      - name: Verify S5d.1 clean wheel and installed prompt contract
+        run: uv run --locked python -m unittest -v tests.test_s5d1_installation
+
+      - name: Run canonical unittest suite and show platform skips
+        run: uv run --locked python -m unittest discover -s tests -v
+
+      - name: Run pytest compatibility suite and show platform skip reasons
+        run: uv run --locked python -m pytest
+
+      - name: Run platform path-safety seams with explicit skip reasons
+        run: uv run --locked python -m unittest -v tests.runtime.test_identity tests.runtime.test_admission tests.runtime.test_access_policy tests.runtime.test_config_validation tests.editing.test_workspace_editor tests.editing.test_write_recovery tests.tools.test_workspace_boundary tests.verification.test_runner
+
+      - name: Compile production and test packages
+        run: uv run --locked python -m compileall -q agent tests
