@@ -226,7 +226,7 @@ class TaskManifestTests(unittest.TestCase):
 
     def test_environment_mismatch_is_rejected(self) -> None:
         document = self._single_task_document()
-        expected = environment_summary(REPOSITORY_ROOT)
+        expected = self._historical_environment()
         expected["python_version"] = "0.0"
 
         result = self._validate(document, expected_environment=expected)
@@ -237,7 +237,7 @@ class TaskManifestTests(unittest.TestCase):
 
     def test_environment_lock_must_match_pinned_target_revision(self) -> None:
         document = self._single_task_document()
-        expected = environment_summary(REPOSITORY_ROOT)
+        expected = self._historical_environment()
         expected["lock_sha256"] = "0" * 64
         document["tasks"][0]["environment"]["lock_sha256"] = expected["lock_sha256"]
         self._rehash(document)

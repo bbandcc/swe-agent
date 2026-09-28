@@ -48,13 +48,15 @@
 
 ## 当前技术任务：D12/S5d.2 自动化 gate
 
-- 状态：S5d.2 已开始；只实现 Windows/Linux、Python 3.12 的锁定测试与安装门禁、文档入口一致性和平台 skip 可见性。不进入 S5b.1、真实模型、benchmark、S4d 或其它优化。
-- 开工 Git 基线：`dcc6c8571a29e51bca26362d9fa892fb81b6fb3e`；branch/upstream 正确，working tree clean，ahead/behind `0/0`。本轮不 push 新提交。
-- 新增 `.github/workflows/ci.yml`：read-only token 权限；固定 uv action revision 与 uv 版本；`uv sync --locked`；canonical unittest、pytest compatibility、compileall 和 S5d.1 wheel/install 专项；另显式运行链接/路径安全相关公开测试模块，输出逐项 skip 原因而不绑定总 skip 数。
-- 平台边界：Linux job 执行现有 symlink/hardlink/path safety tests；Windows job 执行 junction 与路径大小写专属测试。平台不适用项由 `skipUnless` 标注，能力受限项由 `skipTest` 附具体原因；CI unittest verbose 与 pytest `-rs` 展示原因。不得把 capability skip 隐藏或把固定 skip 总数作为跨平台 gate。
-- README 与 CONTRIBUTING 使用同一 Python 3.12 / `uv sync --locked` / unittest / pytest / compileall 入口；lint/type-check 不作为已配置 gate。
-- 本地验证已通过：`uv sync --locked`；全量 unittest 442 tests、0 failures/errors、10 skipped；全量 pytest 436 passed、10 skipped、25 warnings；S5d.1 wheel/install 与 11 prompt tests、S5d.2 两项 contract tests 均通过；相关 path/admission/access-policy/editor/recovery/verification 平台 seam 121 tests、111 passed、10 skipped；compileall、11 prompt render、root/start/resume CLI help、workflow YAML/contract 检查及 `git diff --check` 均通过。10 项 skip 均为 Windows 当前 symlink/junction 创建权限不足并带明确原因；pytest 的 25 条 FutureWarning 来自锁定 Tree-sitter 旧 API。
-- 这些均为 Codex 本地执行证据。GitHub Actions workflow 尚未 push/运行，Linux runner 也尚未由本地实测；不得标记 CI green。等待 ChatGPT S5d.2 Final Gate。
+- 状态：本轮只修复 S5d.2 hosted-runner #1 暴露的测试/checkout 假设；不进入 S5b.1。Hosted gate 尚未通过，修复后的 workflow 还需新的 hosted run 验证。
+- repair 基线：`733d607eb1b9ab79c0caa55f007421f7cb816d1c`，已同步 upstream；本轮不 push、不 amend。
+- Hosted run #1：GitHub Actions run `36376012714`，commit `733d607...`。Ubuntu 与 Windows 的 `uv sync --locked` 和 S5d.1 clean-wheel/install 均实际通过。Ubuntu 全量 unittest 为 442 tests、14 failures、7 skipped：4 项 S5a 因 shallow checkout 缺少 pinned historical revisions/blobs，另 10 项 verification workflow 因 pytest 使用 base interpreter 而缺少 locked venv 工具。Windows 为 442 tests、16 failures、15 errors：5 项 S5a shallow-history、10 项 verification workflow、1 项 bounded path failure；另有 1 项 admission canonical-path error 和 14 项 JS/TS/TSX byte-exact golden errors。两个 hosted job 均失败。
+- 本轮修复：CI checkout 显式 `fetch-depth: 0` 并保留 `persist-credentials: false`；contract test 锁住这两个 checkout 参数。Manifest environment 拒绝用例从 historical environment 起步，只篡改被测字段；生产 validator、manifest 与历史 revision/hash/lock SHA 未改。真实 pytest VerificationSpec 使用 `sys.executable`，测试 helper 的进程 timeout 留出 10 秒冷启动窗口，并显式验证 baseline/post/repair 的 JUnit case evidence。bounded-read 与 admission tests 统一 canonical path 比较；admission lock 获取后用 `try/finally` 释放。新增 `.gitattributes` 仅为 JS/JSX/TS/TSX golden fixtures 固定 `text eol=lf`，没有全仓库 renormalize。
+- EOL 证据：四个 fixture 的 `git check-attr` 均为 `text: set, eol: lf`；当前 index/worktree 均为 `i/lf w/lf`。
+- 验证环境：全新外部 `UV_PROJECT_ENVIRONMENT=%TEMP%\swe-agent-s5d2-repair-733d607-py312`，外部 uv cache `%TEMP%\swe-agent-audit-cache-1eb6563d47564d44902b2f4eed6d1db7`；uv 0.12.1，`uv sync --locked` 通过，Python 3.12.3。首次无网络权限同步因缺少缓存中的 `iniconfig` 失败；授权网络重试完成安装，之后 wheel 专项在同一 external cache 下通过。
+- 专项本地结果：S5a manifest 19 tests、S5d.2 contract 2 tests；verification workflow 27 tests；bounded-read 26 tests；admission 18 tests（3 skipped）；JS/JSX/TS/TSX golden 18 tests；S5d.1 + S5d.2 专项 4 tests，均通过。
+- 全量 Codex 本地结果：unittest 442 tests OK、10 skipped；pytest 436 passed、10 skipped、25 warnings；compileall、11 prompt render、root/start/resume CLI help、workflow YAML parse、`git diff --check` 均通过。10 个 skip 均为 Windows 当前 symlink 创建权限不足并有明确原因；25 条 pytest warning 来自锁定 Tree-sitter 旧 API FutureWarning。
+- 本轮未改 production code、manifest provenance、`MASTER_PLAN.md` 或依赖。以上是 Codex 本地证据，不代表 GitHub hosted rerun、真实模型或 benchmark 结果。提交后需由新的 GitHub Actions run 验证；S5d.2 repair slice 等待 ChatGPT Final Gate，S5b.1 尚未开始。
 
 ## 当前文档任务：独立 MASTER PLAN（2026-09-16）
 

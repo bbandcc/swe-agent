@@ -38,6 +38,8 @@ class ContinuousIntegrationContractTests(unittest.TestCase):
         required_fragments = (
             "permissions:\n  contents: read",
             "os: [ubuntu-latest, windows-latest]",
+            "fetch-depth: 0",
+            "persist-credentials: false",
             'python-version: "3.12"',
             'version: "0.12.1"',
             "uv sync --locked",
@@ -50,6 +52,12 @@ class ContinuousIntegrationContractTests(unittest.TestCase):
         for fragment in required_fragments:
             with self.subTest(fragment=fragment):
                 self.assertIn(fragment, workflow)
+
+        checkout_step = workflow.split("      - name: Check out source", 1)[1].split(
+            "      - name:", 1
+        )[0]
+        self.assertIn("fetch-depth: 0", checkout_step)
+        self.assertIn("persist-credentials: false", checkout_step)
 
         self.assertRegex(
             workflow,

@@ -56,8 +56,8 @@ def plan() -> ImplementationPlan:
     )
 
 
-def file_check(root: Path, *, timeout_seconds: float = 2) -> VerificationSpec:
-    executable = getattr(sys, "_base_executable", sys.executable)
+def file_check(root: Path, *, timeout_seconds: float = 10) -> VerificationSpec:
+    executable = sys.executable
     (root / "test_app_check.py").write_text(
         "from pathlib import Path\n"
         "def test_app_file():\n"
@@ -879,9 +879,15 @@ class VerificationWorkflowTests(unittest.TestCase):
                 result["baseline_verification"][0].status,
                 VerificationCheckStatus.PASS,
             )
+            self.assertIsNotNone(result["baseline_verification"][0].report)
             self.assertEqual(
                 result["post_verification"][0].status,
                 VerificationCheckStatus.PASS,
+            )
+            self.assertIsNotNone(result["post_verification"][0].report)
+            self.assertEqual(
+                result["post_verification"][0].report.cases[0].status.value,
+                "pass",
             )
             self.assertEqual(
                 result["developer_status"], DeveloperStatus.COMPLETED
@@ -933,7 +939,7 @@ class VerificationWorkflowTests(unittest.TestCase):
             check = VerificationSpec(
                 name="two-files",
                 argv=(
-                    getattr(sys, "_base_executable", sys.executable),
+                    sys.executable,
                     "-m",
                     "pytest",
                     "-q",
@@ -990,7 +996,7 @@ class VerificationWorkflowTests(unittest.TestCase):
             noisy_check = VerificationSpec(
                 name="noisy-check",
                 argv=(
-                    getattr(sys, "_base_executable", sys.executable),
+                    sys.executable,
                     "-m",
                     "pytest",
                     "-q",
@@ -1135,6 +1141,24 @@ class VerificationWorkflowTests(unittest.TestCase):
 
             self.assertEqual(
                 result["verification_status"], VerificationStatus.IMPROVED
+            )
+            self.assertEqual(
+                result["baseline_verification"][0].status,
+                VerificationCheckStatus.FAIL,
+            )
+            self.assertIsNotNone(result["baseline_verification"][0].report)
+            self.assertEqual(
+                result["baseline_verification"][0].report.cases[0].status.value,
+                "fail",
+            )
+            self.assertEqual(
+                result["post_verification"][0].status,
+                VerificationCheckStatus.PASS,
+            )
+            self.assertIsNotNone(result["post_verification"][0].report)
+            self.assertEqual(
+                result["post_verification"][0].report.cases[0].status.value,
+                "pass",
             )
             self.assertEqual(result["repair_attempts"], 0)
             self.assertEqual(target.read_text(encoding="utf-8"), "value = 2\n")

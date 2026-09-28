@@ -1,0 +1,4 @@
+tests/tools/fixtures/*.js text eol=lf
+tests/tools/fixtures/*.jsx text eol=lf
+tests/tools/fixtures/*.ts text eol=lf
+tests/tools/fixtures/*.tsx text eol=lf

@@ -22,7 +22,7 @@ from agent.workspace import WorkspaceAccessPolicy, workspace_root_scope
 class BoundedReadToolTests(unittest.TestCase):
     def setUp(self) -> None:
         self.temp = tempfile.TemporaryDirectory()
-        self.root = Path(self.temp.name)
+        self.root = Path(self.temp.name).resolve()
         self.env = patch.dict(
             os.environ, {"SWE_AGENT_WORKSPACE": str(self.root)}, clear=False
         )

@@ -215,23 +215,29 @@ class AdmissionLockTests(RunConfigTestCase):
             )
 
             self.assertEqual(first.acquire(), AdmissionStatus.ACQUIRED)
-            self.assertEqual(second.acquire(), AdmissionStatus.BUSY)
-            self.assertNotIn("thread-a", first.lock_path.name)
-            self.assertEqual(first.lock_path.parent, runtime / "locks")
-            self.assertNotEqual(first.workspace_lock_path, first.runtime_lock_path)
-            self.assertNotIn("thread-a", first.workspace_lock_path.name)
-            self.assertEqual(len(first.key.workspace_key), 64)
-            self.assertEqual(len(first.key.runtime_thread_key), 64)
-            self.assertEqual(len(first.key.stable_key), 64)
-            self.assertNotEqual(first.key.stable_key, second.key.stable_key)
-            self.assertEqual(first.key.workspace_key, alternate.key.workspace_key)
-            self.assertNotEqual(
-                first.key.runtime_thread_key,
-                alternate.key.runtime_thread_key,
-            )
-            first.release()
+            try:
+                self.assertEqual(second.acquire(), AdmissionStatus.BUSY)
+                self.assertNotIn("thread-a", first.lock_path.name)
+                self.assertEqual(first.lock_path.parent, runtime.resolve() / "locks")
+                self.assertNotEqual(first.workspace_lock_path, first.runtime_lock_path)
+                self.assertNotIn("thread-a", first.workspace_lock_path.name)
+                self.assertEqual(len(first.key.workspace_key), 64)
+                self.assertEqual(len(first.key.runtime_thread_key), 64)
+                self.assertEqual(len(first.key.stable_key), 64)
+                self.assertNotEqual(first.key.stable_key, second.key.stable_key)
+                self.assertEqual(first.key.workspace_key, alternate.key.workspace_key)
+                self.assertNotEqual(
+                    first.key.runtime_thread_key,
+                    alternate.key.runtime_thread_key,
+                )
+            finally:
+                first.release()
+
             self.assertEqual(second.acquire(), AdmissionStatus.ACQUIRED)
-            second.release()
+            try:
+                self.assertTrue(second.lock_path.exists())
+            finally:
+                second.release()
 
     def test_runtime_thread_scope_blocks_different_workspaces(self) -> None:
         with tempfile.TemporaryDirectory() as directory:
