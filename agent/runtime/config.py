@@ -3,7 +3,6 @@
 from __future__ import annotations
 
 import math
-import os
 from collections.abc import Mapping
 from dataclasses import dataclass, field, replace
 from decimal import Decimal, InvalidOperation
@@ -26,6 +25,7 @@ from agent.workspace import (
     WorkspaceAccessPolicy,
     WorkspaceRootError,
     canonical_path_key,
+    canonical_roots_overlap,
     canonicalize_root_path,
     parse_configured_paths,
 )
@@ -403,13 +403,7 @@ def _validated_root(value: str | Path, *, must_exist: bool) -> Path:
 
 
 def _roots_overlap(first: Path, second: Path) -> bool:
-    first_key = canonical_path_key(first)
-    second_key = canonical_path_key(second)
-    try:
-        common = os.path.commonpath((first_key, second_key))
-    except ValueError:
-        return False
-    return common in {first_key, second_key}
+    return canonical_roots_overlap(first, second)
 
 
 def _validate_verification_spec(spec: VerificationSpec) -> None:

@@ -307,6 +307,17 @@ def canonical_path_key(path: str | Path) -> str:
     return os.path.normcase(str(path))
 
 
+def canonical_roots_overlap(first: str | Path, second: str | Path) -> bool:
+    """Return whether two canonical roots are equal or one contains the other."""
+    first_key = canonical_path_key(first)
+    second_key = canonical_path_key(second)
+    try:
+        common = os.path.commonpath((first_key, second_key))
+    except ValueError:
+        return False
+    return common in {first_key, second_key}
+
+
 def canonical_workspace_relative_path(
     requested_path: str,
     *,
