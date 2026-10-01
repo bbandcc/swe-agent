@@ -705,6 +705,9 @@ def _environment_block(
     }
     if command.python_toolchain_root is not None:
         values["PYTHONHOME"] = str(command.python_toolchain_root)
+        values["PYTHONPATH"] = str(
+            command.python_toolchain_root / "Lib" / "site-packages"
+        )
         values["PYTHONNOUSERSITE"] = "1"
         values["PYTHONDONTWRITEBYTECODE"] = "1"
     entries = [f"{key}={value}" for key, value in sorted(values.items(), key=lambda item: item[0].casefold())]

@@ -1,5 +1,6 @@
 from __future__ import annotations
 
+import json
 import os
 import subprocess
 import sys
@@ -444,6 +445,79 @@ class TaskExecutionTests(unittest.TestCase):
         self.assertIn(b"Ran 1 test", result.sandbox_result.stderr)
         self.assertEqual([item.path for item in result.patch.entries], ["src/answer.txt"])
         self.assertFalse((Path(sys.base_prefix) / "task-wrote.txt").exists())
+
+    @unittest.skipUnless(
+        _RUN_REAL_APPCONTAINER,
+        "Set S5B_RUN_APPCONTAINER_TESTS=1 and run from a normal, non-elevated Windows user terminal.",
+    )
+    def test_frozen_s5a_dependencies_import_in_appcontainer(self) -> None:
+        project_root = Path(__file__).resolve().parents[2]
+        manifest = json.loads((project_root / "evals" / "s5a" / "tasks.v1.json").read_text(encoding="utf-8"))
+        task = next(item for item in manifest["tasks"] if item["task_id"] == "symbols-python-exact-source-v1")
+        self.assertEqual(task["target"]["revision"], "7ed6bc9ee41b0f5586c0da4c980d790afb59f945")
+        self.assertEqual(
+            task["environment"]["lock_sha256"],
+            "c270b21033292b4c578ca30cbe06a79718a33f272d2a05570aaaa31f57dca04f",
+        )
+        uv_path = os.environ.get("S5B_UV_EXECUTABLE")
+        self.assertTrue(uv_path, "Set S5B_UV_EXECUTABLE to an absolute trusted uv.exe path.")
+        uv_executable = Path(uv_path).resolve(strict=True)
+        import tree_sitter_languages
+
+        source_dependency = Path(tree_sitter_languages.__file__).resolve(strict=True)
+        source_literal = repr(str(source_dependency))
+        python_code = (
+            "import importlib, os, pathlib, sys\n"
+            "site = pathlib.Path(sys.prefix) / 'Lib' / 'site-packages'\n"
+            "assert pathlib.Path(sys.executable).resolve().parent == pathlib.Path(sys.prefix).resolve()\n"
+            "assert pathlib.Path(os.environ['PYTHONPATH']).resolve() == site.resolve()\n"
+            "assert 'S5B_PARENT_PYTHONPATH_CANARY' not in os.environ.get('PYTHONPATH', '')\n"
+            "assert not any(name.startswith('UV_') for name in os.environ)\n"
+            "mods = [importlib.import_module(name) for name in ('langchain_core', 'tree_sitter', 'tree_sitter_languages')]\n"
+            "assert all(pathlib.Path(m.__file__).resolve().is_relative_to(site.resolve()) for m in mods)\n"
+            "try:\n"
+            f"    pathlib.Path({source_literal}).read_bytes()\n"
+            "except (PermissionError, FileNotFoundError):\n"
+            "    pass\n"
+            "else:\n"
+            "    raise AssertionError('source dependency environment is readable')\n"
+            "package_file = pathlib.Path(importlib.import_module('tree_sitter_languages').__file__)\n"
+            "try:\n"
+            "    package_file.write_bytes(package_file.read_bytes() + b'\\n# task mutation')\n"
+            "except PermissionError:\n"
+            "    pass\n"
+            "else:\n"
+            "    raise AssertionError('staged dependency is writable')\n"
+            "print('FROZEN_IMPORT_CANARY_OK')\n"
+        )
+        task_runtime = self.root / "real-frozen-runtime"
+        previous = os.environ.get("PYTHONPATH")
+        os.environ["PYTHONPATH"] = "S5B_PARENT_PYTHONPATH_CANARY"
+        try:
+            result = execute_isolated_task(
+                repository_root=project_root,
+                task=task,
+                runtime_root=task_runtime,
+                access_policy=WorkspaceAccessPolicy.default(),
+                argv=("python", "-c", python_code),
+                python_toolchain_root=Path(sys.base_prefix),
+                uv_executable=uv_executable,
+                timeout_seconds=120,
+            )
+        finally:
+            if previous is None:
+                os.environ.pop("PYTHONPATH", None)
+            else:
+                os.environ["PYTHONPATH"] = previous
+
+        self.assertEqual(result.status, TaskExecutionStatus.COMMAND_COMPLETED, result)
+        self.assertIsNone(result.error_code)
+        self.assertEqual(result.patch.entries, ())
+        self.assertTrue(result.cleanup_complete)
+        self.assertTrue(result.sandbox_result.started)
+        self.assertTrue(result.sandbox_result.token_is_appcontainer)
+        self.assertTrue(result.sandbox_result.cleanup_complete)
+        self.assertIn(b"FROZEN_IMPORT_CANARY_OK", result.sandbox_result.stdout)
 
 
 if __name__ == "__main__":
