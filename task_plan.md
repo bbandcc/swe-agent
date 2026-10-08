@@ -163,6 +163,26 @@
 - red→green/public seam：依次锁住 pinned identity 正确/错误及 current-lock no-fallback、archive escape/link/collision/bomb/容量、trusted bootstrap hash、no-host-execution、wrong interpreter/token/platform dispatch 前拒绝；再覆盖 fake backend failure/timeout、wheel missing/multiple/metadata/RECORD/hash 不符、stale receipt、cleanup failure不发布、host baseline不变。真实普通用户 AppContainer canary 必须证明工具正向 import control、真实 `--noexts` wheel 生成和隔离 import、host/oracle/source/bootstrap write denial、secrets/parent PYTHONPATH 不继承、受控禁网、resource/descendant cleanup、output provenance/bytes/hash 和完整清理；skip 不能替代真实证据。现有 frozen/task workspace/sandbox/toolchain/policy/admission 回归保持。
 - 判定：`READY_TO_IMPLEMENT` 仅表示该固定 recipe、单 backend 的最小构建切片具备可审查实现边界；没有发现阻止编写该切片的确定性 source blocker。当前真实 environment 的确定性 blocker 仍是 fuzzysearch 无适用官方 binary wheel，以及现有 no-build preparation 没有显式 derived-wheel admission；本轮不解除该 blocker。Python 3.12/tooling/permissions/实际 wheel 构建与 admission 都尚未执行验证，不是 FEASIBLE/环境就绪/阶段完成结论。本轮 source build=0、AppContainer commands=0、model calls=0、cost=0、trials=0；等待 ChatGPT 审核，不 commit/push。
 
+### D7/S3.5a Admission 测试确定性同步维护（提交前验证记录）
+
+- 固定开工HEAD/upstream为`e78cf8e7098cafae8247774c4a72b2ae9d2d4770`、ahead/behind0/0；本轮仅修改`tests/runtime/test_admission.py`及D7测试记录，未改准入或进程树production。以下为提交前实际验证记录。
+- 原pytest9.1.1全量Admission失败根因仍未完全确定。此次修复的是固定20秒holder休眠窗口没有保证contender完成锁竞争这一结构性测试弱点，不把它追认成原失败的已证实原因。新协议的holder在真实start_run graph node内写marker并发出holding，随后只等待父进程的release信号；父进程收到contender实际terminal JSON后才原子发布信号，随后验收holder正常完成。主路径不再使用20秒hold或0.1秒竞速sleep；其它未改的numeric-hold场景保持原语义。
+- 所有协议等待有界：ready/contender通信60秒、holder release等待120秒、握手模式测试RunConfig180秒（只为容纳协议边界，不改production deadline）；cleanup复用ProcessTree、10秒communicate和1秒reader join，并通过公开WorkspaceAdmissionLock再次准入验证无残留持锁。release/startup协调文件均在owned TemporaryDirectory内；release内容原子发布，拒绝错误信号。timeout、提前退出、missing ready、cleanup不完整都FAIL，不把exit0或缺少结果当BUSY成功。
+- 真实fault验收：contender测试侧改临时namespace仍执行真实OS锁/production start_run，实际允许后产生factory1和额外thread-b写入，原BUSY/factory0/marker断言确实失败；不是mock acquire。另用bounded startup gate在contender依赖导入前暂停，并通过公开lock probe确认holder仍BUSY，随后才允许竞争。release timeout、holder异常、missing ready和cleanup failure均被验收为失败；cleanup fault先真实close再抛异常，避免故障测试自身泄漏Job handle。
+- TDD原始证据保留：旧child完成而无holding的1-test red，execution_output id22（exit1）；随后green。首轮4项目标出现2项测试夹具red（不存在的constructor参数、TimeoutError被既有runtime结构化），仅修正test-side fault与协议异常，未改production。startup gate的新增1-test red也保留。最终7项目标/fault tests PASS、0skips、90.321s、exit0，execution_output id23包含真实进程同步/marker事件；id22/23均已实际list/read、truncated=false。
+- 执行环境为CPython3.12.3及已核验六个官方lock-pinned wheels的pytest8.4.2 test-only overlay；CLI import来源已assert为外部overlay，运行时其余依赖来自现有venv，不称完整clean locked environment。显式进程级NO_PROXY/no_proxy仅loopback；PYTHONPATH仅指向外部overlay，让child pytest使用同一8.4.2，未改已有venv或全局环境。validation原始日志保留于`%TEMP%/d7-admission-handshake-final-c2b6a21bd43144cc942ee8fbb049ebcc`。
+- 已实际通过：Admission unittest24 tests /21 passed/3 skipped/0failures/errors/179.027s；模块pytest8.4.2 21passed/3skipped/184.52s；durable runtime/access-policy/config validation48 tests /46passed/2skipped/13.206s，均exit0。全量unittest单次mandatory执行561 tests /530 passed/31 skipped/0failures/errors/878.247s，exit0；全量pytest8.4.2单次mandatory执行534passed/31skipped/25warnings/740.21s，exit0。25warnings为锁定Tree-sitter旧API FutureWarning；skips为既有平台/link capability/真实AppContainer opt-in边界，不计作真实隔离通过。compileall、diff-check与whitespace检查均PASS。没有mandatory失败后重跑至PASS。完整unittest摘要id25、最终模块/全量/环境/whitespace摘要id26及早期夹具失败id24均已通过execution_output实际list/read，truncated=false；原始长日志保留在上述外部目录。
+
+### D7/S3.5a Handshake 初始化失败清理补齐（提交前验证记录）
+
+- ChatGPT `S3.5a HANDSHAKE SOURCE_AUDIT: NEEDS_FIX` 仅指出测试spawn所有权遗漏：Popen成功后ProcessTree初始化抛错时未登记；首次spawn也在finally之外。上一轮7项目标、561-test unittest及pytest534passed证据保留为历史记录，不替代本轮最终版本回归。
+- red→green：新增首个/第二个真实Popen后初始化失败，red均因child仍运行而FAIL（2tests/2failures/7.330s），execution_output27已实际list/read、truncated=false。故障测试安全finally自身回收red泄漏；不把red当mandatory最终验证失败或重试至PASS。
+- Popen返回后立即登记owner，保留部分初始化tree对象；首次spawn进入外层try/finally。初始化完成时继续使用现有ProcessTree；初始化未完成时按已有POSIX session/Windows PID tree语义有界终止，并close可取得的部分Job。所有pipe、reader、协调目录仍在原owned cleanup中；cleanup失败通过异常cause保留原始初始化错误，不伪装BUSY。
+- 除首个/第二个初始化失败，还覆盖Job初始化前失败及初始化+cleanup双重失败。四项新增测试验收child退出、管道关闭、协调目录消失或原始cause保留；原有错误准入、慢启动、超时、提前退出、cleanup failure保持。最终11项握手/fault专项PASS，0skips，102.984s，exit0；Admission unittest28tests/25passed/3skipped/191.208s，exit0。Admission pytest8.4.2为25passed/3skipped/207.45s；受影响durable runtime/access-policy/config validation48tests/46passed/2skipped/14.340s。最终全量unittest单次565tests/534passed/31skipped/0failures/errors/803.787s；全量pytest8.4.2单次538passed/31skipped/25warnings/760.04s；均exit0。compileall、diff-check和修改/新增Python文件whitespace检查均PASS。skips为既有平台/capability/AppContainer opt-in限制；25warnings为锁定Tree-sitter旧API FutureWarning，不把skip算真实隔离PASS。没有mandatory失败后重跑至PASS。最终green专项execution_output28及模块/全量/环境摘要29均已实际list/read，truncated=false；27为独立red，不混为最终PASS。
+- 环境仍为已核验外部pytest8.4.2 test-only overlay +现有CPython3.12.3/venv runtime，显式进程NO_PROXY/no_proxy只针对loopback；不是完整clean locked environment。本轮原始日志在`%TEMP%/d7-admission-init-final-03c5961a62b44333a242cf39df9fb927`。
+
+- ChatGPT独立审核：`D7 / S3.5a HANDSHAKE CLEANUP SOURCE_AUDIT: PASS`。本次只创建独立D7测试维护本地checkpoint，不amend、不push，等待独立Git Final Gate；不因纯staging重复全量测试。
+
 ## 当前文档任务：独立 MASTER PLAN（2026-09-16）
 
 - 基线：`330f20f25426ce9b0ceb26ea926a11f6a8cb9d15`，开始时工作区干净。

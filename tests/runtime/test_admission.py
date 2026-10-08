@@ -1,11 +1,14 @@
 import io
 import json
 import os
+import queue
+import signal
 import subprocess
 import sys
 import tempfile
 import textwrap
 import time
+import threading
 import unittest
 from contextlib import redirect_stdout
 from pathlib import Path
@@ -33,6 +36,7 @@ from agent.runtime import (
     start_run,
 )
 from agent.runtime.__main__ import main
+from agent.verification.process_tree import ProcessTree
 from tests.runtime._config_support import RunConfigTestCase
 
 
@@ -99,13 +103,15 @@ _DURABLE_PROCESS = textwrap.dedent(
     marker = Path(sys.argv[3])
     thread_id = sys.argv[4]
     hold = float(sys.argv[5])
+    release_path = Path(sys.argv[6]) if len(sys.argv) > 6 else None
+    release_timeout = float(sys.argv[7]) if release_path is not None else None
     config = RunConfig(
         workspace_root=workspace,
         runtime_root=runtime,
         model=ModelSettings("deepseek", "deepseek-v4-flash", "https://api.deepseek.com", None),
         model_max_output_tokens=64,
         verification_specs=(),
-        timeout_seconds=30.0,
+        timeout_seconds=180.0 if release_path is not None else 30.0,
         max_steps=4,
     )
     identity = RunIdentity(
@@ -132,7 +138,17 @@ _DURABLE_PROCESS = textwrap.dedent(
             def side_effect(state):
                 with marker.open("a", encoding="utf-8") as handle:
                     handle.write(thread_id + "\\n")
-                time.sleep(hold)
+                if release_path is None:
+                    time.sleep(hold)
+                else:
+                    print("holding", flush=True)
+                    expires = time.monotonic() + release_timeout
+                    while not release_path.exists():
+                        if time.monotonic() >= expires:
+                            raise RuntimeError("release handshake timed out")
+                        time.sleep(0.01)
+                    if release_path.read_text(encoding="utf-8") != "release\\n":
+                        raise RuntimeError("invalid release handshake signal")
                 return {"value": state.value + 1}
 
             builder.add_node("side_effect", side_effect)
@@ -431,55 +447,331 @@ class AdmissionLockTests(RunConfigTestCase):
             self.assertEqual(code, 2)
             self.assertEqual(payload["error_code"], AdmissionErrorCode.BUSY.value)
 
-    def test_real_subprocesses_same_workspace_allow_only_one_graph(self) -> None:
+    @staticmethod
+    def _handshake_line(
+        process: subprocess.Popen[str], timeout: float = 60.0,
+        *, readers: list[threading.Thread],
+    ) -> str:
+        lines: queue.Queue[str] = queue.Queue(maxsize=1)
+        reader = threading.Thread(
+            target=lambda: lines.put(process.stdout.readline().strip()), daemon=True
+        )
+        readers.append(reader)
+        reader.start()
+        try:
+            line = lines.get(timeout=timeout)
+        except queue.Empty as error:
+            raise AssertionError("holder readiness handshake timed out") from error
+        reader.join(timeout=1.0)
+        if reader.is_alive():
+            raise AssertionError("holder readiness reader did not finish")
+        return line
+
+    def _assert_durable_contention(
+        self,
+        *,
+        holder_source: str = _DURABLE_PROCESS,
+        contender_source: str = _DURABLE_PROCESS,
+        release_timeout: float = 120.0,
+        readiness_timeout: float = 60.0,
+        contender_startup_gate: bool = False,
+    ) -> None:
         with tempfile.TemporaryDirectory() as directory:
             root = Path(directory)
             workspace = root / "workspace"
             workspace.mkdir()
             runtime = root / "runtime"
             marker = workspace / "side-effects.txt"
-            command = [
-                sys.executable,
-                "-c",
-                _DURABLE_PROCESS,
-                str(workspace),
-                str(runtime),
-                str(marker),
-            ]
-            first = subprocess.Popen(
-                [*command, "thread-a", "20.0"],
-                cwd=Path(__file__).resolve().parents[2],
-                stdout=subprocess.PIPE,
-                stderr=subprocess.PIPE,
-                text=True,
-            )
-            try:
-                first_line = first.stdout.readline().strip()
-                if first_line != "factory":
-                    stdout, stderr = first.communicate(timeout=20)
-                    self.fail(
-                        f"first process did not enter factory: {stderr}\n{stdout}"
-                    )
-                time.sleep(0.1)
-                second = subprocess.Popen(
-                    [*command, "thread-b", "0.0"],
+            release = root / "release.txt"
+            processes = []
+            readers = []
+            events = []
+
+            def event(name, **fields):
+                events.append({"event": name, "monotonic_ns": time.perf_counter_ns(), **fields})
+
+            def spawn(source, thread, *extra):
+                event("spawn", thread=thread)
+                process = subprocess.Popen(
+                    [sys.executable, "-c", source, str(workspace), str(runtime),
+                     str(marker), thread, "0.0", *extra],
                     cwd=Path(__file__).resolve().parents[2],
                     stdout=subprocess.PIPE,
                     stderr=subprocess.PIPE,
                     text=True,
+                    start_new_session=os.name == "posix",
                 )
-                second_result = self._read_json_output(second)
-                first_result = self._read_json_output(first)
-            finally:
-                if first.poll() is None:
-                    first.terminate()
-                    first.wait(timeout=10)
+                # Register Popen before any fallible tree initialization. Retain
+                # the partially initialized object so an acquired Job can close.
+                owner = [process, None, False]
+                processes.append(owner)
+                tree = ProcessTree.__new__(ProcessTree)
+                owner[1] = tree
+                ProcessTree.__init__(tree, process)
+                owner[2] = True
+                return process
 
-            self.assertEqual(first_result, {"error": None, "factory": 1, "status": "completed"})
-            self.assertEqual(second_result["status"], "rejected")
-            self.assertEqual(second_result["error"], AdmissionErrorCode.BUSY.value)
-            self.assertEqual(second_result["factory"], 0)
-            self.assertEqual(marker.read_text(encoding="utf-8"), "thread-a\n")
+            def signal_release():
+                if not release.exists():
+                    pending_signal = root / "release.tmp"
+                    pending_signal.write_text("release\n", encoding="utf-8")
+                    pending_signal.replace(release)
+
+            try:
+                first = spawn(holder_source, "thread-a", str(release), str(release_timeout))
+                self.assertEqual(self._handshake_line(first, readers=readers), "factory")
+                self.assertEqual(self._handshake_line(first, readiness_timeout, readers=readers), "holding")
+                event("holder_ready", pid=first.pid)
+                if first.poll() is not None:
+                    self._read_json_output(first)
+                    self.fail("holder exited before contender startup")
+                if contender_startup_gate:
+                    started = root / "contender-started"
+                    startup_release = root / "contender-go"
+                    prefix = textwrap.dedent(
+                        f"""
+                        import time
+                        from pathlib import Path
+                        Path({str(started)!r}).touch()
+                        startup_release = Path({str(startup_release)!r})
+                        startup_deadline = time.monotonic() + 60.0
+                        while not startup_release.exists():
+                            if time.monotonic() >= startup_deadline:
+                                raise RuntimeError("contender startup handshake timed out")
+                            time.sleep(0.01)
+                        """
+                    )
+                    contender_source = prefix + contender_source
+                second = spawn(contender_source, "thread-b")
+                if contender_startup_gate:
+                    startup_deadline = time.monotonic() + 60.0
+                    while not started.exists():
+                        if second.poll() is not None:
+                            self._read_json_output(second)
+                            self.fail("contender exited before startup handshake")
+                        if time.monotonic() >= startup_deadline:
+                            self.fail("contender startup handshake timed out")
+                        time.sleep(0.01)
+                    probe = WorkspaceAdmissionLock(runtime, self._identity(workspace, "overlap"))
+                    try:
+                        self.assertEqual(probe.acquire(), AdmissionStatus.BUSY)
+                    finally:
+                        probe.release()
+                    self.assertIsNone(first.poll(), "holder exited while contender startup was gated")
+                    self.assertEqual(marker.read_text(encoding="utf-8"), "thread-a\n")
+                    event("contender_startup_gated_holder_busy")
+                    startup_release.touch()
+                second_result = self._read_json_output(second)
+                event("contender_result", result=second_result)
+                if first.poll() is not None:
+                    self._read_json_output(first)
+                    self.fail("holder exited before explicit release")
+                signal_release()
+                event("release_signal")
+                first_result = self._read_json_output(first)
+                marker_content = marker.read_text(encoding="utf-8")
+                event("holder_result", result=first_result, marker=marker_content)
+                self.assertEqual(
+                    first_result, {"error": None, "factory": 1, "status": "completed"}
+                )
+                self.assertEqual(
+                    second_result,
+                    {"error": AdmissionErrorCode.BUSY.value, "factory": 0, "status": "rejected"},
+                    f"unexpected contender result: {second_result}; marker={marker_content!r}",
+                )
+                self.assertEqual(marker_content, "thread-a\n")
+            finally:
+                # Unblock the holder on every error path before bounded tree cleanup.
+                original_failure = sys.exception()
+                errors = []
+                try:
+                    signal_release()
+                except OSError as error:
+                    errors.append("release signal failed: " + type(error).__name__)
+                for process, tree, initialized in reversed(processes):
+                    try:
+                        if process.poll() is None:
+                            if initialized:
+                                tree.terminate()
+                            else:
+                                # Constructor failure has no usable tree seam.
+                                # Popen uses a POSIX session; Windows taskkill
+                                # targets descendants even before Job attachment.
+                                if os.name == "posix":
+                                    try:
+                                        os.killpg(process.pid, signal.SIGKILL)
+                                    except ProcessLookupError:
+                                        pass
+                                else:
+                                    subprocess.run(
+                                        ["taskkill", "/PID", str(process.pid), "/T", "/F"],
+                                        stdin=subprocess.DEVNULL, stdout=subprocess.DEVNULL,
+                                        stderr=subprocess.DEVNULL, shell=False, timeout=5.0,
+                                        check=False,
+                                    )
+                                try:
+                                    process.wait(timeout=1.0)
+                                except subprocess.TimeoutExpired:
+                                    process.kill()
+                                    process.wait(timeout=1.0)
+                        process.communicate(timeout=10.0)
+                        if process.poll() is None:
+                            errors.append("child still running after cleanup")
+                    except (OSError, subprocess.TimeoutExpired) as error:
+                        errors.append(type(error).__name__)
+                    finally:
+                        try:
+                            if tree is not None:
+                                tree.close()
+                        except AttributeError as error:
+                            # __init__ failed before its optional Job field was
+                            # assigned; there is no handle for close() to own.
+                            if initialized or "_windows_job" not in str(error):
+                                raise
+                        except OSError as error:
+                            errors.append("tree close failed: " + type(error).__name__)
+                        for stream in (process.stdout, process.stderr):
+                            try:
+                                stream.close()
+                            except OSError as error:
+                                errors.append("pipe close failed: " + type(error).__name__)
+                for reader in readers:
+                    reader.join(timeout=1.0)
+                    if reader.is_alive():
+                        errors.append("readiness reader still running after child cleanup")
+                probe = WorkspaceAdmissionLock(runtime, self._identity(workspace, "cleanup"))
+                try:
+                    if probe.acquire() is not AdmissionStatus.ACQUIRED:
+                        errors.append("workspace lock remained held after child cleanup")
+                finally:
+                    probe.release()
+                print("ADMISSION_HANDSHAKE_EVIDENCE " + json.dumps(events), flush=True)
+                if errors:
+                    raise AssertionError("child cleanup failed: " + ", ".join(errors)) from original_failure
+
+    def test_real_subprocesses_same_workspace_allow_only_one_graph(self) -> None:
+        self._assert_durable_contention()
+
+    def test_holder_keeps_lock_while_contender_startup_is_gated(self) -> None:
+        self._assert_durable_contention(contender_startup_gate=True)
+
+    def test_handshake_detects_wrong_admission_with_extra_factory_and_write(self) -> None:
+        # Partition the contender's real OS-lock namespace to simulate broken
+        # workspace admission; do not mock acquire() or its result.
+        fault = textwrap.dedent(
+            """
+            import tempfile
+            fault_root = runtime / "fault-namespace"
+            fault_root.mkdir()
+            tempfile.tempdir = str(fault_root)
+            """
+        )
+        source = _DURABLE_PROCESS.replace("factory = Factory()", fault + "\nfactory = Factory()")
+        with self.assertRaisesRegex(AssertionError, "unexpected contender result") as raised:
+            self._assert_durable_contention(contender_source=source)
+        self.assertIn("'factory': 1", str(raised.exception))
+        self.assertIn("thread-b", str(raised.exception))
+
+    def test_handshake_timeout_is_failure_not_successful_busy(self) -> None:
+        with self.assertRaisesRegex(AssertionError, "release handshake timed out"):
+            self._assert_durable_contention(release_timeout=0.0)
+
+    def test_holder_exception_before_release_is_failure(self) -> None:
+        source = _DURABLE_PROCESS.replace(
+            "expires = time.monotonic() + release_timeout",
+            'raise RuntimeError("holder aborted before release")',
+        )
+        with self.assertRaisesRegex(AssertionError, "holder aborted before release"):
+            self._assert_durable_contention(holder_source=source)
+
+
+    def test_missing_holder_ready_signal_is_a_bounded_failure(self) -> None:
+        source = _DURABLE_PROCESS.replace('print("holding", flush=True)', "pass")
+        with self.assertRaisesRegex(AssertionError, "readiness handshake timed out"):
+            self._assert_durable_contention(holder_source=source, readiness_timeout=0.05)
+
+    def test_handshake_cleanup_failure_cannot_report_success(self) -> None:
+        original_close = ProcessTree.close
+
+        def close_then_fail(tree):
+            original_close(tree)
+            raise OSError("injected cleanup failure after actual close")
+
+        with patch.object(ProcessTree, "close", close_then_fail):
+            with self.assertRaisesRegex(AssertionError, "child cleanup failed"):
+                self._assert_durable_contention()
+
+    def _assert_tree_initialization_failure_is_cleaned(self, failing_spawn, *, before_init=False):
+        original_init = ProcessTree.__init__
+        captured = []
+        captured_trees = []
+
+        def initialize_then_fail(tree, process):
+            captured.append(process)
+            captured_trees.append(tree)
+            if before_init and len(captured) == failing_spawn:
+                raise RuntimeError("injected ProcessTree initialization failure")
+            original_init(tree, process)
+            if len(captured) == failing_spawn:
+                raise RuntimeError("injected ProcessTree initialization failure")
+
+        try:
+            with patch.object(ProcessTree, "__init__", initialize_then_fail):
+                with self.assertRaisesRegex(RuntimeError, "injected ProcessTree initialization failure"):
+                    self._assert_durable_contention()
+            self.assertEqual(len(captured), failing_spawn)
+            for process in captured:
+                self.assertIsNotNone(process.poll(), "initialized child remained running")
+                self.assertTrue(process.stdout.closed)
+                self.assertTrue(process.stderr.closed)
+                self.assertFalse(Path(process.args[3]).parent.exists(), "coordination directory remained")
+        finally:
+            # The red test must also clean the leaked child from the old helper.
+            for process in captured:
+                if process.poll() is None:
+                    tree = ProcessTree(process)
+                    try:
+                        tree.terminate()
+                        process.communicate(timeout=10.0)
+                    finally:
+                        tree.close()
+                for stream in (process.stdout, process.stderr):
+                    stream.close()
+            for tree in captured_trees:
+                try:
+                    tree.close()
+                except AttributeError:
+                    if not before_init:
+                        raise
+
+    def test_first_tree_initialization_failure_is_cleaned(self):
+        self._assert_tree_initialization_failure_is_cleaned(1)
+
+    def test_second_tree_initialization_failure_is_cleaned(self):
+        self._assert_tree_initialization_failure_is_cleaned(2)
+
+    def test_tree_failure_before_job_initialization_is_cleaned(self):
+        self._assert_tree_initialization_failure_is_cleaned(1, before_init=True)
+
+    def test_tree_initialization_and_cleanup_failures_preserve_both_errors(self):
+        original_init = ProcessTree.__init__
+        original_close = ProcessTree.close
+
+        def initialize_then_fail(tree, process):
+            original_init(tree, process)
+            raise RuntimeError("injected ProcessTree initialization failure")
+
+        def close_then_fail(tree):
+            original_close(tree)
+            raise OSError("injected cleanup failure after actual close")
+
+        with patch.object(ProcessTree, "__init__", initialize_then_fail):
+            with patch.object(ProcessTree, "close", close_then_fail):
+                with self.assertRaisesRegex(AssertionError, "child cleanup failed") as raised:
+                    self._assert_durable_contention()
+        self.assertIsInstance(raised.exception.__cause__, RuntimeError)
+        self.assertIn("injected ProcessTree initialization failure", str(raised.exception.__cause__))
+        self.assertIn("tree close failed", str(raised.exception))
 
     def test_real_subprocesses_same_workspace_different_runtime_are_exclusive(self) -> None:
         with tempfile.TemporaryDirectory() as directory:
