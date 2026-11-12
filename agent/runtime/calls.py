@@ -108,7 +108,7 @@ def capture_model_exception(
 
 
 def classify_model_exception(error: BaseException) -> BudgetErrorCode | None:
-    """Classify only provider timeout/transport failures; let other errors rise."""
+    """Classify provider timeout, transport and HTTP failures without raw text."""
     import anthropic
     import httpx
     import openai
@@ -128,6 +128,8 @@ def classify_model_exception(error: BaseException) -> BudgetErrorCode | None:
             httpx.TransportError,
             openai.APIConnectionError,
             anthropic.APIConnectionError,
+            openai.APIStatusError,
+            anthropic.APIStatusError,
         ),
     ):
         return BudgetErrorCode.MODEL_TRANSPORT_ERROR

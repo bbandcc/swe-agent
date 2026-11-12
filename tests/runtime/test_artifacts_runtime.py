@@ -1,7 +1,9 @@
 import json
+import os
 import sys
 import tempfile
 import unittest
+from unittest.mock import patch
 from decimal import Decimal
 from pathlib import Path
 
@@ -26,10 +28,14 @@ from agent.runtime import (
 )
 from agent.runtime.trajectory import EventRecorder, JsonlEventSink
 from agent.runtime.durable import DurableRunStatus, start_run
-from agent.verification import VerificationSpec, VerificationSummary
+from agent.verification import VerificationRunner, VerificationSpec, VerificationSummary
+from agent.verification.workflow import ReviewedVerificationInputs
 
 
 class VerificationArtifactRuntimeTests(unittest.TestCase):
+    def setUp(self) -> None:
+        self.enterContext(patch.dict(os.environ, {"PYTHONDONTWRITEBYTECODE": "1"}))
+
     def test_sqlite_state_and_artifacts_keep_full_logs_out_of_state(self) -> None:
         canary = "S3_ARTIFACT_CANARY"
         with tempfile.TemporaryDirectory() as directory:
@@ -61,6 +67,7 @@ class VerificationArtifactRuntimeTests(unittest.TestCase):
                             sys.executable,
                             "-m",
                             "pytest",
+                            "-p", "no:cacheprovider", "--assert=plain",
                             "-q",
                             "-s",
                             "--junitxml=report.xml",
@@ -112,10 +119,34 @@ class VerificationArtifactRuntimeTests(unittest.TestCase):
                     secret_filter=secret_filter,
                     clock=clock,
                 )
+                runner = VerificationRunner(
+                    current.workspace_root,
+                    runtime_root=current.runtime_root,
+                    secret_filter=secret_filter,
+                )
+                # These are the authored bytes above, fixed before dispatch;
+                # never derive trust by scanning an unknown workspace.
+                reviewed = ReviewedVerificationInputs(
+                    workspace_root=current.workspace_root,
+                    runner=runner,
+                    specs=current.verification_specs,
+                    file_versions={
+                        "test_canary.py": (
+                            "def test_canary():\n"
+                            f"    print('{canary}')\n"
+                            "    assert True\n"
+                        ).encode("utf-8"),
+                    },
+                )
+                self.assertEqual(runner.execution_root, current.workspace_root)
+                for spec in current.verification_specs:
+                    self.assertTrue(reviewed.permits(spec, runner, current.workspace_root))
                 return create_workflow_graph(
                     architect=architect,
                     developer=developer,
                     verification_specs=current.verification_specs,
+                    verification_runner=runner,
+                    reviewed_inputs=reviewed,
                     workspace_root=current.workspace_root,
                     runtime_root=current.runtime_root,
                     durable_runtime=True,

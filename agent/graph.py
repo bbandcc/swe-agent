@@ -23,7 +23,7 @@ from agent.verification import (
     VerificationSummary,
     VerificationStatus,
 )
-from agent.verification.workflow import VerificationController
+from agent.verification.workflow import ReviewedVerificationInputs, VerificationController
 from agent.verification.config import configured_verification_specs
 from agent.workspace import (
     WorkspaceAccessPolicy,
@@ -126,6 +126,7 @@ def create_workflow_graph(
         VerificationRecoveryPolicy.STOP_ON_UNKNOWN
     ),
     repair_scope_policy: RepairScopePolicy = RepairScopePolicy.LAST_FILE,
+    reviewed_inputs: ReviewedVerificationInputs | None = None,
 ):
     """Create the parent workflow with injectable compiled child graphs."""
     verification = VerificationController(
@@ -137,6 +138,7 @@ def create_workflow_graph(
         secret_filter=secret_filter,
         recovery_policy=verification_recovery_policy,
         repair_scope_policy=repair_scope_policy,
+        reviewed_inputs=reviewed_inputs,
     )
 
     def run_baseline(state: AgentState) -> dict[str, Any]:
@@ -409,9 +411,10 @@ def create_production_workflow_graph(
     architect: Any = None,
     developer: Any = None,
     verification_runner: VerificationRunner | None = None,
+    reviewed_inputs: ReviewedVerificationInputs | None = None,
     access_policy: WorkspaceAccessPolicy | None = None,
 ):
-    """Build the production graph from trusted external verification config."""
+    """Build from external checks; configuration alone never admits host execution."""
     trusted_policy = (
         configured_workspace_access_policy()
         if access_policy is None
@@ -422,6 +425,7 @@ def create_production_workflow_graph(
         developer=developer,
         verification_specs=configured_verification_specs(),
         verification_runner=verification_runner,
+        reviewed_inputs=reviewed_inputs,
         access_policy=trusted_policy,
     )
 

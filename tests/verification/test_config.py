@@ -16,6 +16,8 @@ from agent.graph import (
     create_production_workflow_graph,
 )
 from agent.verification import VerificationRunner, VerificationStatus
+from agent.workspace import workspace_root_scope
+from tests.verification._fixture_support import reviewed_fixture
 from agent.verification.config import (
     VERIFICATION_CHECKS_ENV,
     configured_verification_specs,
@@ -145,6 +147,7 @@ class VerificationConfigurationTests(unittest.TestCase):
                             os.fspath(Path(sys.executable)),
                             "-m",
                             "pytest",
+                            "-p", "no:cacheprovider", "--assert=plain",
                             "-q",
                             "--junitxml=report.xml",
                         ],
@@ -157,13 +160,17 @@ class VerificationConfigurationTests(unittest.TestCase):
                 no_change_reason="repository already satisfies the request",
                 tasks=[],
             )
-            with patch.dict(os.environ, {VERIFICATION_CHECKS_ENV: value}):
+            with patch.dict(os.environ, {VERIFICATION_CHECKS_ENV: value,
+                                        "PYTHONDONTWRITEBYTECODE": "1"}), workspace_root_scope(root):
+                runner = VerificationRunner(root)
+                reviewed = reviewed_fixture(root, runner, configured_verification_specs())
                 result = create_production_workflow_graph(
                     architect=lambda _: {"implementation_plan": no_changes},
                     developer=lambda _: {
                         "developer_status": DeveloperStatus.NO_CHANGES
                     },
-                    verification_runner=VerificationRunner(root),
+                    verification_runner=runner,
+                    reviewed_inputs=reviewed,
                 ).compile().invoke({})
 
             self.assertEqual(len(result["baseline_verification"]), 1)

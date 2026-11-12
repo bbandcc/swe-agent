@@ -14,7 +14,7 @@ from urllib.parse import urlsplit, urlunsplit
 from pydantic import SecretStr
 
 from agent.config import ModelSettings, model_settings
-from agent.verification import (
+from agent.verification.contracts import (
     RepairScopePolicy,
     VerificationRecoveryPolicy,
     VerificationSpec,

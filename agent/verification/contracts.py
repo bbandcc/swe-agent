@@ -11,7 +11,6 @@ from enum import Enum
 from pathlib import Path
 
 from agent.artifacts import ArtifactRef
-from agent.runtime.revision import WorkspaceRevision
 
 
 class VerificationCheckStatus(str, Enum):
@@ -403,6 +402,89 @@ def _canonical_number_text(value: int | float) -> str:
     return "0" if normalized == 0 else format(normalized, "f")
 
 
+def is_pytest_command(argv: Sequence[str]) -> bool:
+    """Recognize only direct pytest or ``python -m pytest`` producers."""
+    if not argv:
+        return False
+    executable = Path(str(argv[0])).name.lower()
+    if executable in {"pytest", "pytest.exe", "py.test", "py.test.exe"}:
+        return True
+    return (
+        len(argv) >= 3
+        and str(argv[1]) == "-m"
+        and str(argv[2]).lower() == "pytest"
+    )
+
+
+def is_pytest_junitxml_producer(
+    argv: Sequence[str], report_path: str
+) -> bool:
+    """Require an explicit pytest ``--junitxml`` output matching the spec."""
+    if not is_pytest_command(argv):
+        return False
+    configured = _report_path_key(report_path)
+    if not configured:
+        return False
+    return any(
+        _report_path_key(output) == configured
+        for output in _pytest_junitxml_outputs(argv)
+    )
+
+
+def has_pytest_junitxml_option(argv: Sequence[str]) -> bool:
+    """Return whether argv explicitly requests a pytest JUnit XML output."""
+    return is_pytest_command(argv) and bool(_pytest_junitxml_outputs(argv))
+
+
+def _pytest_junitxml_outputs(argv: Sequence[str]) -> tuple[str, ...]:
+    outputs: list[str] = []
+    index = 0
+    while index < len(argv):
+        item = str(argv[index])
+        for option in _PYTEST_JUNITXML_OPTIONS:
+            prefix = f"{option}="
+            if item.startswith(prefix):
+                outputs.append(item[len(prefix) :])
+                break
+            if item == option and index + 1 < len(argv):
+                outputs.append(str(argv[index + 1]))
+                index += 1
+                break
+        index += 1
+    return tuple(outputs)
+
+
+def _report_path_key(value: str) -> str:
+    text = str(value).replace("\\", "/").strip()
+    while text.startswith("./"):
+        text = text[2:]
+    if text.casefold().startswith("workspace_repo/"):
+        text = text[len("workspace_repo/") :]
+    return os.path.normcase(text)
+
+
+def _sequence_tuple(value: object, name: str) -> tuple:
+    if isinstance(value, (str, bytes, bytearray)) or not isinstance(
+        value, Sequence
+    ):
+        raise ValueError(f"{name} must be a non-string sequence.")
+    return tuple(value)
+
+
+def _string_tuple(value: object, name: str) -> tuple[str, ...]:
+    values = _sequence_tuple(value, name)
+    if any(not isinstance(item, str) or not item.strip() for item in values):
+        raise ValueError(f"{name} must contain non-empty strings.")
+    if len(set(values)) != len(values):
+        raise ValueError(f"{name} must not contain duplicate values.")
+    return tuple(values)
+
+
+# Runtime package initialization loads RunConfig, which consumes the contracts
+# above. Bind the actual revision type only after those contracts are defined.
+from agent.runtime.revision import WorkspaceRevision
+
+
 @dataclass(frozen=True, slots=True)
 class VerificationAttempt:
     """Checkpoint-safe boundary around one externally executed check."""
@@ -537,81 +619,3 @@ class VerificationAttempt:
                 "utf-8"
             )
         ).hexdigest()
-
-
-def is_pytest_command(argv: Sequence[str]) -> bool:
-    """Recognize only direct pytest or ``python -m pytest`` producers."""
-    if not argv:
-        return False
-    executable = Path(str(argv[0])).name.lower()
-    if executable in {"pytest", "pytest.exe", "py.test", "py.test.exe"}:
-        return True
-    return (
-        len(argv) >= 3
-        and str(argv[1]) == "-m"
-        and str(argv[2]).lower() == "pytest"
-    )
-
-
-def is_pytest_junitxml_producer(
-    argv: Sequence[str], report_path: str
-) -> bool:
-    """Require an explicit pytest ``--junitxml`` output matching the spec."""
-    if not is_pytest_command(argv):
-        return False
-    configured = _report_path_key(report_path)
-    if not configured:
-        return False
-    return any(
-        _report_path_key(output) == configured
-        for output in _pytest_junitxml_outputs(argv)
-    )
-
-
-def has_pytest_junitxml_option(argv: Sequence[str]) -> bool:
-    """Return whether argv explicitly requests a pytest JUnit XML output."""
-    return is_pytest_command(argv) and bool(_pytest_junitxml_outputs(argv))
-
-
-def _pytest_junitxml_outputs(argv: Sequence[str]) -> tuple[str, ...]:
-    outputs: list[str] = []
-    index = 0
-    while index < len(argv):
-        item = str(argv[index])
-        for option in _PYTEST_JUNITXML_OPTIONS:
-            prefix = f"{option}="
-            if item.startswith(prefix):
-                outputs.append(item[len(prefix) :])
-                break
-            if item == option and index + 1 < len(argv):
-                outputs.append(str(argv[index + 1]))
-                index += 1
-                break
-        index += 1
-    return tuple(outputs)
-
-
-def _report_path_key(value: str) -> str:
-    text = str(value).replace("\\", "/").strip()
-    while text.startswith("./"):
-        text = text[2:]
-    if text.casefold().startswith("workspace_repo/"):
-        text = text[len("workspace_repo/") :]
-    return os.path.normcase(text)
-
-
-def _sequence_tuple(value: object, name: str) -> tuple:
-    if isinstance(value, (str, bytes, bytearray)) or not isinstance(
-        value, Sequence
-    ):
-        raise ValueError(f"{name} must be a non-string sequence.")
-    return tuple(value)
-
-
-def _string_tuple(value: object, name: str) -> tuple[str, ...]:
-    values = _sequence_tuple(value, name)
-    if any(not isinstance(item, str) or not item.strip() for item in values):
-        raise ValueError(f"{name} must contain non-empty strings.")
-    if len(set(values)) != len(values):
-        raise ValueError(f"{name} must not contain duplicate values.")
-    return tuple(values)

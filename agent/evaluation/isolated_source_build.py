@@ -29,7 +29,7 @@ import zipfile
 
 from agent.evaluation.task_manifest import validate_task_manifest
 from agent.evaluation.python_toolchain import PythonToolchainError, stage_python_312
-from agent.evaluation.windows_sandbox import SandboxCommand, SandboxResult, SandboxStatus, run_in_windows_appcontainer
+from agent.evaluation.windows_sandbox import SandboxCommand, SandboxResult, SandboxStatus, run_in_windows_appcontainer, _profile_withdrawn
 from agent.workspace.paths import canonical_roots_overlap, canonical_workspace_relative_path, canonicalize_root_path
 
 
@@ -127,14 +127,33 @@ def build_pinned_fuzzysearch_wheel(
     python_toolchain_root: str | Path, sdist_path: str | Path,
     setuptools_wheel_path: str | Path, wheel_wheel_path: str | Path,
 ) -> IsolatedBuildResult:
-    """Build exactly the pinned pure-Python recipe, without host package execution.
-
-    Inputs are caller-supplied data files; this function neither downloads nor
-    installs packages on the host. Resource limits and recipe are not options.
-    A result reference is published only after sandbox AND staging cleanup.
-    """
-    if platform.system() != "Windows":
+    """Refuse the withdrawn build profile without acquiring any resources."""
+    if os.name != "nt":
         return IsolatedBuildResult(BuildStatus.FAILED, BuildErrorCode.UNSUPPORTED_PLATFORM)
+    target = task.get("target") if isinstance(task, Mapping) else None
+    environment = task.get("environment") if isinstance(task, Mapping) else None
+    if (
+        not isinstance(task, Mapping)
+        or not isinstance(task.get("task_id"), str)
+        or not re.fullmatch(r"[a-z0-9][a-z0-9._-]{0,63}", task["task_id"])
+        or not isinstance(target, Mapping)
+        or not isinstance(target.get("revision"), str)
+        or not re.fullmatch(r"[0-9a-f]{40}", target["revision"])
+        or not isinstance(environment, Mapping)
+        or set(environment) != {"os_family", "architecture", "python_version", "lock_path", "lock_sha256"}
+        or [environment.get(k) for k in ("os_family", "architecture", "python_version")] != ["Windows", "AMD64", "3.12"]
+        or not isinstance(environment.get("lock_path"), str)
+        or canonical_workspace_relative_path(environment["lock_path"], allow_root=False) != environment["lock_path"]
+        or not isinstance(environment.get("lock_sha256"), str)
+        or not re.fullmatch(r"[0-9a-f]{64}", environment["lock_sha256"])
+    ):
+        return IsolatedBuildResult(BuildStatus.FAILED, BuildErrorCode.INVALID_INPUT)
+    return IsolatedBuildResult(
+        BuildStatus.FAILED, BuildErrorCode.SANDBOX_FAILED,
+        sandbox_result=_profile_withdrawn(),
+    )
+
+    # Historical build/publication/owner-cleanup path is intentionally unreachable.
     if not _normal_user_token():
         return IsolatedBuildResult(BuildStatus.FAILED, BuildErrorCode.TOKEN_INVALID)
     container: Path | None = None

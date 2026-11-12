@@ -2,8 +2,9 @@
 
 import hashlib
 import json
+import os
 import time
-from collections.abc import Callable, Sequence
+from collections.abc import Callable, Mapping, Sequence
 from dataclasses import replace
 from pathlib import Path
 from typing import Any, Protocol
@@ -34,8 +35,91 @@ from agent.verification.evaluation import (
 from agent.verification.runner import VerificationRunner
 from agent.runtime.secrets import KnownSecretFilter
 from agent.runtime.revision import detect_workspace_revision
+from agent.workspace import WorkspacePathResolver, has_single_regular_file_link
 
 MAX_REPAIR_ATTEMPTS = 2
+
+
+class ReviewedVerificationInputs:
+    """A bounded, author-reviewed fixture contract, not repository attestation.
+
+    The trusted harness reviews and owns the runner, interpreter, dependencies
+    and ambient configuration, and excludes concurrent writers. It supplies
+    reviewed file bytes, never hashes captured from an unknown
+    repository. Every file version must be supplied explicitly, including files
+    read as data. This object is not a sandbox and is not checkpoint state.
+    """
+
+    def __init__(
+        self, *, workspace_root: str | Path, runner: object,
+        specs: Sequence[VerificationSpec],
+        file_versions: Mapping[str, bytes | Sequence[bytes | None]],
+    ) -> None:
+        self._resolver = WorkspacePathResolver(workspace_root)
+        self._root = self._resolver.resolve_directory(".").path
+        self._runner = runner
+        self._method = getattr(runner, "run", None)
+        self._boundary = getattr(runner, "execution_root", None)
+        self._specs = tuple(specs)
+        self._files = tuple(sorted(
+            (p, (data,) if isinstance(data, bytes) else tuple(data))
+            for p, data in file_versions.items()
+        ))
+        self._environment = self._environment_digest()
+
+    @staticmethod
+    def _environment_digest() -> str:
+        return hashlib.sha256(json.dumps(sorted(os.environ.items())).encode()).hexdigest()
+
+    def permits(self, spec: VerificationSpec, runner: object, workspace_root: str | Path) -> bool:
+        """Recheck the closed fixture inventory immediately before each dispatch."""
+        try:
+            root = WorkspacePathResolver(workspace_root).resolve_directory(".").path
+            if (
+                root is None or root != self._root or runner is not self._runner
+                or self._boundary != root or getattr(runner, "execution_root", None) != root
+                or getattr(runner, "run", None) != self._method
+                or self._environment_digest() != self._environment
+                or not any(
+                    0 < spec.timeout_seconds <= approved.timeout_seconds
+                    and replace(spec, timeout_seconds=approved.timeout_seconds) == approved
+                    for approved in self._specs
+                )
+            ):
+                return False
+            expected = dict(self._files)
+            if len(expected) > 128:
+                return False
+            seen: set[str] = set()
+            entries = size = 0
+
+            def reject_scan(error: OSError) -> None:
+                raise error
+
+            for current, directories, names in os.walk(root, followlinks=False, onerror=reject_scan):
+                entries += len(directories) + len(names)
+                if entries > 256:
+                    return False
+                for name in directories:
+                    relative = (Path(current) / name).relative_to(root).as_posix()
+                    if not self._resolver.resolve_directory(relative).ok:
+                        return False
+                for name in names:
+                    relative = (Path(current) / name).relative_to(root).as_posix()
+                    if relative not in expected:
+                        return False
+                    resolved = self._resolver.resolve_file(relative)
+                    if not resolved.ok or not has_single_regular_file_link(resolved.path):
+                        return False
+                    size += resolved.path.stat().st_size
+                    if size > 1024 * 1024:
+                        return False
+                    if resolved.path.read_bytes() not in expected[relative]:
+                        return False
+                    seen.add(relative)
+            return all(p in seen or None in versions for p, versions in expected.items())
+        except (OSError, ValueError, TypeError):
+            return False
 
 
 class _VerificationState(Protocol):
@@ -72,10 +156,12 @@ class VerificationController:
             VerificationRecoveryPolicy.STOP_ON_UNKNOWN
         ),
         repair_scope_policy: RepairScopePolicy = RepairScopePolicy.LAST_FILE,
+        reviewed_inputs: ReviewedVerificationInputs | None = None,
     ) -> None:
         self._specs = tuple(specs)
         self._workspace_root = workspace_root
         self._runner = runner
+        self._reviewed_inputs = reviewed_inputs
         if self._specs and self._runner is None:
             self._runner = VerificationRunner(
                 workspace_root,
@@ -293,7 +379,7 @@ class VerificationController:
                     ),
                 )
             spec = replace(spec, timeout_seconds=min(spec.timeout_seconds, remaining))
-        result = self._runner.run(spec)
+        result = self._dispatch(spec)
         if self._secret_filter is not None:
             result = self._secret_filter.sanitize(result).value
         if isinstance(result, VerificationResult):
@@ -609,6 +695,22 @@ class VerificationController:
             return {"outcome": WorkflowOutcome.FAILED}
         return {"outcome": state.outcome}
 
+    def _dispatch(self, spec: VerificationSpec) -> VerificationResult | VerificationSummary:
+        from agent.evaluation.pilot_workflow import PilotAdmission
+
+        admitted = (
+            type(self._reviewed_inputs) in {ReviewedVerificationInputs, PilotAdmission}
+            and self._reviewed_inputs.permits(spec, self._runner, self._workspace_root)
+        )
+        if not admitted:
+            return VerificationResult.create(
+                name=spec.name, argv=spec.argv, cwd=spec.cwd,
+                status=VerificationCheckStatus.EXECUTION_ERROR, exit_code=None,
+                message="Host verification admission refused: reviewed execution inputs are absent or changed; command not started.",
+                allowed_failure_case_ids=spec.allowed_failure_case_ids,
+            )
+        return self._runner.run(spec)
+
     def _run_checks(
         self, state: _VerificationState
     ) -> tuple[tuple[VerificationSummary, ...], bool]:
@@ -630,7 +732,7 @@ class VerificationController:
                     spec,
                     timeout_seconds=min(spec.timeout_seconds, remaining),
                 )
-            result = self._runner.run(effective)
+            result = self._dispatch(effective)
             if self._secret_filter is not None:
                 result = self._secret_filter.sanitize(result).value
             if isinstance(result, VerificationResult):

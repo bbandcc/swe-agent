@@ -30,6 +30,7 @@ from agent.runtime import (
     durable_recursion_limit,
 )
 from agent.graph import create_workflow_graph
+from tests.verification._fixture_support import fixture_graph
 from agent.outcome import WorkflowOutcome
 from agent.verification import (
     REPORT_SCHEMA,
@@ -94,6 +95,45 @@ def structured_result(
 
 
 class BudgetedGraphTests(unittest.TestCase):
+    def test_tool_config_survives_secret_policy_and_audit_wrappers(self) -> None:
+        from langchain_core.runnables import RunnableConfig
+        from agent.runtime import EventRecorder, JsonlEventSink, KnownSecretFilter
+        from agent.workspace import WorkspaceAccessPolicy
+
+        executed = []
+
+        @tool
+        def inspect_candidate(config: RunnableConfig) -> str:
+            """Inspect the configured candidate."""
+            marker = config["configurable"]["candidate_marker"]
+            executed.append(marker)
+            return marker
+
+        research = iter((AIMessage(content="", tool_calls=[{
+            "name": "inspect_candidate", "args": {}, "id": "read-1"}]),
+            AIMessage(content="enough")))
+        runtime = ArchitectRuntime(
+            plan_next_step=lambda _: measured(ResearchStep(reasoning="r", hypothesis="h")),
+            check_research_step=lambda _: measured(ResearchEvaluation(is_valid=True, reasoning="ok")),
+            conduct_research=lambda _: measured(next(research)),
+            extract_implementation_plan=lambda _: measured(ready_plan()),
+            load_codebase_structure=lambda: "app.py",
+        )
+        with tempfile.TemporaryDirectory() as directory:
+            recorder = EventRecorder(JsonlEventSink(Path(directory)), run_id="run",
+                                     thread_id="thread", task_id="task", clock=lambda: 100.0)
+            result = create_architect_workflow(
+                runtime, research_tools=[inspect_candidate],
+                budget_boundary=DurableBudgetBoundary("run", clock=lambda: 100.0),
+                secret_filter=KnownSecretFilter(), event_recorder=recorder,
+                access_policy=WorkspaceAccessPolicy.default(),
+            ).invoke({"implementation_research_scratchpad": [HumanMessage(content="task")],
+                      "budget": BudgetSnapshot.create(max_steps=7, max_cost_usd=None,
+                                                       deadline_at=200.0)},
+                     config={"configurable": {"candidate_marker": "candidate-123"}})
+            self.assertEqual(executed, ["candidate-123"])
+            self.assertEqual(result["implementation_plan"], ready_plan())
+
     def test_plain_model_response_settles_with_unknown_usage(self) -> None:
         boundary = DurableBudgetBoundary("run", clock=lambda: 100.0)
         initial = DurableBudgetState(
@@ -747,12 +787,12 @@ class BudgetedGraphTests(unittest.TestCase):
                     return structured_result(spec, VerificationCheckStatus.PASS)
 
             runner = Runner()
-            result = create_workflow_graph(
+            result = fixture_graph(fixture_versions={'app.py': (b'value = 0\n', b'value = 2\n', b'value = 0\r\n', b'value = 2\r\n')},
                 architect=lambda _: {"implementation_plan": ready_plan()},
                 developer=developer,
                 verification_specs=(VerificationSpec("unit", ("unused",)),),
                 verification_runner=runner,
-                workspace_root=root,
+                fixture_root=root,
                 durable_runtime=True,
                 clock=lambda: now[0],
             ).compile().invoke(
@@ -896,12 +936,12 @@ class BudgetedGraphTests(unittest.TestCase):
 
             runner = Runner()
 
-            result = create_workflow_graph(
+            result = fixture_graph(fixture_versions={'app.py': (b'value = 0\n', b'value = 2\n', b'value = 0\r\n', b'value = 2\r\n')},
                 architect=lambda _: {"implementation_plan": ready_plan()},
                 developer=developer,
                 verification_specs=(VerificationSpec("unit", ("unused",)),),
                 verification_runner=runner,
-                workspace_root=root,
+                fixture_root=root,
                 durable_runtime=True,
                 clock=clock,
             ).compile().invoke(
@@ -1180,12 +1220,12 @@ class BudgetedGraphTests(unittest.TestCase):
             )
             spec = VerificationSpec("unit", ("python", "-m", "unittest"))
 
-            result = create_workflow_graph(
+            result = fixture_graph(fixture_versions={'app.py': (b'value = 0\n', b'value = 2\n', b'value = 0\r\n', b'value = 2\r\n')},
                 architect=architect,
                 developer=developer,
                 verification_specs=(spec,),
                 verification_runner=Runner(),
-                workspace_root=root,
+                fixture_root=root,
                 durable_runtime=True,
                 clock=lambda: 100.0,
             ).compile().invoke(

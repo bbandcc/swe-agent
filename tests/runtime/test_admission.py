@@ -499,6 +499,9 @@ class AdmissionLockTests(RunConfigTestCase):
                     stdout=subprocess.PIPE,
                     stderr=subprocess.PIPE,
                     text=True,
+                    encoding="utf-8",
+                    errors="strict",
+                    env={**os.environ, "PYTHONIOENCODING": "utf-8"},
                     start_new_session=os.name == "posix",
                 )
                 # Register Popen before any fallible tree initialization. Retain
@@ -590,6 +593,14 @@ class AdmissionLockTests(RunConfigTestCase):
                     errors.append("release signal failed: " + type(error).__name__)
                 for process, tree, initialized in reversed(processes):
                     try:
+                        if process.poll() is None:
+                            # The release signal lets SQLite close its WAL/SHM
+                            # handles normally. Forced termination is the bounded
+                            # fallback, not the first response to every failure.
+                            try:
+                                process.wait(timeout=1.0)
+                            except subprocess.TimeoutExpired:
+                                pass
                         if process.poll() is None:
                             if initialized:
                                 tree.terminate()

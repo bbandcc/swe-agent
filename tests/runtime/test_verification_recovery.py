@@ -13,6 +13,7 @@ from pathlib import Path
 
 from agent.developer.state import DeveloperStatus
 from agent.graph import create_workflow_graph
+from tests.verification._fixture_support import fixture_graph
 from agent.runtime import (
     AgentCodeRevision,
     AgentRevisionStatus,
@@ -76,7 +77,7 @@ class MarkerRunner:
             "n=int(p.read_text() or '0') if p.exists() else 0; "
             "p.write_text(str(n+1), encoding='utf-8')"
         )
-        subprocess.run([sys.executable, "-c", command], check=True)
+        subprocess.run([sys.executable, "-c", command], cwd=self.root / "workspace", check=True)
         if self.crash:
             os._exit(97)
         return _passing_result(spec)
@@ -88,14 +89,14 @@ def _graph_factory(
     interrupt_after: tuple[str, ...] = (),
 ):
     def factory(config, _run_id, saver, clock):
-        builder = create_workflow_graph(
+        builder = fixture_graph(
             architect=lambda _state: {},
             developer=lambda _state: {
                 "developer_status": DeveloperStatus.COMPLETED,
             },
             verification_specs=config.verification_specs,
             verification_runner=runner,
-            workspace_root=config.workspace_root,
+            fixture_root=config.workspace_root,
             durable_runtime=True,
             clock=clock,
         )
@@ -118,6 +119,7 @@ from pathlib import Path
 from agent.config import ModelSettings
 from agent.developer.state import DeveloperStatus
 from agent.graph import create_workflow_graph
+from tests.verification._fixture_support import fixture_graph
 from agent.runtime import (
     AgentCodeRevision,
     AgentRevisionStatus,
@@ -178,7 +180,7 @@ class Runner:
             "n=int(p.read_text() or '0') if p.exists() else 0; "
             "p.write_text(str(n+1), encoding='utf-8')"
         )
-        subprocess.run([sys.executable, "-c", script], check=True)
+        subprocess.run([sys.executable, "-c", script], cwd=workspace, check=True)
         if os.environ.get("S3_VERIFICATION_MODE") == "start":
             os._exit(97)
         return VerificationResult.create(
@@ -190,12 +192,12 @@ class Runner:
         )
 
 def factory(current_config, _run_id, saver, clock):
-    builder = create_workflow_graph(
+    builder = fixture_graph(
         architect=lambda _state: {},
         developer=lambda _state: {"developer_status": DeveloperStatus.COMPLETED},
         verification_specs=current_config.verification_specs,
         verification_runner=Runner(),
-        workspace_root=current_config.workspace_root,
+        fixture_root=current_config.workspace_root,
         durable_runtime=True,
         clock=clock,
     )

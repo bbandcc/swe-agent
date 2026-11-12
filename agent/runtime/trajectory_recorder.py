@@ -3,6 +3,7 @@
 from __future__ import annotations
 
 import time
+from functools import wraps
 from collections.abc import Callable, Mapping, Sequence
 from typing import Any
 
@@ -100,7 +101,8 @@ class EventRecorder:
                     )
                 )
             try:
-                result = node(state, *args, **kwargs)
+                result = (node(state, *args, **kwargs) if callable(node)
+                          else node.invoke(state, *args, **kwargs))
             except Exception as error:
                 for step_id, call_id, subject_id in subjects:
                     self.append(
@@ -148,7 +150,7 @@ class EventRecorder:
                 )
             return result
 
-        return wrapped
+        return wraps(node)(wrapped) if callable(node) else wrapped
 
     def _event(
         self,

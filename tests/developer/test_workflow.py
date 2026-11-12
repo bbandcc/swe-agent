@@ -1,8 +1,11 @@
 import tempfile
+import sqlite3
+import json
 import unittest
 from pathlib import Path
 
 from langchain_core.messages import AIMessage
+from langgraph.checkpoint.sqlite import SqliteSaver
 
 from agent.common.entities import (
     AtomicTask,
@@ -14,7 +17,10 @@ from agent.developer.graph import DeveloperRuntime, create_developer_workflow
 from agent.developer.state import DeveloperErrorCode, DeveloperStatus
 from agent.editing import EditErrorCode, EditStatus, WorkspaceEditor
 from agent.developer.editing import DeveloperEditExecutor
-from agent.workspace import WorkspaceAccessPolicy
+from agent.workspace import WorkspaceAccessPolicy, workspace_root_scope
+from agent.tools.codemap import get_raw_file_content
+from agent.runtime import BudgetSnapshot, DurableBudgetBoundary
+from agent.runtime.checkpointing import checkpoint_serializer
 
 
 def search_replace_block(old_text: str, new_text: str) -> str:
@@ -39,6 +45,103 @@ def implementation_plan(path: str = "./workspace_repo/app.py") -> Implementation
 
 
 class DeveloperWorkflowTests(unittest.TestCase):
+    def raw_view_fixture(self, root):
+        """Three trusted proposals exercise raw reads between real stages."""
+        target = root / "app.py"
+        target.write_bytes(b"value = 1\n")
+        seen = []
+
+        def research(values):
+            messages = values["atomic_implementation_research"]
+            if not messages:
+                return AIMessage(content="", tool_calls=[{
+                    "name": "get_raw_file_content", "args": {"file_path": "app.py"},
+                    "id": "raw-" + values["development_task"],
+                    "type": "tool_call",
+                }])
+            evidence = "\n".join(str(m.content) for m in messages)
+            self.assertIn("[UNTRUSTED EVIDENCE]", evidence)
+            self.assertNotIn("INCOMPLETE TOOL EXCHANGE", evidence)
+            self.assertIn('"view": "working"', evidence)
+            self.assertIn('"source_hash":', evidence)
+            expected = values["file_content"]
+            self.assertIn(json.dumps(expected)[1:-1], evidence)
+            self.assertEqual(target.read_bytes(), b"value = 1\n")
+            seen.append(expected)
+            return AIMessage(content="ready")
+
+        def propose(values):
+            old = values["file_content"].rstrip("\n")
+            value = int(old[-1])
+            return search_replace_block(old, f"value = {value + 1}")
+
+        runtime = DeveloperRuntime(
+            edit_executor=lambda: DeveloperEditExecutor(WorkspaceEditor(root)),
+            load_codebase_structure=lambda: "app.py",
+            research_atomic_task=research,
+            propose_existing_file_edit=propose,
+            propose_new_file=lambda _: self.fail("unexpected create"),
+        )
+        plan = ImplementationPlan(tasks=[ImplementationTask(
+            file_path="app.py", logical_task="three stages",
+            atomic_tasks=[AtomicTask(atomic_task=str(n)) for n in range(3)],
+        )])
+        return runtime, plan, seen
+
+    def test_real_developer_toolnode_reads_latest_stage_and_renders_source(self):
+        with tempfile.TemporaryDirectory() as directory:
+            root = Path(directory).resolve()
+            runtime, plan, seen = self.raw_view_fixture(root)
+            with workspace_root_scope(root):
+                result = create_developer_workflow(
+                    runtime, research_tools=[get_raw_file_content]
+                ).invoke({"implementation_plan": plan})
+            self.assertEqual(seen, ["value = 1\n", "value = 2\n", "value = 3\n"])
+            self.assertEqual(result["developer_status"], DeveloperStatus.COMPLETED)
+            self.assertEqual((root / "app.py").read_bytes(), b"value = 4\n")
+
+    def test_working_raw_survives_sqlite_close_reopen_with_shared_budget(self):
+        with tempfile.TemporaryDirectory() as directory:
+            parent = Path(directory).resolve()
+            root = parent / "workspace"
+            root.mkdir()
+            runtime, plan, seen = self.raw_view_fixture(root)
+            config = {"configurable": {"thread_id": "working-raw"}}
+            developer = create_developer_workflow(
+                runtime, research_tools=[get_raw_file_content],
+                budget_boundary=DurableBudgetBoundary("raw-run", clock=lambda: 100.0),
+                run_id="raw-run", task_id="raw-task",
+            )
+            with workspace_root_scope(root):
+                with sqlite3.connect(parent / "checkpoint.sqlite", check_same_thread=False) as connection:
+                    saver = SqliteSaver(connection, serde=checkpoint_serializer())
+                    first = developer.builder.compile(
+                        checkpointer=saver, interrupt_after=["stage_diff_for_task"]
+                    )
+                    first.invoke({
+                        "implementation_plan": plan,
+                        "budget": BudgetSnapshot.create(max_steps=30, max_cost_usd=None, deadline_at=200.0),
+                    }, config, durability="sync")
+                    before = first.get_state(config).values
+                    self.assertEqual(before["current_file_transaction"].working_content, "value = 2\n")
+                    self.assertEqual((root / "app.py").read_bytes(), b"value = 1\n")
+                    used = before["budget"].steps_used
+                # sqlite3 context commits but does not close; explicitly close
+                # before constructing the fresh connection and compiled graph.
+                connection.close()
+                with sqlite3.connect(parent / "checkpoint.sqlite", check_same_thread=False) as reopened:
+                    saver = SqliteSaver(reopened, serde=checkpoint_serializer())
+                    resumed = developer.builder.compile(checkpointer=saver)
+                    after = resumed.invoke(None, config, durability="sync")
+                    self.assertEqual(after["developer_status"], DeveloperStatus.COMPLETED)
+                    self.assertGreater(after["budget"].steps_used, used)
+                    self.assertEqual(after["budget"].steps_used, 12)
+                    self.assertEqual(after["budget"].active, ())
+                    self.assertIsNone(after["pending_write"])
+                reopened.close()
+            self.assertEqual(seen, ["value = 1\n", "value = 2\n", "value = 3\n"])
+            self.assertEqual((root / "app.py").read_bytes(), b"value = 4\n")
+
     def test_protected_plan_target_is_rejected_before_model_work(self) -> None:
         with tempfile.TemporaryDirectory() as directory:
             root = Path(directory)

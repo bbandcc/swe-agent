@@ -9,7 +9,7 @@ from agent.evaluation.isolated_source_build import (
 
 class IsolatedSourceBuildTests(unittest.TestCase):
     def test_non_windows_has_no_fallback_or_artifact(self):
-        with patch("agent.evaluation.isolated_source_build.platform.system", return_value="Linux"):
+        with patch("agent.evaluation.isolated_source_build.os.name", "posix"):
             result = build_pinned_fuzzysearch_wheel(
                 repository_root="missing", task={}, runtime_root="missing",
                 python_toolchain_root="missing", sdist_path="missing",

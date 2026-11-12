@@ -1,6 +1,7 @@
 """Developer graph that stages each file in memory before one final commit."""
 
 from collections.abc import Sequence
+from functools import wraps
 from dataclasses import replace
 from typing import Any
 
@@ -724,7 +725,7 @@ def create_developer_workflow(
                         return original(*args, **kwargs)
                     return original.invoke(*args, **kwargs)
 
-            wrapped = policy_wrapped
+            wrapped = wraps(original)(policy_wrapped) if callable(original) else policy_wrapped
         if event_recorder is not None and event_type is not None:
             return event_recorder.wrap_node(
                 wrapped,

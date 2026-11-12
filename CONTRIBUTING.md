@@ -1,3 +1,37 @@
+## Current executable support boundary
+
+Windows AppContainer execution is withdrawn: both low-level entries and the
+task/frozen/fuzzysearch/forbiddenfruit preparation entries refuse before their
+exclusive preparation, ACL or spawn. Historical native success and downstream
+pipeline tests remain in source but are excluded from the supported test entry.
+The A3 hardlink/DACL FAIL remains historical evidence, not a resolved defect.
+
+Host verification requires author-reviewed inputs for every baseline/post,
+repair, spec and resumed dispatch. Trusted argv, explicit runner injection and
+a previous approved revision do not authorize unknown repository/model code.
+No-check editing remains UNVERIFIED. Reviewed fixture/harness execution is
+not a sandbox and does not demonstrate real-model or benchmark success.
+
+Independent Python toolchain calls require a complete `reviewed_files` inventory
+provided by a trusted author, reviewed dependency bytes where applicable,
+controlled ancestors/destination parent, trusted interpreter dependency closure
+and no concurrent writer. Calculating hashes of unknown files does not establish
+trust. This is not arbitrary Python-distribution certification or hostile
+same-privilege race protection; native link capability tests are owned data tests,
+not Windows AppContainer restoration.
+
+The explicit selection in `tests/test_s5d2_ci_contract.py` is shared by unittest,
+pytest and the Ubuntu/Windows CI matrix. It retains core consumers and both
+refusal contracts. Historical Windows pipeline tests are preserved separately;
+capability/platform skips remain visible and must not be counted as PASS.
+Changed tests/setup must be reviewed before changing this selection. CI matrix
+configuration is not evidence that either hosted platform has passed this tree.
+An existing dependency overlay is not a clean locked installation.
+
+Use the explicit supported selector below instead of collecting every test.
+Unselected historical native tests may exercise withdrawn capabilities and
+require separate review; a text-only check does not establish execution safety.
+
 # Contributing to SWE Agent LangGraph
 
 Welcome to the LangTalks community! We're excited to have you contribute to the future of AI-powered software development. This guide will help you get started and make meaningful contributions.
@@ -37,11 +71,11 @@ cp .env.example .env
 
 3. **Verify Setup**
 ```bash
-# Canonical full test suite (same entry as README)
-uv run --locked python -m unittest discover -s tests -v
+# Supported core and refusal suite (same entry as README)
+uv run --locked python -m tests.test_s5d2_ci_contract --suite unittest
 
 # Additional pytest compatibility run; pytest is in the locked dev group
-uv run --locked python -m pytest
+uv run --locked python -m tests.test_s5d2_ci_contract --suite pytest
 
 # Compile production and test modules
 uv run --locked python -m compileall -q agent tests
@@ -110,8 +144,8 @@ git checkout -b fix/issue-description
 ### 3. **Configured Checks**
 ```bash
 # Canonical tests, pytest compatibility run, and compile check
-uv run --locked python -m unittest discover -s tests -v
-uv run --locked python -m pytest
+uv run --locked python -m tests.test_s5d2_ci_contract --suite unittest
+uv run --locked python -m tests.test_s5d2_ci_contract --suite pytest
 uv run --locked python -m compileall -q agent tests
 ```
 
@@ -158,14 +192,14 @@ git push origin feature/your-feature-name
 
 ### Running Tests
 ```bash
-# Canonical full suite
-uv run --locked python -m unittest discover -s tests -v
+# Supported core and refusal suite
+uv run --locked python -m tests.test_s5d2_ci_contract --suite unittest
 
 # Specific test module
 uv run --locked python -m unittest tests.developer.test_workflow -v
 
 # Pytest compatibility run
-uv run --locked python -m pytest
+uv run --locked python -m tests.test_s5d2_ci_contract --suite pytest
 ```
 
 The project does not currently configure a coverage plugin or a separate

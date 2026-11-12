@@ -85,6 +85,7 @@ print(json.dumps({"rendered": len(prompts), "cwd": os.getcwd()}))
             env["S5D1_PROMPT_PATHS"] = json.dumps(PROMPT_PATHS)
             result = subprocess.run(
                 [sys.executable, "-c", script],
+                timeout=60,
                 cwd=cwd,
                 env=env,
                 capture_output=True,
@@ -138,6 +139,7 @@ class CleanWheelInstallationTests(unittest.TestCase):
                     str(wheel_dir),
                 ],
                 cwd=source,
+                timeout=180,
                 env=build_env,
                 capture_output=True,
                 text=True,
@@ -185,6 +187,7 @@ class CleanWheelInstallationTests(unittest.TestCase):
                     "3.12",
                 ],
                 cwd=REPOSITORY_ROOT,
+                timeout=300,
                 env=install_env,
                 capture_output=True,
                 text=True,
@@ -202,6 +205,7 @@ class CleanWheelInstallationTests(unittest.TestCase):
             self.assertTrue(python.is_file(), f"missing clean Python environment: {python}")
             install = subprocess.run(
                 [uv, "pip", "install", "--python", str(python), "--no-deps", str(wheel)],
+                timeout=120,
                 cwd=root,
                 env=install_env,
                 capture_output=True,
@@ -270,6 +274,7 @@ print(json.dumps({"rendered": rendered, "prefix": str(prefix), "cwd": os.getcwd(
             smoke_env["S5D1_REPOSITORY_ROOT"] = str(REPOSITORY_ROOT)
             result = subprocess.run(
                 [str(python), "-c", smoke],
+                timeout=60,
                 cwd=run_cwd,
                 env=smoke_env,
                 capture_output=True,
@@ -286,6 +291,7 @@ print(json.dumps({"rendered": rendered, "prefix": str(prefix), "cwd": os.getcwd(
 
             cli = subprocess.run(
                 [str(python), "-m", "agent.runtime", "--help"],
+                timeout=60,
                 cwd=run_cwd,
                 env=smoke_env,
                 capture_output=True,

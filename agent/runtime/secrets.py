@@ -5,6 +5,7 @@ from __future__ import annotations
 from collections.abc import Mapping, Sequence
 from dataclasses import fields, is_dataclass, replace
 from enum import Enum
+from functools import wraps
 from typing import Any
 
 from langchain_core.messages import BaseMessage
@@ -269,7 +270,7 @@ class KnownSecretFilter:
                 return update
             return self.sanitize_node_update(update)
 
-        return wrapped
+        return wraps(node)(wrapped) if callable(node) else wrapped
 
     def _sanitize_model(
         self, value: BaseModel, *, code_bearing: bool

@@ -1,4 +1,4 @@
-"""Trusted argv execution inside a capability-less Windows AppContainer."""
+"""Validate AppContainer requests and refuse the withdrawn execution profile."""
 
 from __future__ import annotations
 
@@ -80,11 +80,7 @@ class _ValidatedCommand:
 
 
 def run_in_windows_appcontainer(command: SandboxCommand) -> SandboxResult:
-    """Run one argv in a lowbox token, Job Object, and explicit env block.
-
-    Windows AppContainer is the only backend in this slice. Other operating
-    systems fail closed instead of falling back to an ordinary subprocess.
-    """
+    """Preserve validation/platform contracts without starting withdrawn execution."""
     if os.name != "nt":
         return _failure(
             SandboxErrorCode.UNSUPPORTED_PLATFORM,
@@ -93,9 +89,7 @@ def run_in_windows_appcontainer(command: SandboxCommand) -> SandboxResult:
     validated = _validate(command)
     if isinstance(validated, SandboxResult):
         return validated
-    from agent.evaluation._windows_appcontainer import execute_appcontainer
-
-    return execute_appcontainer(validated)
+    return _profile_withdrawn()
 
 
 def _validate(command: SandboxCommand) -> _ValidatedCommand | SandboxResult:
@@ -204,6 +198,14 @@ def _is_link_or_junction(path: Path) -> bool:
         return path.is_symlink() or (hasattr(path, "is_junction") and path.is_junction())
     except OSError:
         return True
+
+
+def _profile_withdrawn() -> SandboxResult:
+    return _failure(
+        SandboxErrorCode.SETUP_FAILED,
+        "Windows AppContainer execution profile is withdrawn; "
+        "no resources were created and no command was started.",
+    )
 
 
 def _failure(code: SandboxErrorCode, message: str) -> SandboxResult:

@@ -54,6 +54,7 @@ from agent.developer.editing import DeveloperEditExecutor
 from agent.developer.graph import DeveloperRuntime, create_developer_workflow
 from agent.developer.state import DeveloperStatus
 from agent.graph import create_workflow_graph
+from tests.verification._fixture_support import fixture_graph
 from agent.verification import (
     REPORT_SCHEMA,
     VerificationCase,
@@ -354,12 +355,12 @@ class KnownSecretFilterTests(unittest.TestCase):
                     research_tools=[],
                     secret_filter=secret_filter,
                 )
-                return create_workflow_graph(
+                return fixture_graph(fixture_versions={'app.py': (b'value = 2\n',)},
                     architect=architect,
                     developer=developer,
                     verification_specs=config.verification_specs,
                     verification_runner=Runner(),
-                    workspace_root=workspace,
+                    fixture_root=workspace,
                     durable_runtime=True,
                     clock=clock,
                     secret_filter=secret_filter,

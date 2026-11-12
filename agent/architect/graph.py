@@ -1,6 +1,7 @@
 """Architect research graph with explicit invalid-step routing."""
 
 from collections.abc import Sequence
+from functools import wraps
 from typing import Any, NotRequired, TypedDict
 
 from langchain_core.messages import AIMessage, AnyMessage, HumanMessage
@@ -279,7 +280,7 @@ def create_architect_workflow(
                         return original(*args, **kwargs)
                     return original.invoke(*args, **kwargs)
 
-            wrapped = policy_wrapped
+            wrapped = wraps(original)(policy_wrapped) if callable(original) else policy_wrapped
         if event_recorder is not None and event_type is not None:
             return event_recorder.wrap_node(
                 wrapped,

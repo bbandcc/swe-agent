@@ -12,6 +12,7 @@ jobs:
   test:
     name: Python 3.12 (${{ matrix.os }})
     runs-on: ${{ matrix.os }}
+    timeout-minutes: 60
     strategy:
       fail-fast: false
       matrix:
@@ -33,22 +34,20 @@ jobs:
           python-version: "3.12"
 
       - name: Sync locked project environment
+        timeout-minutes: 15
         run: |
           uv --version
           uv sync --locked
           uv run --locked python -c "import sys; assert sys.version_info[:2] == (3, 12), sys.version; print(sys.version)"
 
-      - name: Verify S5d.1 clean wheel and installed prompt contract
-        run: uv run --locked python -m unittest -v tests.test_s5d1_installation
+      - name: Run supported core and refusal unittest selection
+        timeout-minutes: 20
+        run: uv run --locked python -m tests.test_s5d2_ci_contract --suite unittest
 
-      - name: Run canonical unittest suite and show platform skips
-        run: uv run --locked python -m unittest discover -s tests -v
-
-      - name: Run pytest compatibility suite and show platform skip reasons
-        run: uv run --locked python -m pytest
-
-      - name: Run platform path-safety seams with explicit skip reasons
-        run: uv run --locked python -m unittest -v tests.runtime.test_identity tests.runtime.test_admission tests.runtime.test_access_policy tests.runtime.test_config_validation tests.editing.test_workspace_editor tests.editing.test_write_recovery tests.tools.test_workspace_boundary tests.verification.test_runner
+      - name: Run the same supported pytest selection with skip reasons
+        timeout-minutes: 20
+        run: uv run --locked python -m tests.test_s5d2_ci_contract --suite pytest
 
       - name: Compile production and test packages
+        timeout-minutes: 3
         run: uv run --locked python -m compileall -q agent tests

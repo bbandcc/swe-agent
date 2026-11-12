@@ -28,6 +28,7 @@ from agent.editing import (
 )
 from agent.editing.text import sha256
 from agent.graph import create_workflow_graph
+from tests.verification._fixture_support import fixture_graph
 from agent.outcome import WorkflowOutcome
 from agent.runtime import (
     AgentCodeRevision,
@@ -809,12 +810,12 @@ class DurableRuntimeTests(RunConfigTestCase):
                         developer = developer.builder.compile(
                             interrupt_after=["prepare_write_intent"]
                         )
-                    builder = create_workflow_graph(
+                    builder = fixture_graph(fixture_versions={'app.py': (b"value = 'BROKEN'\n", b'value = 2\n', b"value = 'BROKEN'\r\n", b'value = 2\r\n')},
                         architect=architect,
                         developer=developer,
                         verification_specs=current_config.verification_specs,
                         verification_runner=runner,
-                        workspace_root=current_config.workspace_root,
+                        fixture_root=current_config.workspace_root,
                         durable_runtime=True,
                         clock=clock,
                     )

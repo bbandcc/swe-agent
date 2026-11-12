@@ -56,6 +56,11 @@ class VerificationRunner:
             else None
         )
 
+    @property
+    def execution_root(self) -> Path | None:
+        """The current resolved dispatch boundary; reading it never executes code."""
+        return self._resolver.resolve_directory(".").path
+
     def run(self, spec: VerificationSpec) -> VerificationResult:
         started_at = time.monotonic()
         validation_error = _validate_spec(spec)

@@ -1,0 +1,143 @@
+{
+  "kind": "REAL_MODEL_FIXED_JSON_3X3",
+  "source_commit": "a6b0786ff7a50fe7a386caf6b143bb912ffebf7a",
+  "scheduled": 9,
+  "recorded": 9,
+  "resolved": 7,
+  "not_resolved": 2,
+  "by_task": {
+    "json-sum": {
+      "scheduled": 3,
+      "resolved": 2,
+      "peak_microcny": 112388
+    },
+    "json-sum-squares": {
+      "scheduled": 3,
+      "resolved": 2,
+      "peak_microcny": 111218
+    },
+    "json-weighted-sum": {
+      "scheduled": 3,
+      "resolved": 3,
+      "peak_microcny": 110194
+    }
+  },
+  "api_requests": 71,
+  "peak_cost_cny": "0.333800",
+  "cost_kind": "CNY_PEAK_PRICE_CONSERVATIVE_CALCULATION_NOT_PROVIDER_INVOICE",
+  "automatic_retries": 0,
+  "cleanup_complete": true,
+  "actual_dispatch_usage_complete": true,
+  "logical_ledger_unknown_rows": 2,
+  "not_a_benchmark_claim": true,
+  "rows": [
+    {
+      "task_id": "json-sum",
+      "repeat": 1,
+      "status": "FINISHED",
+      "resolved": true,
+      "paid_requests": 7,
+      "verification_status": "improved",
+      "audit_status": "complete",
+      "cleanup_complete": true,
+      "failure_classification": null,
+      "logical_ledger_cost_unknown": false
+    },
+    {
+      "task_id": "json-sum",
+      "repeat": 2,
+      "status": "FINISHED",
+      "resolved": true,
+      "paid_requests": 8,
+      "verification_status": "improved",
+      "audit_status": "complete",
+      "cleanup_complete": true,
+      "failure_classification": null,
+      "logical_ledger_cost_unknown": false
+    },
+    {
+      "task_id": "json-sum",
+      "repeat": 3,
+      "status": "FINISHED",
+      "resolved": false,
+      "paid_requests": 8,
+      "verification_status": "pending",
+      "audit_status": "complete",
+      "cleanup_complete": true,
+      "failure_classification": "REQUEST_ALLOWANCE_EXHAUSTED_INFERRED_FROM_GUARD_AND_LEDGER",
+      "logical_ledger_cost_unknown": true
+    },
+    {
+      "task_id": "json-sum-squares",
+      "repeat": 1,
+      "status": "FINISHED",
+      "resolved": false,
+      "paid_requests": 8,
+      "verification_status": "pending",
+      "audit_status": "complete",
+      "cleanup_complete": true,
+      "failure_classification": "REQUEST_ALLOWANCE_EXHAUSTED_INFERRED_FROM_GUARD_AND_LEDGER",
+      "logical_ledger_cost_unknown": true
+    },
+    {
+      "task_id": "json-sum-squares",
+      "repeat": 2,
+      "status": "FINISHED",
+      "resolved": true,
+      "paid_requests": 8,
+      "verification_status": "improved",
+      "audit_status": "complete",
+      "cleanup_complete": true,
+      "failure_classification": null,
+      "logical_ledger_cost_unknown": false
+    },
+    {
+      "task_id": "json-sum-squares",
+      "repeat": 3,
+      "status": "FINISHED",
+      "resolved": true,
+      "paid_requests": 8,
+      "verification_status": "improved",
+      "audit_status": "complete",
+      "cleanup_complete": true,
+      "failure_classification": null,
+      "logical_ledger_cost_unknown": false
+    },
+    {
+      "task_id": "json-weighted-sum",
+      "repeat": 1,
+      "status": "FINISHED",
+      "resolved": true,
+      "paid_requests": 8,
+      "verification_status": "improved",
+      "audit_status": "complete",
+      "cleanup_complete": true,
+      "failure_classification": null,
+      "logical_ledger_cost_unknown": false
+    },
+    {
+      "task_id": "json-weighted-sum",
+      "repeat": 2,
+      "status": "FINISHED",
+      "resolved": true,
+      "paid_requests": 8,
+      "verification_status": "improved",
+      "audit_status": "complete",
+      "cleanup_complete": true,
+      "failure_classification": null,
+      "logical_ledger_cost_unknown": false
+    },
+    {
+      "task_id": "json-weighted-sum",
+      "repeat": 3,
+      "status": "FINISHED",
+      "resolved": true,
+      "paid_requests": 8,
+      "verification_status": "improved",
+      "audit_status": "complete",
+      "cleanup_complete": true,
+      "failure_classification": null,
+      "logical_ledger_cost_unknown": false
+    }
+  ]
+}

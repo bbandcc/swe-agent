@@ -46,17 +46,7 @@ def stage_frozen_python_312(
     uv_executable: str | Path,
     destination: Path,
 ) -> Path:
-    """Verify the snapshot lock, install locked wheels, then stage only packages.
-
-    The temporary uv environment and cache are removed before this function
-    returns, so the sandbox is granted access only to the staged toolchain.
-    """
-    try:
-        workspace = Path(workspace_root).resolve(strict=True)
-        repository = Path(repository_root).resolve(strict=True)
-        runtime = Path(runtime_root).resolve(strict=True)
-    except (OSError, RuntimeError, TypeError, ValueError) as error:
-        raise FrozenEnvironmentError("Frozen task paths are unavailable.") from error
+    """Refuse the withdrawn profile before touching locks, tools or storage."""
     target = task.get("target") if isinstance(task, Mapping) else None
     environment = task.get("environment") if isinstance(task, Mapping) else None
     revision = target.get("revision") if isinstance(target, Mapping) else None
@@ -68,8 +58,8 @@ def stage_frozen_python_312(
         or revision != workspace_revision
         or not isinstance(environment, Mapping)
         or set(environment) != expected_fields
-        or environment.get("os_family") != platform.system()
-        or environment.get("architecture") != platform.machine()
+        or environment.get("os_family") != "Windows"
+        or environment.get("architecture") != "AMD64"
         or environment.get("python_version") != "3.12"
     ):
         raise FrozenEnvironmentError("Task runtime identity does not match the frozen environment.")
@@ -83,6 +73,19 @@ def stage_frozen_python_312(
     expected_hash = environment.get("lock_sha256")
     if not isinstance(expected_hash, str) or not _SHA256.fullmatch(expected_hash):
         raise FrozenEnvironmentError("Task lock identity is invalid.")
+
+    raise FrozenEnvironmentError(
+        "Windows AppContainer execution profile is withdrawn; "
+        "no frozen environment was prepared and no command was started."
+    )
+
+    # Historical installation/owner-cleanup path is intentionally unreachable.
+    try:
+        workspace = Path(workspace_root).resolve(strict=True)
+        repository = Path(repository_root).resolve(strict=True)
+        runtime = Path(runtime_root).resolve(strict=True)
+    except (OSError, RuntimeError, TypeError, ValueError) as error:
+        raise FrozenEnvironmentError("Frozen task paths are unavailable.") from error
 
     lock_path = workspace.joinpath(*PurePosixPath(lock_relative).parts)
     try:

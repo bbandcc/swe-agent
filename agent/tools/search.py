@@ -12,6 +12,7 @@ from langchain_core.tools import tool
 from agent.tools.read_contract import (
     IGNORED_DIRECTORY_NAMES,
     MAX_SEARCH_BYTES,
+    MAX_CURSOR_CHARS,
     MAX_SEARCH_FILES,
     MAX_SEARCH_RESULTS,
     MAX_SEARCH_SCAN_ENTRIES,
@@ -143,6 +144,7 @@ def _search_directory(
     hashes: list[tuple[str, str]] = []
     file_evidence: dict[str, str] = {}
     directory_evidence: dict[str, str] = {}
+    directory_evidence_incomplete = False
     scanned_bytes = 0
     files_scanned = 0
     files_considered = 0
@@ -173,14 +175,24 @@ def _search_directory(
     candidate_index = 0
 
     def record_directory_evidence(path: Path) -> None:
+        nonlocal directory_evidence_incomplete
         resolution = resolver.resolve_directory(str(path))
         if not resolution.ok or resolution.path is None:
+            directory_evidence_incomplete = True
             return
         relative = resolution.relative_path or "."
-        try:
-            directory_evidence[relative] = content_version(resolution.path)
-        except OSError:
+        if relative not in directory_evidence and len(directory_evidence) >= MAX_SEARCH_FILES + 1:
+            directory_evidence_incomplete = True
             return
+        try:
+            version = content_version(resolution.path)
+        except OSError:
+            directory_evidence_incomplete = True
+            return
+        if relative in directory_evidence and directory_evidence[relative] != version:
+            directory_evidence_incomplete = True
+            return
+        directory_evidence[relative] = version
 
     def append_result(metadata: dict[str, object], display: str) -> bool:
         if len(results) >= MAX_SEARCH_RESULTS:
@@ -246,6 +258,8 @@ def _search_directory(
         pending_directories = [directory]
         while pending_directories:
             root_path = pending_directories.pop()
+            # Every enumerated directory determines the resumed candidate index.
+            record_directory_evidence(root_path)
             try:
                 entries, has_unscanned_suffix = read_directory_entries(
                     root_path, MAX_SEARCH_SCAN_ENTRIES - scan_entries
@@ -513,7 +527,16 @@ def _search_directory(
             "directory_evidence": directory_evidence_items,
         }
         cursor_values["search_version"] = search_cursor_version(cursor_values)
-        continuation = encode_cursor("workspace_search", cursor_values)
+        for relative in tuple(directory_evidence):
+            record_directory_evidence(workspace_root / relative)
+        if not directory_evidence_incomplete:
+            candidate_cursor = encode_cursor("workspace_search", cursor_values)
+            if len(candidate_cursor) <= MAX_CURSOR_CHARS:
+                continuation = candidate_cursor
+            else:
+                warnings.append("cursor_size_limit_reached")
+    if directory_evidence_incomplete:
+        warnings.append("cursor_directory_evidence_incomplete")
     return _DirectorySearchResult(
         results=results,
         content=content,
@@ -523,7 +546,7 @@ def _search_directory(
         files_considered=files_considered,
         warnings=warnings,
         skipped_files=skipped_files,
-        truncated=scan_truncated or continuation is not None,
+        truncated=scan_truncated or paused_at is not None or directory_evidence_incomplete,
         evidence_bytes=evidence_bytes,
         continuation=continuation,
     )

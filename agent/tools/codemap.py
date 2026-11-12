@@ -4,8 +4,12 @@ import hashlib
 import json
 from collections.abc import Callable
 from pathlib import Path
+from typing import Annotated, Any
 
 from langchain_core.tools import tool
+from langgraph.prebuilt import InjectedState
+
+from agent.editing.models import WorkspaceTransaction
 
 from agent.tools.results import (
     tool_access_denied,
@@ -35,6 +39,8 @@ from agent.tools.javascript_symbols import extract_javascript_symbols
 from agent.tools.typescript_symbols import extract_typescript_symbols
 from agent.tools.tsx_symbols import extract_tsx_symbols
 from agent.workspace import (
+    canonical_path_key,
+    canonical_workspace_relative_path,
     current_workspace_access_policy,
     default_workspace_resolver,
     has_single_regular_file_link,
@@ -426,6 +432,7 @@ def get_raw_file_content(
     start_byte: int = 0,
     end_byte: int | None = None,
     cursor: str | None = None,
+    state: Annotated[Any, InjectedState] = None,
 ) -> dict[str, object]:
     """Read a bounded UTF-8 byte range with version-bound pagination.
 
@@ -434,6 +441,7 @@ def get_raw_file_content(
         start_byte: Inclusive UTF-8 byte offset for the requested range.
         end_byte: Exclusive UTF-8 byte offset, or None for end of file.
         cursor: Continuation from the preceding page; repeat the same range.
+        state: Trusted graph state, injected by ToolNode, never model supplied.
     """
     if (
         isinstance(start_byte, bool)
@@ -455,17 +463,56 @@ def get_raw_file_content(
     )
     if early_denial is not None:
         return early_denial
-    resolution = resolver.resolve_file(file_path)
+    # Resolve and authorize the requested identity before consulting staged data.
+    resolution = resolver.resolve_file(file_path, must_exist=False)
     if not resolution.ok or resolution.path is None:
         return tool_rejection(resolution)
-    denied = _read_denial(resolution)
+    denied = _read_denial(resolution) if resolution.path.exists() else None
     if denied is not None:
         return denied
+    transaction = (
+        state.get("current_file_transaction") if isinstance(state, dict)
+        else getattr(state, "current_file_transaction", None)
+    )
+    relative = resolution.relative_path or file_path
+    relative = canonical_path_key(relative).replace("\\", "/")
+    working = (
+        isinstance(transaction, WorkspaceTransaction)
+        and canonical_workspace_relative_path(transaction.path, allow_root=False) == transaction.path
+        and canonical_path_key(transaction.path).replace("\\", "/") == relative
+    )
+    if not working:
+        existing = resolver.resolve_file(file_path)
+        if not existing.ok:
+            return tool_rejection(existing)
     try:
-        current_version = content_version(resolution.path)
-        metadata = resolution.path.stat(follow_symlinks=False)
-        size = metadata.st_size
-        relative = resolution.relative_path or file_path
+        view = "working" if working else "disk"
+        source_hash = None
+        if working:
+            # S1 permits CREATE below missing directories. Validate every
+            # existing ancestor, without creating directories during a read.
+            parent_path = resolution.path.parent
+            while True:
+                parent = resolver.resolve_directory(str(parent_path), must_exist=False)
+                if not parent.ok:
+                    return tool_rejection(parent)
+                if parent_path.exists():
+                    break
+                parent_path = parent_path.parent
+            source_bytes = transaction.working_content.encode("utf-8")
+            source_hash = hashlib.sha256(source_bytes).hexdigest()
+            # Bind the cursor to the whole working version, including stages
+            # that return to the same bytes. base_hash alone is never a version.
+            current_version = hashlib.sha256(json.dumps({
+                "source_hash": source_hash,
+                "base_hash": transaction.base_hash,
+                "existed": transaction.existed,
+                "task_ids": transaction.task_ids,
+            }, sort_keys=True).encode("utf-8")).hexdigest()
+            size = len(source_bytes)
+        else:
+            current_version = content_version(resolution.path)
+            size = resolution.path.stat(follow_symlinks=False).st_size
         if cursor is None:
             if start_byte > size or (end_byte is not None and end_byte > size):
                 return tool_failure(
@@ -481,12 +528,13 @@ def get_raw_file_content(
                 )
             expected_query = {
                 "path": relative,
+                "view": view,
                 "start_byte": start_byte,
                 "end_byte": end_byte,
             }
             actual_query = {
                 key: token.get(key)
-                for key in ("path", "start_byte", "end_byte")
+                for key in ("path", "view", "start_byte", "end_byte")
             }
             if actual_query != expected_query:
                 return tool_failure(
@@ -509,7 +557,7 @@ def get_raw_file_content(
                     relative, "invalid_cursor", "Continuation cursor is invalid."
                 )
         range_end = size if requested_end is None else requested_end
-        if not 0 <= offset <= range_end <= size:
+        if not start_byte <= offset <= range_end <= size:
             return tool_failure(
                 relative,
                 "stale_cursor",
@@ -517,13 +565,16 @@ def get_raw_file_content(
                 stale=True,
             )
         page_size = min(MAX_RAW_PAGE_BYTES, range_end - offset)
-        if not has_single_regular_file_link(resolution.path):
-            return tool_access_denied(
-                "read_denied", "Workspace read access is denied for this file."
-            )
-        with resolution.path.open("rb") as source:
-            source.seek(offset)
-            raw = source.read(page_size)
+        if working:
+            raw = source_bytes[offset:offset + page_size]
+        else:
+            if not has_single_regular_file_link(resolution.path):
+                return tool_access_denied(
+                    "read_denied", "Workspace read access is denied for this file."
+                )
+            with resolution.path.open("rb") as source:
+                source.seek(offset)
+                raw = source.read(page_size)
         next_offset = offset + len(raw)
         try:
             content = raw.decode("utf-8")
@@ -542,7 +593,7 @@ def get_raw_file_content(
                     "encoding_error",
                     "The selected byte range is not valid UTF-8 text.",
                 )
-        after_version = content_version(resolution.path)
+        after_version = current_version if working else content_version(resolution.path)
         if after_version != current_version:
             return tool_failure(
                 relative,
@@ -556,6 +607,7 @@ def get_raw_file_content(
                 "raw_file",
                 {
                     "path": relative,
+                    "view": view,
                     "start_byte": start_byte,
                     "end_byte": end_byte,
                     "next_offset": next_offset,
@@ -580,6 +632,8 @@ def get_raw_file_content(
         },
         "content_hash": hashlib.sha256(raw).hexdigest(),
         "content_version": current_version,
+        "view": view,
+        **({"source_hash": source_hash} if working else {}),
         "truncated": has_more,
         "warnings": [],
         "continuation": continuation,

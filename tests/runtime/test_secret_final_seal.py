@@ -32,6 +32,7 @@ from agent.editing import (
     WorkspaceTransaction,
 )
 from agent.graph import AgentState, create_workflow_graph
+from tests.verification._fixture_support import fixture_graph
 from agent.runtime import (
     AgentCodeRevision,
     AgentRevisionReason,
@@ -484,12 +485,12 @@ class SecretFinalSealTests(RunConfigTestCase):
                 config,
                 StartRequest(identity, semantic_config_digest(config), AgentCodeRevision(None, AgentRevisionStatus.UNKNOWN, AgentRevisionReason.NOT_GIT)),
                 {"implementation_research_scratchpad": []},
-                graph_factory=lambda _config, _run_id, saver, clock: create_workflow_graph(
+                graph_factory=lambda _config, _run_id, saver, clock: fixture_graph(fixture_versions={},
                     architect=architect,
                     developer=developer,
                     verification_specs=config.verification_specs,
                     verification_runner=Runner(),
-                    workspace_root=workspace,
+                    fixture_root=workspace,
                     durable_runtime=True,
                     clock=clock,
                     secret_filter=secret_filter,

@@ -4,6 +4,7 @@ from __future__ import annotations
 
 from dataclasses import dataclass
 from enum import Enum
+import os
 from pathlib import Path
 from typing import Any, Mapping
 
@@ -18,6 +19,7 @@ from agent.evaluation.task_workspace import (
     TaskWorkspaceErrorCode,
     TaskWorkspaceFailure,
     prepare_task_workspace,
+    _validate_task_shape,
 )
 from agent.evaluation.windows_sandbox import (
     SandboxCommand,
@@ -25,6 +27,7 @@ from agent.evaluation.windows_sandbox import (
     SandboxResult,
     SandboxStatus,
     run_in_windows_appcontainer,
+    _profile_withdrawn,
 )
 from agent.workspace.policy import WorkspaceAccessPolicy
 
@@ -73,13 +76,34 @@ def execute_isolated_task(
     python_toolchain_root: str | Path | None = None,
     uv_executable: str | Path | None = None,
 ) -> TaskExecutionResult:
-    """Execute one trusted argv in a pinned disposable workspace.
+    """Refuse withdrawn execution before acquiring any task-owned resources."""
+    task_id = task.get("task_id") if isinstance(task, Mapping) else None
+    target = task.get("target") if isinstance(task, Mapping) else None
+    revision = target.get("revision") if isinstance(target, Mapping) else None
+    # Reuse only the existing pure shape check, never its materialization path.
+    failure = (
+        TaskWorkspaceFailure(TaskWorkspaceErrorCode.INVALID_TASK, "Task access policy is invalid.")
+        if not isinstance(access_policy, WorkspaceAccessPolicy)
+        else _validate_task_shape(task)
+    )
+    if isinstance(failure, TaskWorkspaceFailure):
+        return TaskExecutionResult(
+            TaskExecutionStatus.FAILED, TaskExecutionErrorCode.WORKSPACE_PREPARATION_FAILED,
+            task_id if isinstance(task_id, str) else None,
+            revision if isinstance(revision, str) else None,
+            workspace_failure=failure, cleanup_complete=True,
+        )
+    refusal = _profile_withdrawn() if os.name == "nt" else SandboxResult(
+        status=SandboxStatus.FAILED, error_code=SandboxErrorCode.UNSUPPORTED_PLATFORM,
+        message="Windows AppContainer is the only supported sandbox backend.",
+        cleanup_complete=True,
+    )
+    return TaskExecutionResult(
+        TaskExecutionStatus.FAILED, TaskExecutionErrorCode.SANDBOX_FAILED,
+        task_id, revision, sandbox_result=refusal, cleanup_complete=True,
+    )
 
-    Preparation failure prevents command dispatch. ``COMMAND_COMPLETED`` means
-    only that the trusted command exited successfully; task acceptance remains
-    a separate evaluator decision. A patch is available only after a successful
-    sandbox result and successful workspace cleanup.
-    """
+    # Historical prepare/execute/owner-cleanup path is intentionally unreachable.
     prepared = prepare_task_workspace(
         repository_root=repository_root,
         task=task,

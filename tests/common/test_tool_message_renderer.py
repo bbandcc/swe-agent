@@ -80,6 +80,66 @@ class ToolMessageRendererTests(unittest.TestCase):
         self.assertIn("first", text)
         self.assertIn("second", text)
 
+    def test_duplicate_results_for_unique_call_are_not_assigned(self) -> None:
+        rendered = render_tool_messages([
+            AIMessage(content="", tool_calls=[
+                tool_call("duplicate", "search", {}), tool_call("safe", "codemap", {})
+            ]),
+            ToolMessage(content="first-duplicate", name="search", tool_call_id="duplicate"),
+            ToolMessage(content="second-duplicate", name="search", tool_call_id="duplicate"),
+            ToolMessage(content="safe-content", name="codemap", tool_call_id="safe"),
+        ])
+        duplicate = str(rendered[1].content)
+        safe = str(rendered[3].content)
+        self.assertIn("error=duplicate_tool_message; result_not_assigned", duplicate)
+        self.assertIn("first-duplicate", duplicate)
+        self.assertIn("second-duplicate", duplicate)
+        self.assertNotIn("error=duplicate_tool_call_id", duplicate)
+        self.assertIn("call_id: duplicate", str(rendered[0].content))
+        self.assertIn("call_id: safe", str(rendered[2].content))
+        self.assertIn("safe-content", safe)
+        self.assertNotIn("duplicate", safe)
+
+    def test_tool_name_mismatch_is_explicit(self) -> None:
+        rendered = render_tool_messages([
+            AIMessage(content="", tool_calls=[
+                tool_call("mismatch", "search", {}), tool_call("safe", "search", {})
+            ]),
+            ToolMessage(content="mismatch-content", name="codemap", tool_call_id="mismatch"),
+            ToolMessage(content="safe-content", name="search", tool_call_id="safe"),
+        ])
+        self.assertIn(
+            "error=tool_name_mismatch; result_not_assigned", str(rendered[1].content)
+        )
+        self.assertIn("call_id: mismatch", str(rendered[0].content))
+        self.assertIn("tool_name: codemap", str(rendered[1].content))
+        self.assertIn("mismatch-content", str(rendered[1].content))
+        self.assertNotIn("mismatch-content", str(rendered[3].content))
+        self.assertIn("safe-content", str(rendered[3].content))
+
+    def test_missing_ids_are_distinguished(self) -> None:
+        missing_call = render_tool_messages([
+            AIMessage(content="", tool_calls=[
+                tool_call("", "search", {}), tool_call("safe", "search", {})
+            ]),
+            ToolMessage(content="safe-content", name="search", tool_call_id="safe"),
+        ])
+        self.assertIn("call_id: <missing>", str(missing_call[0].content))
+        self.assertIn("error=missing_call_id", str(missing_call[1].content))
+        self.assertNotIn("safe-content", str(missing_call[1].content))
+        self.assertIn("safe-content", str(missing_call[3].content))
+        missing_result = render_tool_messages([
+            AIMessage(content="", tool_calls=[tool_call("safe", "search", {})]),
+            ToolMessage(content="orphan-content", name="search", tool_call_id=""),
+            ToolMessage(content="safe-content", name="search", tool_call_id="safe"),
+        ])
+        self.assertEqual(len(missing_result), 3)
+        self.assertIn("safe-content", str(missing_result[1].content))
+        self.assertNotIn("orphan-content", str(missing_result[1].content))
+        self.assertIn("error=missing_tool_call_id", str(missing_result[2].content))
+        self.assertNotIn("error=unknown_tool_call_id", str(missing_result[2].content))
+        self.assertIn("orphan-content", str(missing_result[2].content))
+
     def test_failed_tool_and_untrusted_content_are_not_dropped(self) -> None:
         rendered = render_tool_messages(
             [

@@ -485,7 +485,11 @@ class VerificationRunnerTests(unittest.TestCase):
             self.assertIn("invalid", result.message.lower())
 
     def test_cleanup_failure_is_structured_execution_error(self) -> None:
-        with tempfile.TemporaryDirectory() as directory:
+        # This test owns both roots. The report owner exits only after the
+        # injected deletion failure has been restored to the real filesystem.
+        with tempfile.TemporaryDirectory() as directory, tempfile.TemporaryDirectory(
+            prefix="verification-report-owner-"
+        ) as report_directory:
             root = Path(directory)
             (root / "test_report.py").write_text(
                 "def test_report():\n    assert True\n",
@@ -493,6 +497,8 @@ class VerificationRunnerTests(unittest.TestCase):
                 newline="",
             )
             with patch.object(
+                runner_module.tempfile, "mkdtemp", return_value=report_directory
+            ), patch.object(
                 runner_module.shutil,
                 "rmtree",
                 side_effect=OSError("cleanup failed"),
@@ -501,6 +507,9 @@ class VerificationRunnerTests(unittest.TestCase):
 
             self.assertEqual(result.status, VerificationCheckStatus.EXECUTION_ERROR)
             self.assertIn("cleanup", result.message.lower())
+            self.assertIn("cleanup failed", result.message)
+            self.assertTrue((Path(report_directory) / "report.xml").is_file())
+        self.assertFalse(Path(report_directory).exists())
 
     def test_interrupt_propagates_after_owned_report_cleanup(self) -> None:
         for interruption in (KeyboardInterrupt, SystemExit):

@@ -20,6 +20,7 @@ from agent.evaluation.windows_sandbox import (
     SandboxResult,
     SandboxStatus,
     _ValidatedCommand,
+    _profile_withdrawn,
 )
 
 
@@ -247,6 +248,11 @@ class _OutputDrain:
 
 
 def execute_appcontainer(command: _ValidatedCommand) -> SandboxResult:
+    """Refuse direct calls too; this entry creates no resources to clean up."""
+    return _profile_withdrawn()
+
+    # Historical implementation is intentionally unreachable. Restoring this
+    # profile requires new safety acceptance; the known A3 failure is not fixed.
     started_at = time.monotonic()
     profile_name = "swe-agent-" + uuid.uuid4().hex
     sid = ctypes.c_void_p()

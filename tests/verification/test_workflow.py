@@ -1,3 +1,4 @@
+import os
 import sys
 import tempfile
 import unittest
@@ -35,6 +36,20 @@ from agent.verification import (
     RepairScopePolicy,
 )
 from agent.verification.workflow import VerificationController
+from tests.verification._fixture_support import fixture_graph, fixture_controller
+
+
+# Literal alternatives produced by the authored proposals below.
+_REVIEWED_EDIT_VERSIONS = {
+    "app.py": tuple(value.encode() for value in (
+        "value = 1\n", "value = 2\n", "value = 3\n",
+        "value = 'BROKEN'\n", "value = 'BROKEN-0'\n",
+        "value = 'BROKEN-1'\n", "value = 'BROKEN-2'\n",
+        "value = 1\nBROKEN = True\n", "value = 2\nBROKEN = True\n",
+    )),
+    "a.py": (b"value = 2\n", b"value = 3\n", b"A = 2\r\n"),
+    "b.py": (b"value = 2\n", b"value = 3\n", b"B = 'BROKEN'\n", b"B = 2\n"),
+}
 
 
 def search_replace(old_text: str, new_text: str) -> str:
@@ -71,6 +86,9 @@ def file_check(root: Path, *, timeout_seconds: float = 10) -> VerificationSpec:
             executable,
             "-m",
             "pytest",
+            "-p",
+            "no:cacheprovider",
+            "--assert=plain",
             "-q",
             "--junitxml=report.xml",
         ),
@@ -127,7 +145,7 @@ def multi_file_developer(root: Path):
 
 
 def run_parent(root: Path, child_developer, specs):
-    return create_workflow_graph(
+    return fixture_graph(fixture_root=root, fixture_versions=_REVIEWED_EDIT_VERSIONS,
         architect=lambda _: {"implementation_plan": plan()},
         developer=child_developer,
         verification_specs=specs,
@@ -187,6 +205,14 @@ class _SequenceRunner:
 
 
 class VerificationWorkflowTests(unittest.TestCase):
+    def setUp(self):
+        # Freeze this authored harness environment before admission is created.
+        # Pytest must not add bytecode to the closed fixture inventory.
+        self.enterContext(patch.dict(os.environ, {"PYTHONDONTWRITEBYTECODE": "1"}))
+        directory = tempfile.TemporaryDirectory()
+        self.addCleanup(directory.cleanup)
+        self.fixture_root = Path(directory.name)
+
     def test_last_file_repair_does_not_touch_earlier_committed_file(self):
         with tempfile.TemporaryDirectory() as directory:
             root = Path(directory)
@@ -197,7 +223,7 @@ class VerificationWorkflowTests(unittest.TestCase):
                 VerificationCheckStatus.FAIL,
                 VerificationCheckStatus.PASS,
             )
-            result = create_workflow_graph(
+            result = fixture_graph(fixture_root=root, fixture_versions=_REVIEWED_EDIT_VERSIONS,
                 architect=lambda _: {"implementation_plan": multi_file_plan()},
                 developer=multi_file_developer(root),
                 verification_specs=(VerificationSpec("check", ("unused",)),),
@@ -218,7 +244,7 @@ class VerificationWorkflowTests(unittest.TestCase):
                 VerificationCheckStatus.FAIL,
                 VerificationCheckStatus.PASS,
             )
-            result = create_workflow_graph(
+            result = fixture_graph(fixture_root=root, fixture_versions=_REVIEWED_EDIT_VERSIONS,
                 architect=lambda _: {"implementation_plan": multi_file_plan()},
                 developer=multi_file_developer(root),
                 verification_specs=(VerificationSpec("check", ("unused",)),),
@@ -358,7 +384,7 @@ class VerificationWorkflowTests(unittest.TestCase):
                     report=report,
                 )
 
-        controller = VerificationController((spec,), FailureRunner(), ".")
+        controller = fixture_controller((spec,), FailureRunner(), self.fixture_root)
         initial = AgentState(
             implementation_plan=plan(),
             committed_edits=(committed,),
@@ -507,7 +533,7 @@ class VerificationWorkflowTests(unittest.TestCase):
                     ),
                 )
 
-        controller = VerificationController((spec,), Runner(), ".")
+        controller = fixture_controller((spec,), Runner(), self.fixture_root)
         post = controller.run_post(state)
         self.assertEqual(post["verification_status"], VerificationStatus.REGRESSION)
 
@@ -517,7 +543,7 @@ class VerificationWorkflowTests(unittest.TestCase):
             VerificationCheckStatus.PASS,
             VerificationCheckStatus.FAIL,
         )
-        result = create_workflow_graph(
+        result = fixture_graph(fixture_root=self.fixture_root, fixture_versions=_REVIEWED_EDIT_VERSIONS,
             architect=lambda _: {"implementation_plan": plan()},
             developer=lambda _: (
                 calls.append("developer")
@@ -550,13 +576,13 @@ class VerificationWorkflowTests(unittest.TestCase):
                 )
 
         runner = Runner()
-        controller = VerificationController(
+        controller = fixture_controller(
             (
                 VerificationSpec("first", ("unused",), timeout_seconds=30),
                 VerificationSpec("second", ("unused",), timeout_seconds=30),
             ),
             runner,
-            ".",
+            self.fixture_root,
             clock=lambda: now[0],
         )
         state = AgentState(
@@ -607,7 +633,7 @@ class VerificationWorkflowTests(unittest.TestCase):
                 )
 
         runner = Runner()
-        controller = VerificationController((spec,), runner, ".")
+        controller = fixture_controller((spec,), runner, self.fixture_root)
         baseline = controller.run_baseline(AgentState())
         baseline.update(
             {
@@ -637,10 +663,10 @@ class VerificationWorkflowTests(unittest.TestCase):
                 raise AssertionError("expired deadline must start no subprocess")
 
         runner = Runner()
-        controller = VerificationController(
+        controller = fixture_controller(
             (VerificationSpec("check", ("unused",), timeout_seconds=30),),
             runner,
-            ".",
+            self.fixture_root,
             clock=lambda: 105.0,
         )
         state = AgentState(
@@ -725,7 +751,7 @@ class VerificationWorkflowTests(unittest.TestCase):
                     VerificationCheckStatus.PASS,
                     post_status,
                 )
-                result = create_workflow_graph(
+                result = fixture_graph(fixture_root=self.fixture_root, fixture_versions=_REVIEWED_EDIT_VERSIONS,
                     architect=lambda _: {"implementation_plan": plan()},
                     developer=lambda _: {
                         "developer_status": DeveloperStatus.NO_CHANGES
@@ -751,7 +777,7 @@ class VerificationWorkflowTests(unittest.TestCase):
                     VerificationCheckStatus.PASS,
                     VerificationCheckStatus.PASS,
                 )
-                result = create_workflow_graph(
+                result = fixture_graph(fixture_root=self.fixture_root, fixture_versions=_REVIEWED_EDIT_VERSIONS,
                     architect=lambda _: {"implementation_plan": plan()},
                     developer=lambda _: {"developer_status": developer_status},
                     verification_specs=(
@@ -779,7 +805,7 @@ class VerificationWorkflowTests(unittest.TestCase):
                     VerificationCheckStatus.PASS,
                     VerificationCheckStatus.PASS,
                 )
-                result = create_workflow_graph(
+                result = fixture_graph(fixture_root=self.fixture_root, fixture_versions=_REVIEWED_EDIT_VERSIONS,
                     architect=lambda _: {"implementation_plan": plan()},
                     developer=lambda _, status=developer_status: {
                         "developer_status": status
@@ -834,7 +860,7 @@ class VerificationWorkflowTests(unittest.TestCase):
                 "value = 1\n", encoding="utf-8", newline=""
             )
 
-            result = create_workflow_graph(
+            result = fixture_graph(fixture_root=root, fixture_versions=_REVIEWED_EDIT_VERSIONS,
                 architect=lambda _: {"implementation_plan": plan()},
                 developer=lambda _: {
                     "developer_status": DeveloperStatus.FAILED,
@@ -942,12 +968,15 @@ class VerificationWorkflowTests(unittest.TestCase):
                     sys.executable,
                     "-m",
                     "pytest",
+                    "-p",
+                    "no:cacheprovider",
+                    "--assert=plain",
                     "-q",
                     "--junitxml=report.xml",
                 ),
                 report_path="report.xml",
             )
-            result = create_workflow_graph(
+            result = fixture_graph(fixture_root=root, fixture_versions=_REVIEWED_EDIT_VERSIONS,
                 architect=lambda _: {"implementation_plan": initial_plan},
                 developer=developer(root, propose),
                 verification_specs=(check,),
@@ -999,6 +1028,9 @@ class VerificationWorkflowTests(unittest.TestCase):
                     sys.executable,
                     "-m",
                     "pytest",
+                    "-p",
+                    "no:cacheprovider",
+                    "--assert=plain",
                     "-q",
                     "-s",
                     "--junitxml=report.xml",
@@ -1101,7 +1133,7 @@ class VerificationWorkflowTests(unittest.TestCase):
             VerificationCheckStatus.FAIL,
             VerificationCheckStatus.FAIL,
         )
-        result = create_workflow_graph(
+        result = fixture_graph(fixture_root=self.fixture_root, fixture_versions=_REVIEWED_EDIT_VERSIONS,
             architect=lambda _: {"implementation_plan": plan()},
             developer=lambda _: {"developer_status": DeveloperStatus.COMPLETED},
             verification_specs=(
@@ -1229,6 +1261,68 @@ class VerificationWorkflowTests(unittest.TestCase):
                 self.assertEqual(
                     target.read_text(encoding="utf-8"), "value = 1\n"
                 )
+
+
+class HostAdmissionTests(unittest.TestCase):
+    def setUp(self):
+        self.enterContext(patch.dict(os.environ, {"PYTHONDONTWRITEBYTECODE": "1"}))
+
+    def test_reviewed_fixed_pytest_harness_keeps_baseline_and_post(self) -> None:
+        from agent.verification.workflow import ReviewedVerificationInputs
+
+        with tempfile.TemporaryDirectory() as directory:
+            root = Path(directory)
+            test_bytes = (
+                b"from pathlib import Path\n"
+                b"def test_fixed():\n    assert Path('app.py').read_text() == 'value = 1\\n'\n"
+            )
+            (root / "test_fixed.py").write_bytes(test_bytes)
+            (root / "app.py").write_bytes(b"value = 1\n")
+            spec = VerificationSpec(
+                "fixed", (sys.executable, "-m", "pytest", "-q", "-p", "no:cacheprovider",
+                          "--assert=plain", "test_fixed.py", "--junitxml=report.xml"),
+                report_path="report.xml",
+            )
+            runner = VerificationRunner(root)
+            reviewed = ReviewedVerificationInputs(
+                workspace_root=root, runner=runner, specs=(spec,),
+                file_versions={"test_fixed.py": test_bytes, "app.py": b"value = 1\n"},
+            )
+            result = create_workflow_graph(
+                architect=lambda _: {},
+                developer=lambda _: {"developer_status": DeveloperStatus.NO_CHANGES},
+                verification_specs=(spec,), verification_runner=runner,
+                reviewed_inputs=reviewed, workspace_root=root,
+            ).compile().invoke({})
+            self.assertEqual(result["verification_status"], VerificationStatus.VERIFIED,
+                             result["baseline_verification"])
+            self.assertEqual(len(result["baseline_verification"]), 1)
+            self.assertEqual(len(result["post_verification"]), 1)
+            self.assertTrue(result["acceptance"].accepted)
+            self.assertEqual(
+                {path.relative_to(root).as_posix() for path in root.rglob("*")},
+                {"test_fixed.py", "app.py"},
+                "The reviewed pytest harness must leave no cache or bytecode behind",
+            )
+
+    def test_unknown_baseline_cannot_spawn(self) -> None:
+        with tempfile.TemporaryDirectory() as directory:
+            root = Path(directory)
+            marker = root / "unauthorized.txt"
+            spec = VerificationSpec(
+                "unknown",
+                (sys.executable, "-c", "from pathlib import Path; Path('unauthorized.txt').write_text('fixture')"),
+            )
+            result = create_workflow_graph(
+                architect=lambda _: {},
+                developer=lambda _: {"developer_status": DeveloperStatus.NO_CHANGES},
+                verification_specs=(spec,),
+                workspace_root=root,
+            ).compile().invoke({})
+            self.assertFalse(marker.exists(), "Unknown baseline spawned a verification process")
+            self.assertEqual(result["outcome"], WorkflowOutcome.FAILED)
+            self.assertEqual(result["verification_status"], VerificationStatus.VERIFICATION_ERROR)
+            self.assertIn("admission", result["baseline_verification"][0].message.lower())
 
 
 if __name__ == "__main__":

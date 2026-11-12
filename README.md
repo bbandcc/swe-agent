@@ -1,3 +1,44 @@
+## Current executable support boundary
+
+Current support and validation: [status](docs/STATUS.md).
+The code includes the core refusal contracts, working-copy reads, cursor fixes
+and the deterministic S1 demo.
+Run `uv run --locked python -m scripts.demo_s1_editor` from this checkout.
+The opt-in Docker pilot uses a fixed image and separate observer; its controls
+are recorded separately from model results. A preregistered DeepSeek Flash
+observation across three fixed integer-JSON tasks and three runs each resolved
+seven of nine trials; both failures remain in the report. The peak-price
+conservative calculation was CNY 0.333800, with all candidate cleanup confirmed.
+This small related task set does not establish general benchmark performance.
+
+Windows AppContainer execution is withdrawn: both low-level entries and the
+task/frozen/fuzzysearch/forbiddenfruit preparation entries refuse before their
+exclusive preparation, ACL or spawn. Historical native success and downstream
+pipeline tests remain in source but are excluded from the supported test entry.
+The A3 hardlink/DACL FAIL remains historical evidence, not a resolved defect.
+
+Host verification requires author-reviewed inputs for every baseline/post,
+repair, spec and resumed dispatch. Trusted argv, explicit runner injection and
+a previous approved revision do not authorize unknown repository/model code.
+No-check editing remains UNVERIFIED. Reviewed fixture/harness execution is
+not a sandbox and does not demonstrate real-model or benchmark success.
+
+Independent Python toolchain calls require a complete `reviewed_files` inventory
+provided by a trusted author, reviewed dependency bytes where applicable,
+controlled ancestors/destination parent, trusted interpreter dependency closure
+and no concurrent writer. Calculating hashes of unknown files does not establish
+trust. This is not arbitrary Python-distribution certification or hostile
+same-privilege race protection; native link capability tests are owned data tests,
+not Windows AppContainer restoration.
+
+The explicit selection in `tests/test_s5d2_ci_contract.py` is shared by unittest,
+pytest and the Ubuntu/Windows CI matrix. It retains core consumers and both
+refusal contracts. Historical Windows pipeline tests are preserved separately;
+capability/platform skips remain visible and must not be counted as PASS.
+Changed tests/setup must be reviewed before changing this selection. CI matrix
+configuration is not evidence that either hosted platform has passed this tree.
+An existing dependency overlay is not a clean locked installation.
+
 
 # SWE Agent with LangGraph - by [LangTalks](https://langtalks.ai)
 
@@ -13,7 +54,7 @@ This repository evolves the original LangTalks project through small, independen
 Run the deterministic and fake-model integration tests with:
 
 ```bash
-uv run --locked python -m unittest discover -s tests -v
+uv run --locked python -m tests.test_s5d2_ci_contract --suite unittest
 ```
 
 See [UPSTREAM.md](UPSTREAM.md) for the pinned source revision and [AGENTS.md](AGENTS.md) for the incremental engineering rules.
@@ -311,11 +352,11 @@ static/               # Documentation images
 
 ### Running Tests
 ```bash
-# Canonical full suite
-uv run --locked python -m unittest discover -s tests -v
+# Supported core and refusal suite
+uv run --locked python -m tests.test_s5d2_ci_contract --suite unittest
 
 # Pytest compatibility run (pytest is locked in the dev dependency group)
-uv run --locked python -m pytest
+uv run --locked python -m tests.test_s5d2_ci_contract --suite pytest
 
 # Compile production and test packages
 uv run --locked python -m compileall -q agent tests
@@ -400,7 +441,7 @@ We welcome contributions! This project aims to push the boundaries of AI-powered
 2. **Create a feature branch** (`git checkout -b feature/amazing-feature`)
 3. **Make your changes** following the existing code patterns
 4. **Add tests** for new functionality
-5. **Ensure tests pass** (`uv run --locked python -m unittest discover -s tests -v`)
+5. **Ensure tests pass** (`uv run --locked python -m tests.test_s5d2_ci_contract --suite unittest`)
 6. **Update documentation** if needed
 7. **Commit your changes** (`git commit -m 'Add amazing feature'`)
 8. **Push to the branch** (`git push origin feature/amazing-feature`)
@@ -417,7 +458,7 @@ cd swe-agent
 uv sync --locked
 
 # Run tests to ensure everything works
-uv run --locked python -m unittest discover -s tests -v
+uv run --locked python -m tests.test_s5d2_ci_contract --suite unittest
 ```
 
 ## 📊 Technical Details

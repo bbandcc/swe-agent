@@ -1,18 +1,30 @@
 import json
+import hashlib
+import subprocess
 import os
 import tempfile
 import unittest
 from pathlib import Path
 from unittest.mock import patch
 
+from langchain_core.messages import AIMessage
+from langgraph.graph import StateGraph, START, END
+from langgraph.prebuilt import ToolNode
+
+from agent.developer.state import SoftwareDeveloperState
+from agent.architect.state import SoftwareArchitectState
+from agent.editing import EditOperation, EditProposal, WorkspaceEditor
+
 from agent.tools.codemap import get_raw_file_content
 from agent.tools.read_contract import (
     MAX_CURSOR_CHARS,
+    MAX_RAW_PAGE_BYTES,
     MAX_SEARCH_BYTES,
     MAX_SEARCH_FILES,
     MAX_SEARCH_RESULTS,
     MAX_SEARCH_SCAN_ENTRIES,
     MAX_TREE_SCAN_ENTRIES,
+    encode_cursor,
 )
 from agent.tools.search import search_keyword_in_directory
 from agent.tools.write import get_files_structure
@@ -20,6 +32,320 @@ from agent.workspace import WorkspaceAccessPolicy, workspace_root_scope
 
 
 class BoundedReadToolTests(unittest.TestCase):
+    def test_raw_cursor_cannot_be_reused_for_another_target(self) -> None:
+        content = b"a" * (MAX_RAW_PAGE_BYTES + 10)
+        (self.root / "first.txt").write_bytes(content)
+        (self.root / "second.txt").write_bytes(content)
+        first = get_raw_file_content.invoke({"file_path": "first.txt"})
+        self.assertTrue(first["ok"], first)
+        self.assertIsNotNone(first["continuation"])
+        other = get_raw_file_content.invoke({
+            "file_path": "second.txt", "cursor": first["continuation"],
+        })
+        self.assertFalse(other["ok"], other)
+        self.assertEqual(other["error_code"], "stale_cursor")
+        self.assertNotIn("content", other)
+
+    def test_search_cursor_fails_closed_when_encoded_token_exceeds_limit(self) -> None:
+        for index in range(101):
+            (self.root / f"f{index:03}.py").write_text("needle\n", encoding="utf-8")
+        with patch("agent.tools.search.MAX_CURSOR_CHARS", 1):
+            result = search_keyword_in_directory.invoke({
+                "directory": ".", "search_term": "needle", "context": 0,
+            })
+        self.assertTrue(result["ok"], result)
+        self.assertTrue(result["truncated"])
+        self.assertIsNone(result["continuation"])
+        self.assertIn("cursor_size_limit_reached", result["warnings"])
+
+    def test_search_cursor_fails_closed_at_directory_evidence_capacity(self) -> None:
+        for index in range(MAX_SEARCH_FILES + 2):
+            (self.root / f"a{index:03}").mkdir()
+        (self.root / "z").mkdir()
+        for index in range(101):
+            (self.root / "z" / f"f{index:03}.py").write_text("needle\n", encoding="utf-8")
+        result = search_keyword_in_directory.invoke({
+            "directory": ".", "search_term": "needle", "context": 0,
+        })
+        self.assertTrue(result["ok"], result)
+        self.assertTrue(result["truncated"])
+        self.assertIsNone(result["continuation"])
+        self.assertIn("cursor_directory_evidence_incomplete", result["warnings"])
+
+    def raw_in_developer(self, transaction, **args):
+        builder = StateGraph(SoftwareDeveloperState)
+        builder.add_node("tools", ToolNode(
+            [get_raw_file_content], messages_key="atomic_implementation_research"
+        ))
+        builder.add_edge(START, "tools")
+        builder.add_edge("tools", END)
+        result = builder.compile().invoke({
+            "current_file_transaction": transaction,
+            "atomic_implementation_research": [AIMessage(content="", tool_calls=[{
+                "name": "get_raw_file_content", "args": args,
+                "id": "raw-1", "type": "tool_call",
+            }])],
+        })
+        message = result["atomic_implementation_research"][-1]
+        self.assertEqual(message.tool_call_id, "raw-1")
+        return json.loads(message.content)
+
+
+    def test_target_raw_reads_staged_working_without_writing_disk(self):
+        target = self.root / "app.py"
+        target.write_bytes(b"value = 1\n")
+        editor = WorkspaceEditor(self.root)
+        transaction = editor.begin("app.py").transaction
+        staged = editor.stage(transaction, EditProposal(
+            task_id="task-1.step-1", path="app.py",
+            operation=EditOperation.EDIT, old_text="value = 1", new_text="value = 2",
+            base_hash=transaction.base_hash,
+        ))
+        self.assertTrue(staged.ok, staged)
+        page = self.raw_in_developer(staged.transaction, file_path="app.py")
+        self.assertTrue(page["ok"], page)
+        self.assertEqual(page["content"], "value = 2\n")
+        self.assertEqual(page["view"], "working")
+        self.assertEqual(target.read_bytes(), b"value = 1\n")
+
+
+    def stage_text(self, editor, transaction, text, task_id="stage-1"):
+        result = editor.stage(transaction, EditProposal(
+            task_id=task_id, path=transaction.path,
+            operation=EditOperation.EDIT if transaction.existed or transaction.task_ids else EditOperation.CREATE,
+            old_text=transaction.working_content, new_text=text,
+            base_hash=transaction.base_hash,
+        ))
+        self.assertTrue(result.ok, result)
+        return result.transaction
+
+
+    def test_raw_latest_stage_aliases_other_file_and_direct_disk(self):
+        target = self.root / "app.py"
+        target.write_bytes(b"disk\n")
+        (self.root / "other.py").write_bytes(b"other\n")
+        editor = WorkspaceEditor(self.root)
+        first = self.stage_text(editor, editor.begin("app.py").transaction, "one\n")
+        second = self.stage_text(editor, first, "two\n", "stage-2")
+        aliases = ["app.py", "./app.py", "workspace_repo/app.py", str(target)]
+        if os.name == "nt":
+            aliases += ["APP.PY", str(target).upper()]
+        for alias in aliases:
+            page = self.raw_in_developer(second, file_path=alias)
+            self.assertEqual(page["content"], "two\n")
+            self.assertEqual(page["view"], "working")
+            self.assertEqual(page["path"], "app.py")
+        other = self.raw_in_developer(second, file_path="other.py")
+        direct = get_raw_file_content.invoke({"file_path": "app.py"})
+        for page, content in [(other, "other\n"), (direct, "disk\n")]:
+            self.assertEqual(page["view"], "disk")
+            self.assertEqual(page["content"], content)
+            self.assertNotIn("source_hash", page)
+        self.assertEqual(target.read_bytes(), b"disk\n")
+        # Model-supplied extra arguments cannot replace ToolNode's real state.
+        page = self.raw_in_developer(second, file_path="app.py", state={
+            "current_file_transaction": {"working_content": "forged"},
+        })
+        self.assertEqual(page["content"], "two\n")
+
+
+    def test_raw_create_and_empty_working_are_readable_before_commit(self):
+        editor = WorkspaceEditor(self.root)
+        empty = editor.begin("new.py").transaction
+        page = self.raw_in_developer(empty, file_path="new.py")
+        self.assertTrue(page["ok"], page)
+        self.assertEqual(page["content"], "")
+        self.assertEqual(page["source_hash"], hashlib.sha256(b"").hexdigest())
+        created = self.stage_text(editor, empty, "created\n")
+        page = self.raw_in_developer(created, file_path="new.py")
+        self.assertEqual(page["content"], "created\n")
+        self.assertEqual(page["view"], "working")
+        self.assertFalse((self.root / "new.py").exists())
+        self.assertFalse(get_raw_file_content.invoke({"file_path": "new.py"})["ok"])
+
+
+    def test_nested_create_reads_working_without_creating_parent_directories(self):
+        editor = WorkspaceEditor(self.root)
+        transaction = self.stage_text(editor, editor.begin("new/sub/file.py").transaction, "created\n")
+        page = self.raw_in_developer(transaction, file_path="new/sub/file.py")
+        self.assertTrue(page["ok"], page)
+        self.assertEqual(page["content"], "created\n")
+        self.assertFalse((self.root / "new").exists())
+
+
+    def test_working_raw_pagination_hashes_ranges_and_stale_cursors(self):
+        target = self.root / "app.py"
+        target.write_bytes(b"d" * (MAX_RAW_PAGE_BYTES + 7))
+        editor = WorkspaceEditor(self.root)
+        first = self.stage_text(editor, editor.begin("app.py").transaction, "中" * MAX_RAW_PAGE_BYTES)
+        page = self.raw_in_developer(first, file_path="app.py")
+        cursor = page["continuation"]
+        self.assertIsNotNone(cursor)
+        complete = page["content"]
+        source_hash = hashlib.sha256(first.working_content.encode("utf-8")).hexdigest()
+        while True:
+            self.assertEqual(page["source_hash"], source_hash)
+            self.assertEqual(page["content_hash"], hashlib.sha256(page["content"].encode("utf-8")).hexdigest())
+            self.assertLessEqual(len(page["content"].encode("utf-8")), MAX_RAW_PAGE_BYTES)
+            if page["continuation"] is None:
+                break
+            page = self.raw_in_developer(first, file_path="app.py", cursor=page["continuation"])
+            self.assertTrue(page["ok"], page)
+            complete += page["content"]
+        self.assertEqual(complete, first.working_content)
+        self.assertNotEqual(page["content_hash"], source_hash)
+        second = self.stage_text(editor, first, "新" * MAX_RAW_PAGE_BYTES, "stage-2")
+        returned = self.stage_text(editor, second, first.working_content, "stage-3")
+        disk = get_raw_file_content.invoke({"file_path": "app.py"})
+        for transaction, args in [
+            (second, {"file_path": "app.py", "cursor": cursor}),
+            (returned, {"file_path": "app.py", "cursor": cursor}),
+            (None, {"file_path": "app.py", "cursor": cursor}),
+            (first, {"file_path": "app.py", "cursor": disk["continuation"]}),
+            (first, {"file_path": "app.py", "cursor": cursor, "start_byte": 3}),
+        ]:
+            rejected = self.raw_in_developer(transaction, **args)
+            self.assertFalse(rejected["ok"], rejected)
+            self.assertEqual(rejected["error_code"], "stale_cursor")
+        selected = self.raw_in_developer(first, file_path="app.py", start_byte=3, end_byte=9)
+        self.assertEqual(selected["content"], "中中")
+        self.assertEqual(selected["range"]["start_byte"], 3)
+        for args in [{"start_byte": 1}, {"end_byte": 1}, {"end_byte": -1}, {"end_byte": 999999}]:
+            self.assertFalse(self.raw_in_developer(first, file_path="app.py", **args)["ok"])
+
+
+    def test_working_raw_cannot_bypass_policy_parent_or_link_checks(self):
+        editor = WorkspaceEditor(self.root)
+        transaction = self.stage_text(editor, editor.begin("new.py").transaction, "staged secret")
+        policy = WorkspaceAccessPolicy(oracle_paths=("new.py", "hidden"))
+        with workspace_root_scope(self.root, access_policy=policy):
+            page = self.raw_in_developer(transaction, file_path="new.py")
+            self.assertFalse(page["ok"])
+            self.assertEqual(page["error_code"], "read_denied")
+            self.assertNotIn("staged secret", json.dumps(page))
+            self.assertFalse(editor.begin("../escape.py").ok)
+            self.assertFalse(self.raw_in_developer(transaction, file_path="../escape.py")["ok"])
+            self.assertFalse(self.raw_in_developer(transaction, file_path="hidden/new.py")["ok"])
+        # A former legal CREATE gains a non-directory parent before the read.
+        (self.root / "parent").mkdir()
+        child = editor.begin("parent/new.py").transaction
+        (self.root / "parent").rmdir()
+        (self.root / "parent").write_bytes(b"not a directory")
+        self.assertFalse(self.raw_in_developer(child, file_path="parent/new.py")["ok"])
+        # A real owned hardlink to data outside the root must not be read,
+        # even when an earlier legitimate CREATE transaction is still active.
+        with tempfile.TemporaryDirectory() as outside:
+            external = Path(outside) / "data.txt"
+            external.write_bytes(b"external data")
+            os.link(external, self.root / "new.py")
+            page = self.raw_in_developer(transaction, file_path="new.py")
+            self.assertFalse(page["ok"], page)
+            self.assertEqual(page["error_code"], "read_denied")
+            (self.root / "new.py").unlink()
+            self.assertEqual(external.read_bytes(), b"external data")
+
+
+    def test_raw_tool_schema_keeps_injected_state_hidden(self):
+        schema = get_raw_file_content.tool_call_schema.model_json_schema()
+        self.assertEqual(set(schema["properties"]), {"file_path", "start_byte", "end_byte", "cursor"})
+        self.assertEqual(schema["required"], ["file_path"])
+        self.assertEqual(get_raw_file_content.name, "get_raw_file_content")
+
+
+    def test_architect_raw_keeps_disk_view(self):
+        (self.root / "app.py").write_bytes(b"disk\n")
+        builder = StateGraph(SoftwareArchitectState)
+        builder.add_node("tools", ToolNode(
+            [get_raw_file_content], messages_key="implementation_research_scratchpad"
+        ))
+        builder.add_edge(START, "tools")
+        builder.add_edge("tools", END)
+        result = builder.compile().invoke({"implementation_research_scratchpad": [
+            AIMessage(content="", tool_calls=[{
+                "name": "get_raw_file_content", "args": {"file_path": "app.py"},
+                "id": "architect-raw", "type": "tool_call",
+            }])
+        ]})
+        page = json.loads(result["implementation_research_scratchpad"][-1].content)
+        self.assertEqual(page["view"], "disk")
+        self.assertEqual(page["content"], "disk\n")
+
+
+    def test_active_create_raw_rejects_directory_link_escape(self):
+        editor = WorkspaceEditor(self.root)
+        transaction = editor.begin("linked/new.py").transaction
+        self.assertIsNotNone(transaction)
+        linked = self.root / "linked"
+        with tempfile.TemporaryDirectory() as directory:
+            outside = Path(directory).resolve()
+            if os.name == "nt":
+                # Owned data-only junction; no ACL, candidate execution or
+                # AppContainer. Same public mechanism as workspace consumers.
+                result = subprocess.run([
+                    "pwsh.exe", "-NoLogo", "-NoProfile", "-CommandWithArgs",
+                    "New-Item -ItemType Junction -Path $args[0] -Target $args[1] | Out-Null",
+                    str(linked), str(outside),
+                ], capture_output=True, text=True, encoding="utf-8", timeout=15)
+                self.assertEqual(result.returncode, 0, result.stderr)
+                self.assertTrue(linked.is_junction())
+            else:
+                linked.symlink_to(outside, target_is_directory=True)
+            try:
+                page = self.raw_in_developer(transaction, file_path="linked/new.py")
+                self.assertFalse(page["ok"], page)
+                self.assertEqual(page["error_code"], "path_invalid")
+                self.assertEqual(list(outside.iterdir()), [])
+            finally:
+                if os.name == "nt":
+                    linked.rmdir()
+                else:
+                    linked.unlink()
+
+
+    def test_raw_cursor_rejects_offset_before_requested_start(self) -> None:
+        (self.root / "range.txt").write_bytes(b"0123456789")
+        first = get_raw_file_content.invoke(
+            {"file_path": "range.txt", "start_byte": 2, "end_byte": 8}
+        )
+        self.assertTrue(first["ok"], first)
+        cursor = encode_cursor("raw_file", {
+            "path": first["path"], "view": first["view"], "start_byte": 2, "end_byte": 8,
+            "next_offset": 0, "file_version": first["content_version"],
+        })
+        result = get_raw_file_content.invoke({
+            "file_path": "range.txt", "start_byte": 2, "end_byte": 8, "cursor": cursor,
+        })
+        self.assertFalse(result["ok"], result)
+        self.assertEqual(result["error_code"], "stale_cursor")
+        self.assertTrue(result["stale"])
+        self.assertNotIn("content", result)
+
+    def test_search_cursor_rejects_new_match_in_previously_empty_directory(self) -> None:
+        for unsupported in (False, True):
+            with self.subTest(unsupported=unsupported):
+                with tempfile.TemporaryDirectory(dir=self.root) as directory:
+                    root = Path(directory)
+                    (root / "a").mkdir()
+                    (root / "b").mkdir()
+                    if unsupported:
+                        (root / "a" / "note.bin").write_bytes(b"ignored")
+                    for index in range(101):
+                        (root / "b" / f"f{index:03}.py").write_text("needle\n", encoding="utf-8")
+                    request = {"directory": ".", "search_term": "needle", "context": 0}
+                    with workspace_root_scope(root):
+                        first = search_keyword_in_directory.invoke(request)
+                        self.assertTrue(first["ok"], first)
+                        self.assertEqual(len(first["results"]), 100)
+                        self.assertIsNotNone(first["continuation"])
+                        stable = search_keyword_in_directory.invoke({**request, "cursor": first["continuation"]})
+                        self.assertTrue(stable["ok"], stable)
+                        self.assertEqual([item["path"] for item in stable["results"]], ["b/f100.py"])
+                        (root / "a" / "new.py").write_text("needle\n", encoding="utf-8")
+                        stale = search_keyword_in_directory.invoke({**request, "cursor": first["continuation"]})
+                        self.assertFalse(stale["ok"], stale)
+                        self.assertEqual(stale["error_code"], "stale_cursor")
+                        self.assertTrue(stale["stale"])
+
     def setUp(self) -> None:
         self.temp = tempfile.TemporaryDirectory()
         self.root = Path(self.temp.name).resolve()

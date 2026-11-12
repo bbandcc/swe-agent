@@ -1,11 +1,12 @@
 """Injectable and lazily constructed dependencies for the Architect graph."""
 
-from collections.abc import Callable
+from collections.abc import Callable, Sequence
 from dataclasses import dataclass
 from functools import lru_cache
 from typing import Any
 
 from langchain_core.output_parsers import JsonOutputParser
+from langchain_core.tools import BaseTool
 
 from agent.architect.models import ResearchEvaluation, ResearchStep
 from agent.common.workspace_tree_evidence import render_workspace_tree_evidence
@@ -102,8 +103,15 @@ def durable_architect_runtime(
     *,
     model_request_timeout_seconds: float = DEFAULT_MODEL_REQUEST_TIMEOUT_SECONDS,
     model_retry_policy: ModelRetryPolicy | None = None,
+    model_factory: Callable[..., Any] | None = None,
+    research_tools: Sequence[BaseTool] | None = None,
+    load_codebase_structure: Callable[[], str] | None = None,
 ) -> ArchitectRuntime:
-    """Build explicit model calls that retain raw usage before parsing."""
+    """Retain raw usage; optionally inject a bounded model and matching tools.
+
+    The caller must pass the same research tools to the graph's ToolNode.
+    None preserves the production defaults; an empty sequence advertises none.
+    """
     plan_prompt = markdown_to_prompt_template(
         "agent/architect/prompts/plan_next_step_prompt.md"
     )
@@ -118,12 +126,16 @@ def durable_architect_runtime(
     )
     parser = JsonOutputParser(pydantic_object=ImplementationPlan)
     retry_policy = model_retry_policy or ModelRetryPolicy()
+    factory = build_chat_model if model_factory is None else model_factory
+    tools = tuple(
+        search_tools + codemap_tools if research_tools is None else research_tools
+    )
 
     def model_for(values):
         timeout = values.get(
             "_model_request_timeout_seconds", model_request_timeout_seconds
         )
-        return build_chat_model(
+        return factory(
             settings,
             max_output_tokens=max_output_tokens,
             request_timeout_seconds=timeout,
@@ -167,7 +179,7 @@ def durable_architect_runtime(
 
     def invoke_research(values):
         runnable = research_prompt | model_for(values).bind_tools(
-            search_tools + codemap_tools
+            list(tools)
         )
         raw = invoke_model(lambda: runnable.invoke(values))
         if isinstance(raw, ModelCallResult):
@@ -183,7 +195,10 @@ def durable_architect_runtime(
         ),
         conduct_research=invoke_research,
         extract_implementation_plan=invoke_extract,
-        load_codebase_structure=_load_codebase_structure,
+        load_codebase_structure=(
+            _load_codebase_structure
+            if load_codebase_structure is None else load_codebase_structure
+        ),
     )
 
 
